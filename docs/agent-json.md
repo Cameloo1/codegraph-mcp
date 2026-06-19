@@ -12,10 +12,12 @@ Schema files live in `docs/schemas/agent-json/`:
 - `query_symbols_agent_json.schema.json`
 - `query_text_agent_json.schema.json`
 - `query_files_agent_json.schema.json`
+- `query_unresolved_calls_agent_json.schema.json`
 - `context_pack_agent_json.schema.json`
 - `callers_callees_agent_json.schema.json`
 - `status_compact_json.schema.json`
 - `doctor_compact_json.schema.json`
+- `validation_packet_agent_json.schema.json`
 - `common.schema.json`
 
 ## Versioning
@@ -91,12 +93,13 @@ When returning context or proof evidence, responses include:
 - candidate provenance fields such as `candidate_source`, `candidate_sources`,
   and `candidate_source_counts` where the surface returns retrieval candidates
 
-Valid evidence roles are `production`, `test`, `mock`, `mixed`, and `unknown`.
+Valid evidence roles are `production`, `test`, `mock`, `stub`, `generated`,
+`mixed`, `text_evidence`, and `unknown`.
 Default production context must not silently treat `test`, `mock`, `mixed`, or
 `unknown` evidence as production proof.
 
-Candidate sources such as exact seeds, text evidence, lexical search, vector
-semantic recall, binary-vector recall, nuance rescue, graph-neighborhood
+Candidate sources such as exact seeds, text evidence, lexical search,
+deterministic token-projection vector recall, binary-vector recall, nuance rescue, graph-neighborhood
 expansion, PathEvidence, and fallback text evidence are not graph proof by
 themselves. Context-pack output should use `no_proof_path_found` when it
 returns bounded source-text fallback without a verified graph path.
@@ -124,6 +127,10 @@ Regression tests enforce these default size targets:
 - query agent JSON surfaces: 12 KiB
 - `context_pack_agent_json`: 16 KiB by default, or the requested
   `--max-output-bytes` value when supplied
+- `agent-use` profile envelopes (status/query/context-pack under the
+  `agent-use` namespace): 12 KiB by default. Compaction preserves the
+  schema-required fields and trims optional diagnostic sections first; the
+  `--explain` and audit modes raise this bound for richer output.
 
 Agent JSON must not include non-empty `scope.included_examples` or
 `scope.excluded_examples` arrays. Scope examples and full audit payloads remain
@@ -142,6 +149,19 @@ available and compact lifecycle/truncation metadata.
 metadata when available, source spans, exactness/confidence labels, and evidence
 roles.
 
+`query_unresolved_calls_agent_json` returns bounded unresolved-reference lane
+rows plus lifecycle, claimability, and pagination state. It may include a
+legacy `calls` array, but the stable MVP3 release contract is the
+`unresolved_references` block with `filters`, `items`, `rows`,
+`not_graph_proof: true`, and pagination. This surface is warning/query parity
+for references that could not be resolved; it is not graph relation proof.
+
+`validation_packet_agent_json` may include an `unresolved_references` block for
+new or resolved unresolved references in changed files. That block is capped,
+contains counts and top escalated entries where present, and always remains
+non-graph evidence unless a separate exact graph/source finding proves a
+blocking relation or lifecycle violation.
+
 `context_pack_agent_json` returns bounded symbols, snippets, and proof paths
 with evidence role, classification reason/source when relevant, and production
 proof eligibility.
@@ -151,3 +171,7 @@ shape for status-like agent surfaces. The existing `status` and `doctor --json`
 commands still expose their historical rich diagnostic objects unless a compact
 mode is added; clients should treat these schemas as the compact lifecycle
 contract, not as a claim that the rich diagnostics were removed.
+
+`languages --json` is release capability metadata for language frontend
+support. It is intentionally outside the agent JSON packet schema set unless a
+future release promotes it as a stable coding-agent packet surface.

@@ -49,6 +49,13 @@ publishing/interrupted agent-use DB states are non-claimable. Run the recovery
 command from `agent-use status --json` or `agent-use mcp-config --json` rather
 than copying a repo-local `.codegraph` DB into the profile.
 
+If `agent-use status` reports `permission_denied`, `profile_inaccessible`, or
+another path-access state, treat that as an access problem, not as proof that
+the repo is unindexed. `agent-use mcp-config --repo <repo> --json` should
+resolve the same profile identity as status when access is available; if the
+two disagree, keep both packets and rebuild/index only after the profile path
+and access state are clear.
+
 For a changed-file production-profile update, use the once-only delta command
 only after the profile DB is safe:
 
@@ -59,6 +66,106 @@ codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
 If that command reports `not_indexed`, stale, locked, or another unsafe state,
 run `agent-use index` first. The command intentionally does not auto-index and
 does not fall back to repo-local `.codegraph`.
+
+## Validate-Edit Reports A Blocker Or Fails
+
+For agent/editor hooks, use the canonical production-profile command:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --agent-json
+```
+
+Repeat `--changed` for multi-file edits. Add `--fail-on-blocking` only when a
+pre-commit or CI step should return a distinct blocker exit while preserving
+stdout JSON:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --changed src\helper.ts `
+  --fail-on-blocking `
+  --agent-json > validate-edit.json
+
+if ($LASTEXITCODE -eq 2) {
+  Write-Error "CodeGraph validate-edit hard interrupt; inspect validate-edit.json"
+}
+```
+
+Exit 0 means validation completed and emitted JSON, even when the packet status
+is `blocking_graph_error`. Exit 2 with `--fail-on-blocking` means validation
+completed, JSON was printed, and `hard_interrupt_available=true`. Other
+nonzero exits mean validation did not complete because of command, config,
+lifecycle, tool, runtime, or protocol failure. Agents should parse stdout JSON;
+do not infer proof from exit code alone.
+
+`blocking` or `blocking_graph_error` findings are only hard interrupts when
+they come from reverified graph/source proof or eligible integrity/lifecycle
+proof failures. `warning`, `unknown`, unsupported, degraded, and
+`diagnostic_only` findings do not interrupt by default. Text, candidate,
+vector, and source-navigation evidence cannot hard-interrupt by themselves.
+Unsafe DB state is a lifecycle blocker, not source-code proof.
+
+If validate-edit reports `not_indexed`, stale, foreign, schema-mismatched,
+locked, permission-denied, publishing, interrupted, or otherwise unsafe DB
+state, run:
+
+```powershell
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --agent-json
+```
+
+The command resolves the external production agent-use DB. It does not
+auto-index, does not fall back to repo-local `.codegraph`, and does not edit
+source files. An editor save hook may call the same command for saved files, but
+this is not a persistent editor daemon, editor plugin, background loop, or
+unsaved-buffer integration claim.
+
+## Windows Application Control Blocks A Fresh Build Or Test
+
+If `cargo build`, `cargo test`, or a clean-clone smoke fails before the Rust test
+body runs with:
+
+```text
+An Application Control policy has blocked this file. (os error 4551)
+```
+
+diagnose it first as a local Windows application-control/WDAC policy block on a
+freshly built unsigned executable. Check the blocked path in the error, the
+Cargo target directory, and local policy. Do not rewrite product code or mark a
+test assertion failed until the same test reaches its Rust body or fails with a
+normal Rust panic/assertion.
+
+## `query unresolved-calls` Is Empty
+
+Use filters, not a positional symbol:
+
+```powershell
+codegraph-mcp agent-use query unresolved-calls --repo <repo> `
+  --path src\file.ts `
+  --class repo_local_candidate `
+  --limit 20 --agent-json
+```
+
+Accepted classes are `repo_local_candidate`, `external_dependency`,
+`builtin_or_std`, `macro_or_codegen`, and `dynamic_or_computed`. The command
+does not accept `unresolved-calls <symbol>`; that shape returns a targeted
+parser error.
+
+An empty result can mean the file has no current unresolved-reference lane rows,
+the path/class filters exclude the rows, the DB is stale/missing, or the edit
+has already been fixed and revalidated. Run `agent-use validate-edit` on the
+changed file and then query the same `--path`. Unresolved-reference rows are
+warning/query parity evidence and stay `not_graph_proof`.
+
+## Relation Query Says `no_proof_path_found`
+
+`no_proof_path_found` means CodeGraph did not find a supported, bounded,
+source-spanned graph proof path for that query. It is not proof that the
+relationship is impossible. Try an exact symbol from `query symbols`, use an
+explicit `--entity-id` when the symbol is ambiguous, and inspect any fallback
+source snippets. Fallback snippets, text matches, source-navigation evidence,
+candidate rows, and stale sidecars remain non-proof.
 
 ## `serve-ui` Refuses A Host
 
@@ -149,6 +256,13 @@ Candidate-spool query-index access failures are reported as sidecar access or
 availability problems when SQLite cannot open the sidecar. That is different
 from a corrupt graph DB; graph proof still comes from the validated graph DB,
 and candidate-spool context remains candidate-only.
+
+If status, validate-edit, watch, or context-pack reports stale, corrupt, or
+inaccessible candidate/vector/PathEvidence/routing sidecars while the graph DB
+is claimable, the graph DB is not automatically corrupt. Rebuild sidecars with
+`agent-use index --repo <repo> --json` when candidate recall matters. Do not
+treat stale sidecars as fresh proof, and do not treat optional sidecar
+degradation as a source-code hard interrupt.
 
 Use `--enable-nuance-rescue-candidates` when the task depends on rare
 identifiers, short symbols, config keys, route literals, test names, or

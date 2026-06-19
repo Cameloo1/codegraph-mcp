@@ -43,9 +43,19 @@ results bounded:
 ```powershell
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
   --limit 5 --agent-json
+codegraph-mcp agent-use query callers <symbol> --repo <repo> `
+  --limit 5 --agent-json
+codegraph-mcp agent-use query callees <symbol> --repo <repo> `
+  --limit 5 --agent-json
+codegraph-mcp agent-use query path <source> <target> --repo <repo> `
+  --limit 3 --agent-json
 
 codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace the change impact" `
+  --agent-json
+
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
   --agent-json
 ```
 
@@ -71,9 +81,14 @@ codegraph-mcp agent-use index --repo <repo> --json
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json
 codegraph-mcp agent-use query text "text" --repo <repo> --limit 5 --agent-json
 codegraph-mcp agent-use query files service --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query callers handle_request --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query callees handle_request --repo <repo> --limit 5 --agent-json
+codegraph-mcp agent-use query path handle_request save_record --repo <repo> --limit 3 --agent-json
 codegraph-mcp agent-use context-pack --repo <repo> --task "Trace the change impact" --agent-json
 codegraph-mcp agent-use mcp-config --repo <repo> --json
 codegraph-mcp agent-use watch --repo <repo> --once --changed src\file.ts --json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --agent-json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed src\file.ts --changed src\helper.ts --fail-on-blocking --agent-json
 codegraph-mcp agent-use watch --repo <repo> --json
 ```
 
@@ -96,9 +111,70 @@ transient locks within bounds, and calls the same changed-file update contract
 rather than owning a second delta engine. It also refuses unsafe profile DB
 states instead of creating a new graph silently.
 
-`agent-use validate-edit` is deferred to MVP3. Do not treat the current RTDS
-surface as a compiler/test replacement or as a complete dangling-edge
-validation engine.
+`agent-use query` maps to the same query engine as plain `query` while resolving
+the external production profile DB first. It supports `symbols`, `text`,
+`files`, `callers`, `callees`, `path`, `chain`, `references`, `definitions`,
+and `unresolved-calls` where the corresponding plain query exists. Unsafe
+missing, stale, foreign, or schema-mismatched profile DB states fail closed.
+Relation and path agent JSON includes relation kind, exactness/provenance,
+source spans, evidence role, `proof_status`, and `proof_strength`;
+`graph_proof=true` is only for verified graph/source relation proof.
+
+The release binary prints a shared compact help block for the `agent-use`
+subcommands. That help block is the quick grammar surface; this reference
+records the parser behavior verified by the release command matrix, including
+`--explain` and `--audit-json` on validate-edit/context-pack.
+
+`agent-use query unresolved-calls` takes filters, not a positional symbol:
+
+```powershell
+codegraph-mcp agent-use query unresolved-calls --repo <repo> `
+  --path src\file.ts `
+  --class repo_local_candidate `
+  --limit 20 --agent-json
+```
+
+Accepted classes are `repo_local_candidate`, `external_dependency`,
+`builtin_or_std`, `macro_or_codegen`, and `dynamic_or_computed`. A positional
+argument such as `unresolved-calls missing_symbol` is rejected with a targeted
+message. By default, the lane reports unresolved `CALLS` rows that have no
+defining entity in the current graph and summarizes omitted CALLEE duplicates or
+definition-backed candidates. This lane is non-graph evidence; it supports
+warning/query parity for unresolved references and does not fabricate proof.
+
+`agent-use validate-edit` is the canonical agent/editor validation surface:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json
+```
+
+Repeat `--changed` for multi-file edits. Add `--fail-on-blocking` when a
+pre-commit or CI gate should return exit 2 for a hard interrupt while still
+printing stdout JSON. Use `--explain` or `--audit-json` only for richer
+diagnostic output. The top-level compatibility alias
+`codegraph-mcp validate-edit ...` is deferred; use the canonical `agent-use`
+command above.
+
+Compact validate-edit output preserves the current severity summary, must-fix
+flags, hard-interrupt availability, finding counts, claimability/lifecycle,
+recovery pointers, omitted-count, and expansion handles. Explain and audit modes
+restore the severity mapping and aggregation trace. The optional `editor_policy`
+metadata is advisory only; this CLI does not perform source edits, auto-fixes,
+or editor daemon/plugin integration.
+
+Exit 0 means validation completed and emitted JSON, even when the packet status
+is `blocking_graph_error`. With `--fail-on-blocking`, exit 2 means validation
+completed, stdout JSON was printed, and `hard_interrupt_available=true`. Other
+nonzero exits mean validation did not complete because of command, config,
+lifecycle, tool, runtime, or protocol failure. Agents should parse stdout JSON
+and must not infer proof from exit code alone.
+
+CodeGraph does not replace compilers, tests, type checkers, linters, runtime
+checks, or security review. Hard interrupts derive only from reverified
+graph/source proof or eligible integrity/lifecycle proof failures. Warning,
+unknown, unsupported, degraded, diagnostic-only, text, candidate, vector, and
+source-navigation evidence do not interrupt by default; unsafe DB state is a
+lifecycle blocker, not source-code proof.
 
 Staged candidate spool and runtime vector sidecar output is candidate context,
 not graph proof. Optional audit artifacts are diagnostic-only. Missing, stale,
@@ -176,14 +252,16 @@ Searches the local SQLite FTS/BM25 index across files, entities, and snippets.
 
 Finds repo-relative files by FTS and path proximity.
 
-`query references <symbol>`
+`query references <symbol> [--limit <n>] [--concise|--agent-json]`
 
 Lists graph edges connected to a resolved symbol or explicit unresolved
-same-name placeholders.
+same-name placeholders. Agent JSON labels graph references separately from text
+references.
 
-`query definitions <symbol>`
+`query definitions <symbol> [--limit <n>] [--concise|--agent-json]`
 
-Returns declaration/executable symbol hits.
+Returns declaration/executable symbol hits. Definitions are symbol-location
+evidence and do not claim behavior by themselves.
 
 `query callers [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] <symbol>`
 
@@ -199,18 +277,23 @@ older broad alias/global behavior.
 Returns `CALLS` edges emitted by the symbol. It uses the same exact,
 ambiguous, and fuzzy modes as `query callers`.
 
-`query chain <source> <target>`
+`query chain <source> <target> [--limit <n>] [--concise|--agent-json]`
 
 Runs cycle-safe call-chain recovery over `CALLS` edges, preserving exactness and
 confidence labels.
 
-`query unresolved-calls [--limit <n>] [--offset <n>] [--json] [--no-snippets|--include-snippets] [--db <path>]`
+`query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets|--include-snippets] [--db <path>]`
 
-Lists retained unresolved calls labeled as `static_heuristic`. The exact DB path
-used by this command is checked with the same lifecycle/passport preflight as
-other read paths.
+Lists the unresolved-reference lane with optional path and class filters. The
+command does not accept a positional symbol/query argument. Output includes the
+bounded `unresolved_references` block populated in proof-mode DBs, and may also
+include the legacy `calls` array for retained heuristic-sidecar CALLS rows. The
+lane is `not_graph_proof`: it is useful for warning/query parity, but it does
+not prove a typed relation exists or is broken. The exact DB path used by this
+command is checked with the same lifecycle/passport preflight as other read
+paths.
 
-`query path <source> <target>`
+`query path <source> <target> [--limit <n>] [--concise|--agent-json]`
 
 Runs exact graph path tracing with source spans and PathEvidence.
 
@@ -252,6 +335,17 @@ different repo, stale scope, incompatible storage mode, failed run, corrupt
 file, or unknown old format, the command refuses to answer unless an explicit
 diagnostic stale-read override is used.
 
+`agent-use validate-edit --repo <repo> --changed <path> [--changed <path>...] [--agent-json|--explain|--audit-json] [--fail-on-blocking]`
+
+Runs the production-profile changed-file update and validation packet wrapper
+for an explicit post-edit file set. The command resolves the external
+`production-agent-use` DB, refuses direct `--db`, does not auto-index, does not
+fall back to repo-local `.codegraph`, and does not edit source files. Default
+validation results print JSON and exit 0. `--fail-on-blocking` exits 2 only
+when `hard_interrupt_available=true`, while still printing the JSON packet.
+Runtime/config/lifecycle failures that prevent validation are separate nonzero
+failures.
+
 `context --task <task> [--budget <tokens>] [--mode <mode>] [--seed <symbol>]`
 
 Alias group for `context-pack`.
@@ -275,10 +369,11 @@ files, and minified JS. Persistent watch mode honors the configured DB path and
 runs lifecycle preflight before opening it.
 
 For production agent-use, prefer `agent-use watch --repo <repo> --once
---changed <path> --json` for deterministic updates, or `agent-use watch --repo
-<repo> --json` for persistent scheduling over the same update primitive. That
-wrapper owns the external production profile DB resolver and will not mutate
-repo-local `.codegraph`.
+--changed <path> --json` for deterministic updates. `agent-use watch --repo
+<repo> --json` is the persistent scheduling surface where used, and schedules
+the same once-delta update primitive rather than owning separate validation
+semantics. That wrapper owns the external production profile DB resolver and
+will not mutate repo-local `.codegraph`.
 
 `serve-mcp`
 
@@ -383,4 +478,5 @@ to an unsafe mode.
 
 See `docs/install.md` for GitHub release archive names, PowerShell and shell
 installer templates, cargo/cargo-binstall/Homebrew paths, and release metadata
-dry-run commands.
+dry-run commands. The current checkout is `publish = false`; do not document
+`cargo install codegraph-mcp` as a verified crates.io install path.

@@ -15,6 +15,6 @@ pub use sqlite::{
     classify_sqlite_access_problem, inspect_db_preflight, reset_sqlite_profile,
     take_sqlite_profile, DbPassport, DbPreflightReport, EntityFeatureRow, ExpectedDbPassport,
     RoutingPacketHandleRow, SqliteAccessProblem, SqliteGraphStore, SqliteProfileSpan,
-    StorageAccountingRow, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    StorageAccountingRow, UnresolvedReferenceRecord, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 pub use traits::{GraphStore, RetrievalTraceRecord, TextSearchHit, TextSearchKind};

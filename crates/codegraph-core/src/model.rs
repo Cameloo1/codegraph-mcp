@@ -183,6 +183,24 @@ pub fn normalize_edge_classification(edge: &mut Edge) {
     edge.edge_class = infer_edge_class(edge);
 }
 
+/// Only definition-shaped entities resolve a missing-symbol lookup.
+/// Import/export bindings and usage sites (call sites, locals) share the
+/// target's name but do not define it — counting them would silently clear
+/// real blockers (MVP3.9.5.2) or suppress real escalations (MVP3.9.5.4).
+pub fn entity_kind_defines_symbol(kind: EntityKind) -> bool {
+    !matches!(
+        kind,
+        EntityKind::Import
+            | EntityKind::Export
+            | EntityKind::CallSite
+            | EntityKind::ReturnSite
+            | EntityKind::Expression
+            | EntityKind::Assignment
+            | EntityKind::Parameter
+            | EntityKind::LocalVariable
+    )
+}
+
 pub fn classify_entity_source_role(entity: &Entity) -> EvidenceRoleDecision {
     if let Some(role) = metadata_evidence_role(&entity.metadata) {
         return EvidenceRoleDecision::new(

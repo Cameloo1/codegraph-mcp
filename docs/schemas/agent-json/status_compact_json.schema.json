@@ -71,6 +71,48 @@
     "timings": {
       "$ref": "common.schema.json#/$defs/timings"
     },
+    "recovery": {
+      "$ref": "common.schema.json#/$defs/recovery_pointer"
+    },
+    "recovery_commands": {
+      "$ref": "common.schema.json#/$defs/recovery_commands"
+    },
+    "dirty_evidence_summary": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_summary"
+    },
+    "stale_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "unavailable_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "claimability_effect": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_claimability_effect"
+    },
+    "candidate_layer_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "vector_layer_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "path_evidence_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "source_navigation_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "routing_handle_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "sidecar_statuses": {
+      "$ref": "common.schema.json#/$defs/sidecar_statuses"
+    },
+    "stale_non_proof_reasons": {
+      "$ref": "common.schema.json#/$defs/stale_non_proof_reasons"
+    },
+    "agent_json_budget": {
+      "$ref": "common.schema.json#/$defs/agent_json_budget"
+    },
     "telemetry": {
       "$ref": "common.schema.json#/$defs/telemetry_truth"
     }

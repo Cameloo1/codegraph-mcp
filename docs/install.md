@@ -20,6 +20,11 @@ local install path.
 The npm wrapper path is intentionally not included because it would add
 packaging surface without improving the Rust-first core.
 
+This workspace currently has `publish = false` and version `0.0.0`; do not
+treat `cargo install codegraph-mcp` as a verified crates.io install path. If a
+registry package named `codegraph-cli` exists, verify that it matches the
+intended release before using it as a distribution claim.
+
 ## Recommended Agent Setup
 
 For routine agent use, build or install a release binary and keep the agent DB

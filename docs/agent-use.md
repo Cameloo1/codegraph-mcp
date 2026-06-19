@@ -21,6 +21,16 @@ codegraph-mcp agent-use watch --repo <repo> `
   --once --changed src\file.ts `
   --json
 
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --agent-json
+
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --changed src\helper.ts `
+  --fail-on-blocking `
+  --agent-json
+
 codegraph-mcp agent-use watch --repo <repo> --json
 
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
@@ -31,6 +41,20 @@ codegraph-mcp agent-use query text "token or phrase" --repo <repo> `
 
 codegraph-mcp agent-use query files service --repo <repo> `
   --limit 5 --agent-json
+
+codegraph-mcp agent-use query callers handle_request --repo <repo> `
+  --limit 5 --agent-json
+
+codegraph-mcp agent-use query callees handle_request --repo <repo> `
+  --limit 5 --agent-json
+
+codegraph-mcp agent-use query path handle_request save_record --repo <repo> `
+  --limit 3 --agent-json
+
+codegraph-mcp agent-use query unresolved-calls --repo <repo> `
+  --path src\file.ts `
+  --class repo_local_candidate `
+  --limit 20 --agent-json
 
 codegraph-mcp agent-use context-pack --repo <repo> `
   --task "Trace the change impact" `
@@ -52,16 +76,101 @@ context-pack` use that same external DB and refuse unsafe DB states instead of
 falling back to `.codegraph`. `agent-use mcp-config` emits config JSON only by
 default; it does not write a config file.
 
-Real-Time Delta Sync now has two production-profile surfaces. `agent-use watch
---once --changed <path>` is the deterministic changed-file primitive. It
-updates the same external production profile DB only when an existing graph DB
-is safe to write. It rejects `--db`, does not auto-index a missing/stale DB, and
-does not fall back to repo-local `.codegraph`. Persistent `agent-use watch
---repo <repo> --json` is scheduling over that same once primitive: it debounces
-editor save bursts, coalesces changed paths, serializes writes, retries
-transient locks within bounds, exposes queue depth and last-update state, and
-refuses missing/stale/foreign/schema-mismatched DBs unless the profile is
-explicitly indexed first.
+`agent-use query` supports the compact symbol, text, file, caller, callee,
+path, chain, reference, definition, and unresolved-call read surfaces when the
+underlying plain query supports them. Relation/navigation output carries
+relation kind, exactness, source spans, evidence role, `proof_status`, and
+`proof_strength`. `graph_proof=true` is reserved for verified graph/source
+relations or proof paths; definitions are symbol-location evidence, and
+references distinguish graph references from text references.
+
+The current release help for `agent-use` subcommands intentionally prints one
+shared usage block instead of separate long help pages for each subcommand. Use
+the command shapes in that shared help block and in this guide as the release
+contract. Richer `--explain` and `--audit-json` modes are verified by the
+release command matrix for `validate-edit` and `context-pack` even though the
+shared help block keeps the quick usage compact.
+
+## Agent Task Lifecycle
+
+Use CodeGraph at decision points, not as one giant repo dump. Normal developer
+tools stay first-class: search with `rg`, read files, edit code, and run the
+project's compiler/tests as usual. CodeGraph adds lifecycle-checked repo context
+and post-edit validation beside those tools.
+
+Recommended task loop:
+
+1. Start with `agent-use status --repo <repo> --json`.
+   - If the graph DB is missing, stale, foreign, schema-mismatched, unsafe, or
+     non-claimable, run `agent-use index --repo <repo> --json` before relying
+     on graph facts.
+   - If only candidate/vector/source-navigation sidecars are stale, graph proof
+     can still be claimable, but candidate recall is degraded until reindex.
+2. For non-trivial tasks, ask for a bounded planning packet with
+   `agent-use context-pack --task "<task>" --agent-json`.
+   - Use this to identify likely files, symbols, call paths, proof labels,
+     unknowns, and follow-up inspection targets.
+   - Do not treat candidate, vector, text, or source-navigation hints as graph
+     proof unless the packet reports graph/source verification.
+3. During investigation, use focused read packets instead of broad dumps:
+   - `agent-use query symbols <symbol> --agent-json`
+   - `agent-use query files <path-or-text> --agent-json`
+   - `agent-use query text "<phrase>" --agent-json`
+   - `agent-use query callers|callees|path ... --agent-json`
+   - `agent-use query unresolved-calls --path <file> --class <class>
+     --agent-json`
+4. After each meaningful edit batch, run
+   `agent-use validate-edit --changed <path> --agent-json`.
+   - Parse the flags first: `status`, `final_severity`,
+     `must_fix_before_continuing`, `hard_interrupt_available`,
+     `can_continue_with_caution`, `should_run_tests`,
+     `should_rerun_validation`, `should_recover_tool_state`, warning/blocking
+     counts, and top findings.
+   - Use `--explain` or `--audit-json` only when compact output is ambiguous or
+     a finding needs deeper evidence.
+5. Before answering "done", rerun validate-edit for the changed files and run
+   the normal project tests/checks. CodeGraph validation does not replace those
+   project gates.
+
+Approximate packet cadence:
+
+- Tiny one-file edits: status, maybe one focused query, then validate-edit.
+- Normal bug fixes: status, one planning/context packet, several focused query
+  packets, validate-edit, then final validation.
+- Complex refactors: status, planning packet, repeated focused reads, repeated
+  validate-edit after edit batches, explain/audit only for blockers or unclear
+  warnings.
+
+Do not keep every packet in the model prompt. Collapse older packets into short
+notes and keep expansion handles or report paths for anything that must be
+reopened. The default agent loop should be flag-first; detailed lifecycle,
+proof-ladder, and DB diagnostics are supporting evidence, not the first thing an
+agent should reason over.
+
+Use CodeGraph when the task involves unfamiliar code, cross-file behavior,
+renames/deletions, call paths, stale context risk, architecture planning, or
+post-edit hallucination checks. Skip it for trivial text-only edits where normal
+file reads are enough.
+
+`agent-use query unresolved-calls` does not accept a positional symbol or text
+query. Filter it with `--path` and/or `--class`. Accepted classes are
+`repo_local_candidate`, `external_dependency`, `builtin_or_std`,
+`macro_or_codegen`, and `dynamic_or_computed`. The output reads the
+unresolved-reference lane, is queryable immediately after validate-edit/index
+updates, and remains explicitly `not_graph_proof`; unresolved-reference
+findings warn by default and can only block through an explicit policy mode
+where supported.
+
+Real-Time Delta Sync has a release-tested production-profile primitive:
+`agent-use watch --once --changed <path>`. It updates the same external
+production profile DB only when an existing graph DB is safe to write. It
+rejects `--db`, does not auto-index a missing/stale DB, and does not fall back
+to repo-local `.codegraph`. The persistent `agent-use watch --repo <repo>
+--json` surface is scheduling over that same once primitive where used: it
+debounces editor save bursts, coalesces changed paths, serializes writes,
+retries transient locks within bounds, exposes queue depth and last-update
+state, and refuses missing/stale/foreign/schema-mismatched DBs unless the
+profile is explicitly indexed first.
 
 RTDS output includes `watch_db`, `delta_sync_phase`, `delta_sync_state`,
 publish-safety labels, queue/update summaries where applicable, and staged
@@ -70,14 +179,114 @@ audit layers. Candidate/vector sidecars remain candidate-only and may be
 reported stale after a changed-file graph update; rebuild with `agent-use
 index` when those sidecars need to be refreshed.
 
-`agent-use validate-edit` is intentionally deferred to MVP3 expansion. Current
-RTDS freshness packets can expose changed/removed symbols and exact graph
-freshness, but they do not claim to replace compilers, tests, or a complete
-dangling-edge validator.
+## Validate-Edit After A Patch
+
+The canonical agent/editor validation command is:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed <path> `
+  --agent-json
+```
+
+Pass more than one changed file by repeating `--changed`:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --changed src\helper.ts `
+  --agent-json
+```
+
+Use `--fail-on-blocking` when a hook or CI step should stop on a real hard
+interrupt while still capturing the JSON packet:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --fail-on-blocking `
+  --agent-json
+```
+
+Use `--explain` or `--audit-json` only when the caller needs richer diagnostic
+detail:
+
+```powershell
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --explain
+
+codegraph-mcp agent-use validate-edit --repo <repo> `
+  --changed src\file.ts `
+  --audit-json
+```
+
+Compact output preserves the safety-critical severity surface:
+`status`, `final_severity`, `severity_summary`, `must_fix_before_continuing`,
+`hard_interrupt_available`, changed-file normalization, claimability,
+lifecycle, stale/unsafe blockers, finding counts, top blocking source span and
+recommended fix when present, recovery command pointers, `omitted_count`, and
+`expansion_handles`. `--explain` and `--audit-json` add the per-finding severity
+mapping, aggregation trace, precedence decision, lifecycle/claimability detail,
+proof-ladder summary, and non-interrupt reasons. The `editor_policy` object is
+advisory metadata for future editor callers; `safe_to_autofix`,
+`source_edits_performed`, and `daemon_integration_available` are false.
+
+The top-level compatibility alias `codegraph-mcp validate-edit ...` is still
+deferred. Use the canonical `codegraph-mcp agent-use validate-edit --repo
+<repo> --changed <path> --agent-json` command.
+
+Exit-code policy:
+
+- Exit 0 means validation ran and emitted stdout JSON, even when the packet
+  status is `blocking_graph_error`.
+- With `--fail-on-blocking`, exit 2 means validation ran, JSON was printed,
+  and `hard_interrupt_available=true`.
+- Other nonzero exits mean validation did not complete because of command,
+  config, lifecycle, tool, runtime, or protocol failure.
+- Agents should parse stdout JSON and must not infer proof from exit code
+  alone.
+
+Validation status meanings:
+
+- `blocking` / `blocking_graph_error`: reverified graph/source proof, or an
+  eligible integrity/lifecycle proof failure, says the agent must stop and fix
+  before continuing.
+- `warning`: useful risk signal, but not a default hard interrupt.
+- `unknown`: unsupported, ambiguous, degraded, or incomplete evidence; do not
+  treat it as proof.
+- `diagnostic_only`: operator or lifecycle detail; useful for recovery, not
+  source-code proof.
+
+Recipes:
+
+- AI coding agent after-patch hook: collect the edited repo-relative paths,
+  run the canonical command with repeated `--changed`, parse stdout JSON, stop
+  only when `hard_interrupt_available=true` or local policy says a warning is
+  fatal, then run the project compiler/tests/typechecker as normal.
+- Editor save hook: call the same command for saved repo-relative files. This
+  is an explicit hook recipe, not a persistent editor daemon, editor plugin,
+  background loop, or unsaved-buffer integration claim.
+- Optional pre-commit or CI gate: run with `--fail-on-blocking`, treat exit 2
+  as a validation blocker, capture stdout JSON as the audit artifact, and
+  treat other nonzero exits as infrastructure/config failures.
+- MCP client: call `codegraph.validate_edit` with `repo` and
+  `changed_files`; handle validation blockers as structured tool results, not
+  MCP protocol errors.
 
 The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
 coding-agent context, not public metric verdicts by themselves.
+
+For local diagnostic measurement of the same edit-time guardrail loop, use
+[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md).
+It measures bad edits caught, clean edits passed, repairs cleared, proof/trust
+ledger discipline, stale-evidence safety, packet usability, and same-agent A/B
+scaffold invariants. The current verified local gate is
+`reports/final/agent_guard_release_e2e_three_run_gate.json`; dashboard evidence
+comes from that gate's per-run `dashboard.html` artifacts. It does not create a
+public benchmark claim, a CodeGraph-over-`rg` claim, a real-agent patch-quality
+claim, or an MVP4 readiness claim.
 
 Optional candidate recall for harder tasks:
 
@@ -196,11 +405,15 @@ Context and proof evidence is labeled with one of:
 - `production`
 - `test`
 - `mock`
+- `stub`
+- `generated`
 - `mixed`
+- `text_evidence`
 - `unknown`
 
-Default production context excludes test, mock, mixed, and unknown evidence
-unless a production-only subpath can be split safely. `test-impact` mode
+Default production context excludes test, mock, stub, generated, mixed,
+text-evidence, and unknown evidence unless a production-only subpath can be
+split safely. `test-impact` mode
 intentionally includes test/mock evidence and labels it clearly.
 
 Inline Rust tests in `src/lib.rs`, including `#[cfg(test)] mod tests` and
@@ -211,6 +424,15 @@ output excludes them by default.
 
 - Absent proof-mode relations have no precision claim.
 - Candidate, vector, text, and source-navigation evidence are not graph proof.
+- CodeGraph does not replace compilers, tests, type checkers, linters, runtime
+  checks, or security review.
+- Hard interrupts derive only from reverified graph/source proof or eligible
+  integrity/lifecycle proof failures. Text, candidate, vector, and
+  source-navigation evidence cannot hard-interrupt by themselves.
+- Unknown, unsupported, degraded, and diagnostic-only findings do not interrupt
+  by default. Unsafe DB state is a lifecycle blocker, not source-code proof.
+- MVP4 micro-flow extraction is future-only and is not part of the MVP3
+  validate-edit contract.
 - Local diagnostic metrics do not become public product claims unless they are
   intentionally promoted and claim-reviewed.
 

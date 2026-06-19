@@ -17,7 +17,7 @@ indexes.
 
 For CLI-driven agent loops, see [agent-use.md](agent-use.md). The CLI
 `--agent-json` schemas are the stable compact machine-readable contract for
-index, query, callers/callees, and context-pack output.
+index, query, relation navigation, and context-pack output.
 
 Suggested generic Codex config:
 
@@ -55,9 +55,14 @@ cwd = "<repo>"
 
 ## Tools
 
+- `codegraph.search`
+- `codegraph.analyze`
+- `codegraph.plan_context`
+- `codegraph.explain_missing`
 - `codegraph.status`
 - `codegraph.index_repo`
 - `codegraph.update_changed_files`
+- `codegraph.validate_edit`
 - `codegraph.search_symbols`
 - `codegraph.search_text`
 - `codegraph.search_semantic`
@@ -79,9 +84,12 @@ cwd = "<repo>"
 
 Every listed tool advertises an `inputSchema`, an `outputSchema`, and safety
 annotations. The annotations mark tools as local-only and
-`destructiveHint = false`; index/update tools write only the configured local
-SQLite index and never edit source files. In the production agent-use profile,
-that configured index is the external profile DB, not repo-local `.codegraph`.
+`destructiveHint = false`. All tools except `codegraph.index_repo`,
+`codegraph.update_changed_files`, and `codegraph.validate_edit` advertise
+`readOnlyHint = true`; those three index/update/validation tools advertise
+`readOnlyHint = false` because they write only the configured local SQLite index
+and never edit source files. In the production agent-use profile, that
+configured index is the external profile DB, not repo-local `.codegraph`.
 
 ## Resources
 
@@ -114,9 +122,77 @@ symbol/entity ids, relation filters, and bounded traversal limits depending on
 the tool schema. Search/path tools also accept `limit`, `offset`, and `mode`
 where applicable. Invalid input returns a structured JSON-RPC error.
 
+`codegraph.validate_edit` requires `repo` and a non-empty `changed_files` array.
+It accepts an explicit `db`/`db_path`, or a server config already generated for
+the production `agent-use` profile. It does not fall back to repo-local
+`.codegraph`, does not auto-index on startup, and does not edit source files.
+When validation runs, blocking graph findings are returned as structured MCP
+tool results with `isError = false`, `hard_interrupt_available`, and
+`must_fix_before_continuing`; tool errors are reserved for invalid input,
+runtime, protocol, or internal failures.
+
+Minimal MCP client call:
+
+```json
+{
+  "name": "codegraph.validate_edit",
+  "arguments": {
+    "repo": "<repo>",
+    "changed_files": ["src/file.ts"],
+    "mode": "agent-json",
+    "fail_on_blocking": true
+  }
+}
+```
+
+The advertised input schema requires `repo` and `changed_files`. Optional fields
+include `db`/`db_path`, `profile` with `production-agent-use`, `mode` as
+`agent-json`, `explain`, or `audit-json`, `fail_on_blocking`, `task_id`,
+`edit_intent`, `expected_touched_files`, and `max_output_bytes`. MCP
+`fail_on_blocking` is recorded in the packet; blockers still return a normal
+structured tool result rather than an MCP tool error.
+
+The output shape includes `validation_packet`, `hard_interrupt_available`,
+`hard_interrupt`, `must_fix_before_continuing`, `changed_files`,
+`rejected_paths`, `no_op_paths`, `warnings`, `unknowns`, `diagnostics`,
+`claimability`, `lifecycle`, `recovery_commands`, `final_severity`,
+finding-count fields, the `unresolved_references` warning lane when present,
+severity trace handles, `editor_policy`,
+`omitted_count`, `expansion_handles`, and `timings`. `blocking_graph_error`
+means the validation completed and found a stop condition. `warning`, `unknown`,
+and `diagnostic_only` values do not interrupt by default. Compact mode preserves
+safety-critical severity fields; `explain` and `audit-json` include severity
+mapping and aggregation trace details.
+
+Unresolved-reference findings are surfaced as non-graph evidence. They may warn
+or, under explicit policy, become blocking validation findings, but they are not
+typed relation proof by themselves. The corresponding CLI query surface is
+`agent-use query unresolved-calls --path <path> --class <class> --agent-json`;
+MCP clients should treat the same data as warning/query parity evidence rather
+than relation proof.
+
+`codegraph.validate_edit` may update the configured SQLite graph DB and bounded
+profile sidecars. It must not mutate source files, must not start a background
+editor daemon, must not auto-index a missing profile at startup, and must not
+fall back to normal repo-local `.codegraph`. `editor_policy` is advisory only:
+`safe_to_autofix=false`, `source_edits_performed=false`, and
+`daemon_integration_available=false`. If lifecycle preflight reports an unsafe
+DB state, run the `recovery_commands` in the response or use:
+
+```powershell
+codegraph-mcp agent-use status --repo <repo> --json
+codegraph-mcp agent-use index --repo <repo> --json
+codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> --agent-json
+```
+
 Caller/callee tools preserve exact traversal when an `entity_id` is supplied.
 For symbol queries, an unambiguous symbol resolves to exact entity results;
 ambiguous symbols return candidate ids instead of silently choosing one match.
+CLI `agent-use query callers`, `callees`, `path`, and `chain` use the same
+relation/path semantics through the external production profile DB. Shared
+fields keep the same proof boundary: relation kind, exactness, source spans,
+evidence role, `proof_status`, and `proof_strength` describe graph evidence,
+while candidate/text/source-navigation evidence is not graph proof.
 
 `codegraph.context_pack` accepts compact agent-loop controls:
 
@@ -124,7 +200,7 @@ ambiguous symbols return candidate ids instead of silently choosing one match.
 - `mode`: production, test-impact, debug, or impact context where supported.
 - `limit`: bounds returned compact evidence.
 - `enable_vector_candidates` with `vector_index`: opt-in vector candidate
-  recall from a matching local vector index.
+  recall from a matching local deterministic token-projection vector index.
 - `enable_nuance_rescue_candidates`: opt-in rare-token/identifier/path/config
   rescue candidates.
 
@@ -153,17 +229,20 @@ candidate spool, vector, PathEvidence, routing, or text-evidence layers are
 reported separately from graph freshness.
 
 Context/proof responses label evidence as `production`, `test`, `mock`,
-`mixed`, or `unknown` when that evidence classification is available.
+`stub`, `generated`, `mixed`, `text_evidence`, or `unknown` when that evidence
+classification is available.
 Production context excludes test/mock/mixed/unknown evidence by default; test
 impact requests include test evidence intentionally. Inline Rust `#[cfg(test)]`
 modules and `#[test]` functions are test evidence even when they are inside a
 normal source file.
 
-Candidate lanes such as exact seeds, text evidence, lexical search, vector
-semantic recall, binary-vector recall, nuance rescue, graph neighbors, and
-fallback evidence are not graph proof by themselves. They become graph proof
-only after graph/source verification returns a proof path. If no proof path is
-available, context-pack may return source-text fallback evidence with
+Candidate lanes such as exact seeds, text evidence, lexical search,
+deterministic token-projection vector recall, binary-vector recall, nuance
+rescue, graph neighbors, and fallback evidence are not graph proof by
+themselves. The deterministic token-projection lane is local candidate recall,
+not a learned semantic-embedding quality claim. Candidate lanes become graph
+proof only after graph/source verification returns a proof path. If no proof
+path is available, context-pack may return source-text fallback evidence with
 `no_proof_path_found`.
 
 Candidate-only context may be returned only when the candidate layer is current
@@ -183,6 +262,14 @@ or unknown DB state is not silently trusted.
 - `codegraph.index_repo` can build or update the configured DB.
 - `codegraph.update_changed_files` requires a reusable DB and refuses unsafe
   state instead of writing over unknown data.
+- `codegraph.validate_edit` runs the changed-file update plus validation packet
+  preflight against the explicit DB or external production profile DB. Unsafe DB
+  state or outside-repo changed paths are reported as structured validation
+  preflight responses; missing `changed_files` input remains a tool error.
+- Blocking validation, warning validation, unknown validation, stale sidecar
+  diagnostics, and unsafe lifecycle validation packets are structured tool
+  results. Tool errors remain reserved for malformed input, protocol/runtime
+  failures, configuration failures, or internal failures that prevent a packet.
 - The generated agent-use MCP config points at the external production profile
   DB. MCP startup does not surprise-index a missing profile; use
   `agent-use index` first, then `agent-use watch --once --changed <path>` for
@@ -197,9 +284,12 @@ or unknown DB state is not silently trusted.
 
 ## Safety
 
-`codegraph.index_repo` and `codegraph.update_changed_files` update only the
-configured local SQLite index. The default project-local path is
-`.codegraph/codegraph.sqlite`; the production agent-use profile deliberately
-uses a DB outside the source tree. Plain CLI `status --json` remains local
-`.codegraph` status, while `agent-use status` is read-only for the external
-profile. These tools do not edit source files or run project tests.
+`codegraph.index_repo`, `codegraph.update_changed_files`, and
+`codegraph.validate_edit` update only the configured local SQLite index.
+`codegraph.validate_edit` refuses implicit repo-local `.codegraph` fallback; it
+requires an explicit DB or configured production profile DB. The default
+project-local path is `.codegraph/codegraph.sqlite`; the production agent-use
+profile deliberately uses a DB outside the source tree. Plain CLI `status
+--json` remains local `.codegraph` status, while `agent-use status` is
+read-only for the external profile. These tools do not edit source files or run
+project tests.

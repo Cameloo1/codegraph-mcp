@@ -48,8 +48,17 @@ jobs:
       - name: cargo build --workspace
         run: cargo build --workspace
 
-      - name: cargo test --workspace
-        run: cargo test --workspace
+      - name: cargo test workspace support packages
+        timeout-minutes: 12
+        run: cargo test -p codegraph-core -p codegraph-trace -p codegraph-store -p codegraph-parser -p codegraph-vector -p codegraph-query -p codegraph-mcp-server -p codegraph-bench
+
+      - name: cargo test codegraph-index
+        timeout-minutes: 12
+        run: cargo test -p codegraph-index
+
+      - name: cargo test codegraph-cli
+        timeout-minutes: 20
+        run: cargo test -p codegraph-cli
 
       - name: codegraph-mcp --help
         run: cargo run --bin codegraph-mcp -- --help

@@ -134,7 +134,7 @@ mixed evidence stays role-labeled.
 
 Candidate lanes are explicit: exact symbol/file/path seeds, Stage 0
 lexical/text-evidence matches, graph-neighborhood and PathEvidence candidates,
-vector semantic candidates when explicitly enabled, binary/1-bit candidates with
+deterministic token-projection vector candidates when explicitly enabled, binary/1-bit candidates with
 deterministic overfetch/rerank, and nuance-rescue candidates for rare
 identifiers, config keys, route literals, test names, negation terms, and
 no-extension support scripts. None is graph proof by itself.
@@ -213,6 +213,22 @@ Indexing uses DB passport preflight. Valid matching DBs can reuse
 incrementally; stale, mismatched, corrupt, or unknown default DBs are rebuilt
 safely instead of silently reused. Explicit named DBs are more conservative and
 must not be silently trusted when lifecycle checks fail.
+
+### Per-File Extraction Budgets
+
+Very large files can produce unbounded dataflow detail. Per-file extraction
+budgets keep the index bounded, but they are **declaration-first**: findable
+declaration entities (functions, methods, types, imports, routes, tests, config
+keys, ...) and proof/structural edges (`CALLS`, `CALLEE`, `CONTAINS`,
+`DEFINES`, `DEFINED_IN`, `DECLARES`, `IMPORTS`, `EXPORTS`, `RETURNS`) are never
+dropped by a count budget. Only high-volume dataflow noise (locals, parameters,
+call sites, return sites, and `READS`/`WRITES`/`FLOWS_TO`/argument edges) is
+trimmed, against a dynamic cap that scales with file size so normal source files
+are never truncated while pathological/generated files stay bounded. File-level
+test/fixture classification for budgeting is path-based; inline tests in an
+otherwise-production file (for example a Rust `#[cfg(test)] mod tests`) do not
+demote the whole file to test-only extraction. Omissions are reported, not
+silent.
 
 ## Stages
 
@@ -448,8 +464,10 @@ Real-Time Delta Sync is complete for the local production-profile gate:
 one-shot changed-file updates, add/delete/rename lifecycle, dirty evidence
 invalidation, bounded dependency closure, publish/read safety, local diagnostic
 performance, persistent watcher scheduling, and MCP/agent freshness surfaces are
-verified. The validate-edit bridge remains deferred to MVP3 rather than being
-claimed as a compiler/test or complete dangling-edge validator.
+verified. The validate-edit bridge is an explicit MVP3 agent-use/MCP wrapper
+over changed-file update plus validation packet preflight; it is not claimed as
+a compiler/test replacement, editor daemon, plugin, or complete runtime
+validator.
 
 Vector, binary, and nuance-rescue lanes are opt-in or bounded candidate recall
 surfaces. They can route attention, but graph/source verification still decides

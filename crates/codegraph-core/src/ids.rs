@@ -71,6 +71,40 @@ pub fn stable_edge_id(
     )
 }
 
+pub fn stable_fact_identity_key<'a>(
+    fact_kind: impl AsRef<str>,
+    parts: impl IntoIterator<Item = &'a str>,
+) -> String {
+    stable_prefixed_digest("fact", fact_kind.as_ref(), parts)
+}
+
+pub fn stable_fact_hash<'a>(
+    fact_kind: impl AsRef<str>,
+    parts: impl IntoIterator<Item = &'a str>,
+) -> String {
+    stable_prefixed_digest("fact-hash", fact_kind.as_ref(), parts)
+}
+
+fn stable_prefixed_digest<'a>(
+    prefix: &str,
+    fact_kind: &str,
+    parts: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let mut bytes = Vec::new();
+    for part in [prefix, fact_kind.trim()] {
+        bytes.extend_from_slice(part.as_bytes());
+        bytes.push(0);
+    }
+    for part in parts {
+        bytes.extend_from_slice(part.as_bytes());
+        bytes.push(0);
+    }
+
+    let high = fnv64_with_seed(&bytes, 0xcbf29ce484222325);
+    let low = fnv64_with_seed(&bytes, 0x9e3779b185ebca87);
+    format!("{prefix}://{high:016x}{low:016x}")
+}
+
 fn stable_digest_128<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     let mut bytes = Vec::new();
     for part in parts {

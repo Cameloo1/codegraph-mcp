@@ -1466,6 +1466,10 @@ struct GenericLanguageExtractor<'a> {
     ambiguous_symbols_by_scope: BTreeMap<String, BTreeSet<String>>,
     parameters_by_scope: BTreeMap<String, Vec<String>>,
     return_sites_by_scope: BTreeMap<String, Vec<String>>,
+    rust_impl_type_by_scope: BTreeMap<String, String>,
+    rust_methods_by_type: BTreeMap<String, BTreeMap<String, SymbolRef>>,
+    rust_ambiguous_methods_by_type: BTreeMap<String, BTreeSet<String>>,
+    rust_local_types_by_scope: BTreeMap<String, BTreeMap<String, String>>,
     test_file_id: Option<String>,
     test_case_by_scope: BTreeMap<String, String>,
 }
@@ -1487,6 +1491,10 @@ impl<'a> GenericLanguageExtractor<'a> {
             ambiguous_symbols_by_scope: BTreeMap::new(),
             parameters_by_scope: BTreeMap::new(),
             return_sites_by_scope: BTreeMap::new(),
+            rust_impl_type_by_scope: BTreeMap::new(),
+            rust_methods_by_type: BTreeMap::new(),
+            rust_ambiguous_methods_by_type: BTreeMap::new(),
+            rust_local_types_by_scope: BTreeMap::new(),
             test_file_id: None,
             test_case_by_scope: BTreeMap::new(),
         }
@@ -1546,10 +1554,63 @@ impl<'a> GenericLanguageExtractor<'a> {
     }
 
     fn visit_children(&mut self, node: Node<'_>, scope_id: &str, scope_name: &str) {
+        self.predeclare_visible_child_symbols(node, scope_id, scope_name);
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.visit_node(child, scope_id, scope_name);
         }
+    }
+
+    fn predeclare_visible_child_symbols(
+        &mut self,
+        node: Node<'_>,
+        scope_id: &str,
+        scope_name: &str,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.is_error() || child.is_missing() {
+                continue;
+            }
+            if let Some((kind, name, qualified_name)) =
+                self.scoped_declaration_identity(child, scope_id, scope_name)
+            {
+                self.push_scoped_entity(scope_id, kind, &name, &qualified_name, child);
+                continue;
+            }
+            self.predeclare_visible_child_symbols(child, scope_id, scope_name);
+        }
+    }
+
+    fn scoped_declaration_identity(
+        &self,
+        node: Node<'_>,
+        scope_id: &str,
+        scope_name: &str,
+    ) -> Option<(EntityKind, String, String)> {
+        let mut kind = generic_decl_kind(self.parsed.language, node)?;
+        let name = generic_decl_name(node, self.source)?;
+        if self.parsed.language == SourceLanguage::Rust
+            && kind == EntityKind::Function
+            && rust_function_decl_within_impl_item(node)
+        {
+            kind = EntityKind::Method;
+        } else if kind == EntityKind::Function
+            && self.entity_kinds.get(scope_id).is_some_and(|scope_kind| {
+                matches!(
+                    scope_kind,
+                    EntityKind::Class | EntityKind::Interface | EntityKind::Trait
+                )
+            })
+        {
+            kind = if matches!(name.as_str(), "__init__" | "constructor" | "new") {
+                EntityKind::Constructor
+            } else {
+                EntityKind::Method
+            };
+        }
+        let qualified_name = qualify(scope_name, &name);
+        Some((kind, name, qualified_name))
     }
 
     fn recover_syntax_error_declarations(&mut self, scope_id: &str, scope_name: &str) {
@@ -1642,44 +1703,29 @@ impl<'a> GenericLanguageExtractor<'a> {
         }
         let node_untrusted = node_has_error_or_missing_descendant(node);
 
-        if let Some(mut kind) = generic_decl_kind(self.parsed.language, node) {
-            if let Some(name) = generic_decl_name(node, self.source) {
-                if kind == EntityKind::Function
-                    && self.entity_kinds.get(scope_id).is_some_and(|scope_kind| {
-                        matches!(
-                            scope_kind,
-                            EntityKind::Class | EntityKind::Interface | EntityKind::Trait
-                        )
-                    })
-                {
-                    kind = if matches!(name.as_str(), "__init__" | "constructor" | "new") {
-                        EntityKind::Constructor
-                    } else {
-                        EntityKind::Method
-                    };
-                }
-                let qualified_name = qualify(scope_name, &name);
-                let id = self.push_scoped_entity(scope_id, kind, &name, &qualified_name, node);
-                if is_test_case_declaration(
-                    self.parsed.language,
-                    &self.parsed.repo_relative_path,
-                    kind,
-                    &name,
-                    &qualified_name,
-                    node,
-                    self.source,
-                ) {
-                    let test_id =
-                        self.push_test_case_entity(scope_id, &id, &name, &qualified_name, node);
-                    self.test_case_by_scope.insert(id.clone(), test_id);
-                }
-                if node_untrusted {
-                    return;
-                }
-                self.extract_parameters(node, &id, &qualified_name);
-                self.visit_children(node, &id, &qualified_name);
+        if let Some((kind, name, qualified_name)) =
+            self.scoped_declaration_identity(node, scope_id, scope_name)
+        {
+            let id = self.push_scoped_entity(scope_id, kind, &name, &qualified_name, node);
+            if is_test_case_declaration(
+                self.parsed.language,
+                &self.parsed.repo_relative_path,
+                kind,
+                &name,
+                &qualified_name,
+                node,
+                self.source,
+            ) {
+                let test_id =
+                    self.push_test_case_entity(scope_id, &id, &name, &qualified_name, node);
+                self.test_case_by_scope.insert(id.clone(), test_id);
+            }
+            if node_untrusted {
                 return;
             }
+            self.extract_parameters(node, &id, &qualified_name);
+            self.visit_children(node, &id, &qualified_name);
+            return;
         }
 
         if node_untrusted {
@@ -1755,7 +1801,7 @@ impl<'a> GenericLanguageExtractor<'a> {
         };
         let callee_node = generic_call_callee_node(self.parsed.language, call);
         let (callee_id, exactness, confidence) =
-            self.callee_entity(callee_node, scope_id, scope_name);
+            self.callee_entity(call, callee_node, scope_id, scope_name);
         let exactness = if is_proof_grade_exactness(exactness) {
             exactness
         } else {
@@ -1878,7 +1924,7 @@ impl<'a> GenericLanguageExtractor<'a> {
         }
         let callee_node = generic_call_callee_node(self.parsed.language, value);
         let (callee_id, exactness, confidence) =
-            self.callee_entity(callee_node, scope_id, scope_name);
+            self.callee_entity(value, callee_node, scope_id, scope_name);
         if !is_proof_grade_exactness(exactness) {
             return;
         }
@@ -1915,7 +1961,43 @@ impl<'a> GenericLanguageExtractor<'a> {
         {
             let binding_id = self.push_import_binding(scope_id, scope_name, node, index, &binding);
             annotate_import_artifact(&mut self.entities, &mut self.edges, &binding_id, &binding);
+            self.register_rust_import_binding(scope_id, &binding);
+            self.push_unresolved_import_target_reference(&binding_id, scope_name, node, &binding);
         }
+    }
+
+    /// Emits the §1.3 unresolved-import-target reference: the import TARGET
+    /// (not the local binding) as a reference entity plus a StaticHeuristic
+    /// IMPORTS edge, so imports of nonexistent symbols become visible
+    /// lane facts the same way unresolved callees do.
+    fn push_unresolved_import_target_reference(
+        &mut self,
+        import_binding_id: &str,
+        scope_name: &str,
+        node: Node<'_>,
+        binding: &ImportBinding,
+    ) {
+        let Some(target_label) = unresolved_import_target_label(self.parsed.language, binding)
+        else {
+            return;
+        };
+        let target_id = self.push_reference_entity(
+            EntityKind::Import,
+            &target_label,
+            scope_name,
+            node,
+            "unresolved-import-target",
+            0.5,
+        );
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        self.push_edge_with(
+            import_binding_id,
+            RelationKind::Imports,
+            &target_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.5,
+        );
     }
 
     fn push_import_binding(
@@ -1980,6 +2062,7 @@ impl<'a> GenericLanguageExtractor<'a> {
                     &qualified_name,
                     child,
                 );
+                self.register_rust_parameter_type(parent_id, &name, child);
                 self.parameters_by_scope
                     .entry(parent_id.to_string())
                     .or_default()
@@ -2012,7 +2095,7 @@ impl<'a> GenericLanguageExtractor<'a> {
         self.push_edge(&callsite_id, RelationKind::DefinedIn, scope_id, &span);
 
         let (callee_id, exactness, confidence) =
-            self.callee_entity(callee_node, scope_id, scope_name);
+            self.callee_entity(node, callee_node, scope_id, scope_name);
         self.push_edge_with(
             scope_id,
             RelationKind::Calls,
@@ -2371,6 +2454,13 @@ impl<'a> GenericLanguageExtractor<'a> {
                     &qualified_name,
                     target,
                 );
+                if self.parsed.language == SourceLanguage::Rust {
+                    if let Some(type_name) =
+                        rust_local_type_name_from_assignment(assignment, &name, self.source)
+                    {
+                        self.register_rust_local_type(scope_id, &name, &type_name);
+                    }
+                }
                 return Some(SymbolRef {
                     id,
                     exactness: Exactness::ParserVerified,
@@ -2447,6 +2537,7 @@ impl<'a> GenericLanguageExtractor<'a> {
 
     fn callee_entity(
         &mut self,
+        call_node: Node<'_>,
         callee_node: Option<Node<'_>>,
         scope_id: &str,
         scope_name: &str,
@@ -2462,7 +2553,42 @@ impl<'a> GenericLanguageExtractor<'a> {
             );
             return (id, Exactness::StaticHeuristic, 0.4);
         };
-        let label = expression_label(callee_node, self.source);
+        if let Some(symbol) = self.resolve_rust_callee(call_node, callee_node, scope_id) {
+            return (symbol.id, symbol.exactness, symbol.confidence);
+        }
+        let label = if self.parsed.language == SourceLanguage::Rust
+            && call_node.kind() == "method_call_expression"
+        {
+            rust_method_call_label(call_node, callee_node, self.source)
+                .unwrap_or_else(|| expression_label(callee_node, self.source))
+        } else {
+            expression_label(callee_node, self.source)
+        };
+        if self.parsed.language == SourceLanguage::Rust
+            && call_node.kind() == "method_call_expression"
+        {
+            let id = self.push_reference_entity(
+                EntityKind::Method,
+                &label,
+                scope_name,
+                callee_node,
+                "unresolved-callee",
+                0.55,
+            );
+            return (id, Exactness::StaticHeuristic, 0.55);
+        }
+        if self.parsed.language == SourceLanguage::Rust && rust_method_label_parts(&label).is_some()
+        {
+            let id = self.push_reference_entity(
+                EntityKind::Method,
+                &label,
+                scope_name,
+                callee_node,
+                "unresolved-callee",
+                0.55,
+            );
+            return (id, Exactness::StaticHeuristic, 0.55);
+        }
         if let Some(name) = generic_callee_symbol_name(&label) {
             if let Some(symbol) = self.resolve_symbol(scope_id, &name) {
                 return (symbol.id, symbol.exactness, symbol.confidence);
@@ -2482,6 +2608,253 @@ impl<'a> GenericLanguageExtractor<'a> {
             0.55,
         );
         (id, Exactness::StaticHeuristic, 0.55)
+    }
+
+    fn resolve_rust_callee(
+        &self,
+        call_node: Node<'_>,
+        callee_node: Node<'_>,
+        scope_id: &str,
+    ) -> Option<SymbolRef> {
+        if self.parsed.language != SourceLanguage::Rust {
+            return None;
+        }
+        if call_node.kind() == "method_call_expression" {
+            let method = node_text(callee_node, self.source).map(clean_decl_name)?;
+            if !looks_like_identifier(&method) {
+                return None;
+            }
+            let receiver = call_node
+                .child_by_field_name("receiver")
+                .and_then(|node| node_text(node, self.source))
+                .map(|text| compact_extracted_label(&text, callee_node))?;
+            let receiver_type = self.resolve_rust_receiver_type(scope_id, &receiver)?;
+            return self.resolve_rust_method_for_type(&receiver_type, &method);
+        }
+        let label = node_text(callee_node, self.source)
+            .map(|text| compact_extracted_label(&text, callee_node))?;
+        if let Some((receiver, method)) = rust_method_label_parts(&label) {
+            let receiver_type = self.resolve_rust_receiver_type(scope_id, receiver)?;
+            return self.resolve_rust_method_for_type(&receiver_type, method);
+        }
+        self.resolve_rust_path_symbol(scope_id, &label)
+    }
+
+    fn resolve_rust_receiver_type(&self, scope_id: &str, receiver: &str) -> Option<String> {
+        if receiver == "self" {
+            return self.rust_impl_type_for_scope(scope_id);
+        }
+        let mut current = Some(scope_id);
+        while let Some(scope) = current {
+            if let Some(type_name) = self
+                .rust_local_types_by_scope
+                .get(scope)
+                .and_then(|types| types.get(receiver))
+            {
+                return Some(type_name.clone());
+            }
+            current = self.scope_parents.get(scope).map(String::as_str);
+        }
+        None
+    }
+
+    fn rust_impl_type_for_scope(&self, scope_id: &str) -> Option<String> {
+        let mut current = Some(scope_id);
+        while let Some(scope) = current {
+            if let Some(type_name) = self.rust_impl_type_by_scope.get(scope) {
+                return Some(type_name.clone());
+            }
+            current = self.scope_parents.get(scope).map(String::as_str);
+        }
+        None
+    }
+
+    fn resolve_rust_method_for_type(&self, type_name: &str, method: &str) -> Option<SymbolRef> {
+        if self
+            .rust_ambiguous_methods_by_type
+            .get(type_name)
+            .is_some_and(|methods| methods.contains(method))
+        {
+            return None;
+        }
+        self.rust_methods_by_type
+            .get(type_name)
+            .and_then(|methods| methods.get(method))
+            .cloned()
+    }
+
+    fn resolve_rust_path_symbol(&self, scope_id: &str, raw_path: &str) -> Option<SymbolRef> {
+        let parts = rust_path_parts(raw_path);
+        if parts.is_empty() {
+            return None;
+        }
+        if parts.len() == 1 {
+            return self.resolve_symbol(scope_id, &parts[0]);
+        }
+        if parts[0] == "Self" {
+            let type_name = self.rust_impl_type_for_scope(scope_id)?;
+            return self.resolve_rust_method_for_type(&type_name, parts.last()?);
+        }
+        if looks_like_type_identifier(&parts[0]) {
+            if let Some(method) = parts.last() {
+                if let Some(symbol) = self.resolve_rust_method_for_type(&parts[0], method) {
+                    return Some(symbol);
+                }
+            }
+        }
+        let mut scope = match parts[0].as_str() {
+            "crate" => self.rust_root_module_scope(scope_id)?,
+            "self" => self.rust_current_module_scope(scope_id)?,
+            "super" => {
+                let current = self.rust_current_module_scope(scope_id)?;
+                self.rust_parent_module_scope(&current)?
+            }
+            first => self.resolve_symbol(scope_id, first)?.id,
+        };
+        for part in parts.iter().skip(1) {
+            let symbol = self.resolve_symbol_in_scope(&scope, part)?;
+            scope = symbol.id;
+        }
+        Some(SymbolRef {
+            id: scope,
+            exactness: Exactness::ParserVerified,
+            confidence: 1.0,
+        })
+    }
+
+    fn rust_root_module_scope(&self, scope_id: &str) -> Option<String> {
+        let mut current = Some(scope_id);
+        let mut last_module = None;
+        while let Some(scope) = current {
+            if self
+                .entity_kinds
+                .get(scope)
+                .is_some_and(|kind| *kind == EntityKind::Module)
+            {
+                last_module = Some(scope.to_string());
+            }
+            current = self.scope_parents.get(scope).map(String::as_str);
+        }
+        last_module
+    }
+
+    fn rust_current_module_scope(&self, scope_id: &str) -> Option<String> {
+        let mut current = Some(scope_id);
+        while let Some(scope) = current {
+            if self
+                .entity_kinds
+                .get(scope)
+                .is_some_and(|kind| *kind == EntityKind::Module)
+            {
+                return Some(scope.to_string());
+            }
+            current = self.scope_parents.get(scope).map(String::as_str);
+        }
+        None
+    }
+
+    fn rust_parent_module_scope(&self, module_id: &str) -> Option<String> {
+        let mut current = self.scope_parents.get(module_id).map(String::as_str);
+        while let Some(scope) = current {
+            if self
+                .entity_kinds
+                .get(scope)
+                .is_some_and(|kind| *kind == EntityKind::Module)
+            {
+                return Some(scope.to_string());
+            }
+            current = self.scope_parents.get(scope).map(String::as_str);
+        }
+        None
+    }
+
+    fn resolve_symbol_in_scope(&self, scope_id: &str, name: &str) -> Option<SymbolRef> {
+        if self
+            .ambiguous_symbols_by_scope
+            .get(scope_id)
+            .is_some_and(|symbols| symbols.contains(name))
+        {
+            return None;
+        }
+        self.symbols_by_scope
+            .get(scope_id)
+            .and_then(|symbols| symbols.get(name))
+            .cloned()
+    }
+
+    fn register_rust_import_binding(&mut self, scope_id: &str, binding: &ImportBinding) {
+        if self.parsed.language != SourceLanguage::Rust {
+            return;
+        }
+        let Some(path) = binding.imported_name.as_deref() else {
+            return;
+        };
+        let Some(symbol) = self.resolve_rust_path_symbol(scope_id, path) else {
+            return;
+        };
+        self.register_symbol_with(
+            scope_id,
+            &binding.local_name,
+            &symbol.id,
+            symbol.exactness,
+            symbol.confidence,
+        );
+    }
+
+    fn register_rust_parameter_type(&mut self, scope_id: &str, name: &str, node: Node<'_>) {
+        if self.parsed.language != SourceLanguage::Rust {
+            return;
+        }
+        let type_name = if name == "self" {
+            self.rust_impl_type_for_scope(scope_id)
+        } else {
+            rust_parameter_type_name(node, self.source)
+        };
+        if let Some(type_name) = type_name {
+            self.register_rust_local_type(scope_id, name, &type_name);
+        }
+    }
+
+    fn register_rust_local_type(&mut self, scope_id: &str, name: &str, type_name: &str) {
+        if !looks_like_identifier(name) || !looks_like_identifier(type_name) {
+            return;
+        }
+        self.rust_local_types_by_scope
+            .entry(scope_id.to_string())
+            .or_default()
+            .insert(name.to_string(), type_name.to_string());
+    }
+
+    fn register_rust_method_for_type(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        id: &str,
+        exactness: Exactness,
+        confidence: f64,
+    ) {
+        let methods = self
+            .rust_methods_by_type
+            .entry(type_name.to_string())
+            .or_default();
+        if methods
+            .get(method)
+            .is_some_and(|existing| existing.id != id)
+        {
+            self.rust_ambiguous_methods_by_type
+                .entry(type_name.to_string())
+                .or_default()
+                .insert(method.to_string());
+            return;
+        }
+        methods.insert(
+            method.to_string(),
+            SymbolRef {
+                id: id.to_string(),
+                exactness,
+                confidence,
+            },
+        );
     }
 
     fn resolve_or_reference_symbol(
@@ -2692,6 +3065,23 @@ impl<'a> GenericLanguageExtractor<'a> {
             self.scope_parents.insert(id.clone(), scope_id.to_string());
         }
         self.register_symbol_with(scope_id, name, &id, exactness, confidence);
+        if self.parsed.language == SourceLanguage::Rust && kind == EntityKind::Method {
+            if let Some(type_name) = rust_inherent_impl_type_name(node, self.source) {
+                self.rust_impl_type_by_scope
+                    .insert(id.clone(), type_name.clone());
+                self.register_rust_method_for_type(&type_name, name, &id, exactness, confidence);
+                if let Some(index) = self.entity_indices.get(&id).copied() {
+                    if let Some(entity) = self.entities.get_mut(index) {
+                        entity
+                            .metadata
+                            .insert("rust_impl_type".to_string(), type_name.into());
+                        entity
+                            .metadata
+                            .insert("rust_method_resolution".to_string(), "inherent_impl".into());
+                    }
+                }
+            }
+        }
         self.push_edge_with(
             scope_id,
             RelationKind::Contains,
@@ -3229,30 +3619,20 @@ impl<'a> BasicEntityExtractor<'a> {
                     }
                 }
             }
-            "assignment_expression" | "augmented_assignment_expression" => {
-                if !node_untrusted {
-                    self.extract_assignment(node, scope_id, scope_name);
-                }
+            "assignment_expression" | "augmented_assignment_expression" if !node_untrusted => {
+                self.extract_assignment(node, scope_id, scope_name);
             }
-            "call_expression" => {
-                if !node_untrusted {
-                    self.extract_call(node, scope_id, scope_name);
-                }
+            "call_expression" if !node_untrusted => {
+                self.extract_call(node, scope_id, scope_name);
             }
-            "new_expression" => {
-                if !node_untrusted {
-                    self.extract_new_expression(node, scope_id, scope_name);
-                }
+            "new_expression" if !node_untrusted => {
+                self.extract_new_expression(node, scope_id, scope_name);
             }
-            "await_expression" => {
-                if !node_untrusted {
-                    self.extract_await_expression(node, scope_id, scope_name);
-                }
+            "await_expression" if !node_untrusted => {
+                self.extract_await_expression(node, scope_id, scope_name);
             }
-            "return_statement" => {
-                if !node_untrusted {
-                    self.extract_return(node, scope_id, scope_name);
-                }
+            "return_statement" if !node_untrusted => {
+                self.extract_return(node, scope_id, scope_name);
             }
             "import_statement" => {
                 if node_untrusted {
@@ -3319,7 +3699,41 @@ impl<'a> BasicEntityExtractor<'a> {
         {
             let binding_id = self.push_import_binding(scope_id, scope_name, node, index, &binding);
             annotate_import_artifact(&mut self.entities, &mut self.edges, &binding_id, &binding);
+            self.push_unresolved_import_target_reference(&binding_id, scope_name, node, &binding);
         }
+    }
+
+    /// See the Tier-1 extractor's equivalent: the import TARGET becomes a
+    /// reference entity + StaticHeuristic IMPORTS edge so nonexistent import
+    /// targets are visible unresolved-reference lane facts.
+    fn push_unresolved_import_target_reference(
+        &mut self,
+        import_binding_id: &str,
+        scope_name: &str,
+        node: Node<'_>,
+        binding: &ImportBinding,
+    ) {
+        let Some(target_label) = unresolved_import_target_label(self.parsed.language, binding)
+        else {
+            return;
+        };
+        let target_id = self.push_reference_entity(
+            EntityKind::Import,
+            &target_label,
+            scope_name,
+            node,
+            "unresolved-import-target",
+            0.5,
+        );
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        self.push_edge_with(
+            import_binding_id,
+            RelationKind::Imports,
+            &target_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.5,
+        );
     }
 
     fn push_import_binding(
@@ -5969,7 +6383,7 @@ fn recover_c_like_function_declaration(
         .rev()
         .find(|part| looks_like_identifier(part))?
         .to_string();
-    if name.chars().any(|ch| ch.is_ascii_lowercase()) == false {
+    if !name.chars().any(|ch| ch.is_ascii_lowercase()) {
         return None;
     }
     let column = line.find(&name)?;
@@ -7102,6 +7516,205 @@ fn generic_decl_kind(language: SourceLanguage, node: Node<'_>) -> Option<EntityK
     }
 }
 
+fn rust_function_decl_within_impl_item(node: Node<'_>) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "impl_item" {
+            return true;
+        }
+        if generic_decl_kind(SourceLanguage::Rust, parent).is_some() {
+            return false;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn rust_inherent_impl_type_name(node: Node<'_>, source: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "impl_item" {
+            let text = node_text(parent, source)?;
+            let header = text.split('{').next().unwrap_or(text.as_str()).trim();
+            let after_impl = header.strip_prefix("impl")?.trim();
+            let after_generics = strip_leading_rust_generic_params(after_impl).trim();
+            if after_generics.contains(" for ") {
+                return None;
+            }
+            return rust_type_name_from_text(after_generics);
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+fn strip_leading_rust_generic_params(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('<') {
+        return trimmed;
+    }
+    let mut depth = 0i32;
+    for (index, ch) in trimmed.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return trimmed[index + ch.len_utf8()..].trim_start();
+                }
+            }
+            _ => {}
+        }
+    }
+    trimmed
+}
+
+fn rust_parameter_type_name(node: Node<'_>, source: &str) -> Option<String> {
+    node.child_by_field_name("type")
+        .and_then(|child| node_text(child, source))
+        .and_then(|text| rust_type_name_from_text(&text))
+        .or_else(|| {
+            let text = node_text(node, source)?;
+            let (_, after_colon) = text.split_once(':')?;
+            let before_default = after_colon
+                .split(['=', ','])
+                .next()
+                .unwrap_or(after_colon)
+                .trim();
+            rust_type_name_from_text(before_default)
+        })
+}
+
+fn rust_local_type_name_from_assignment(
+    assignment: Node<'_>,
+    local_name: &str,
+    source: &str,
+) -> Option<String> {
+    let text = node_text(assignment, source)?;
+    let after_let = text.strip_prefix("let")?.trim_start();
+    let after_mut = after_let
+        .strip_prefix("mut ")
+        .unwrap_or(after_let)
+        .trim_start();
+    let rest = after_mut.strip_prefix(local_name)?.trim_start();
+    if let Some(after_colon) = rest.strip_prefix(':') {
+        let before_value = after_colon
+            .split(['=', ';'])
+            .next()
+            .unwrap_or(after_colon)
+            .trim();
+        if let Some(type_name) = rust_type_name_from_text(before_value) {
+            return Some(type_name);
+        }
+    }
+    let after_equals = rest
+        .split_once('=')
+        .map(|(_, value)| value)
+        .or_else(|| text.split_once('=').map(|(_, value)| value))?
+        .trim()
+        .trim_end_matches(';')
+        .trim();
+    rust_type_name_from_constructor_expr(after_equals)
+}
+
+fn rust_type_name_from_constructor_expr(expr: &str) -> Option<String> {
+    let before_paren = expr.split('(').next().unwrap_or(expr).trim();
+    let before_brace = before_paren
+        .split('{')
+        .next()
+        .unwrap_or(before_paren)
+        .trim();
+    let parts = rust_path_parts(before_brace);
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.len() >= 2 {
+        let candidate = &parts[parts.len() - 2];
+        if looks_like_type_identifier(candidate) {
+            return Some(candidate.clone());
+        }
+    }
+    let candidate = parts.last()?;
+    if looks_like_type_identifier(candidate) {
+        return Some(candidate.clone());
+    }
+    None
+}
+
+fn rust_method_call_label(
+    call_node: Node<'_>,
+    callee_node: Node<'_>,
+    source: &str,
+) -> Option<String> {
+    let receiver = call_node
+        .child_by_field_name("receiver")
+        .and_then(|node| node_text(node, source))
+        .map(|text| compact_extracted_label(&text, callee_node))?;
+    let method = node_text(callee_node, source).map(clean_decl_name)?;
+    if receiver.is_empty() || method.is_empty() {
+        return None;
+    }
+    Some(format!("{receiver}.{method}"))
+}
+
+fn rust_method_label_parts(label: &str) -> Option<(&str, &str)> {
+    if label.contains("::") {
+        return None;
+    }
+    let (receiver, method) = label.rsplit_once('.')?;
+    if !looks_like_identifier(receiver) || !looks_like_identifier(method) {
+        return None;
+    }
+    Some((receiver, method))
+}
+
+fn rust_path_parts(raw_path: &str) -> Vec<String> {
+    let base = raw_path
+        .split('(')
+        .next()
+        .unwrap_or(raw_path)
+        .trim()
+        .trim_end_matches(';');
+    base.split("::")
+        .filter_map(|part| {
+            let cleaned = part
+                .split(['<', '{', ' ', '\t', '\r', '\n'])
+                .next()
+                .unwrap_or(part)
+                .trim()
+                .trim_matches(':');
+            if looks_like_identifier(cleaned)
+                || matches!(cleaned, "crate" | "self" | "super" | "Self")
+            {
+                Some(cleaned.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn rust_type_name_from_text(text: &str) -> Option<String> {
+    let without_reference = text
+        .trim()
+        .trim_start_matches('&')
+        .trim_start_matches("mut ")
+        .trim();
+    let parts = rust_path_parts(without_reference);
+    parts
+        .last()
+        .filter(|part| looks_like_type_identifier(part))
+        .cloned()
+}
+
+fn looks_like_type_identifier(value: &str) -> bool {
+    looks_like_identifier(value)
+        && value
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == '_' || ch.is_ascii_uppercase())
+}
+
 fn generic_decl_name(node: Node<'_>, source: &str) -> Option<String> {
     name_from_field_or_child(node, source)
         .or_else(|| {
@@ -7237,6 +7850,35 @@ fn generic_import_name(language: SourceLanguage, node: Node<'_>, source: &str) -
         _ => node_text(node, source),
     }
     .map(|value| compact_extracted_label(&value, node))
+}
+
+/// The unresolved-import lane target label for a parsed import binding
+/// (MVP3.9.5.4). Only languages whose import syntax names a concrete target
+/// path participate in v1: Rust `use` paths, Python module.name pairs, and Go
+/// import specifiers. JS/TS module specifiers are mostly relative paths that
+/// classify dynamic downstream and are skipped to avoid lane noise.
+fn unresolved_import_target_label(
+    language: SourceLanguage,
+    binding: &ImportBinding,
+) -> Option<String> {
+    let label = match language {
+        SourceLanguage::Rust => binding.imported_name.clone()?,
+        SourceLanguage::Python => match (&binding.module_specifier, &binding.imported_name) {
+            (Some(module), Some(imported)) if !module.is_empty() && module != imported => {
+                format!("{module}.{imported}")
+            }
+            (_, Some(imported)) => imported.clone(),
+            (Some(module), None) => module.clone(),
+            _ => return None,
+        },
+        SourceLanguage::Go => binding.module_specifier.clone()?,
+        _ => return None,
+    };
+    let label = label.trim();
+    if label.is_empty() {
+        return None;
+    }
+    Some(label.to_string())
 }
 
 fn statement_import_binding(language: SourceLanguage, name: &str) -> ImportBinding {
@@ -8446,6 +9088,267 @@ mod tests {
                 .iter()
                 .any(|entity| entity.kind == EntityKind::CallSite));
         }
+    }
+
+    #[test]
+    fn rust_later_sibling_calls_are_exact_after_predeclaration() {
+        let source = "pub fn run(value: String) -> String { helper(value) }\n\npub fn helper(value: String) -> String { value }\n";
+        let extraction = extraction("fixtures/later_sibling.rs", source);
+        let helper = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.name == "helper" && entity.kind == EntityKind::Function)
+            .expect("helper entity");
+
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.relation == RelationKind::Calls
+                && edge.tail_id == helper.id
+                && edge.exactness == Exactness::ParserVerified
+        }));
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.relation == RelationKind::Callee
+                && edge.tail_id == helper.id
+                && edge.exactness == Exactness::ParserVerified
+        }));
+    }
+
+    #[test]
+    fn rust_method_calls_are_exact_when_receiver_type_is_resolved() {
+        let unique = "struct Worker;\nimpl Worker {\n    fn run(&self) { self.helper(); }\n    fn helper(&self) {}\n}\n";
+        let unique_extraction = extraction("fixtures/rust_unique_method.rs", unique);
+        let unique_helper = unique_extraction
+            .entities
+            .iter()
+            .find(|entity| entity.name == "helper" && entity.kind == EntityKind::Method)
+            .expect("unique helper method");
+        assert!(unique_extraction.edges.iter().any(|edge| {
+            edge.relation == RelationKind::Calls
+                && edge.tail_id == unique_helper.id
+                && edge.exactness == Exactness::ParserVerified
+        }));
+
+        let duplicate_names = "struct A;\nstruct B;\nimpl A {\n    fn run(&self) { self.helper(); }\n    fn helper(&self) {}\n}\nimpl B {\n    fn helper(&self) {}\n}\n";
+        let duplicate_extraction = extraction("fixtures/rust_duplicate_method.rs", duplicate_names);
+        let run = duplicate_extraction
+            .entities
+            .iter()
+            .find(|entity| entity.name == "run" && entity.kind == EntityKind::Method)
+            .expect("A::run");
+        let a_helper = duplicate_extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.name == "helper"
+                    && entity.kind == EntityKind::Method
+                    && entity
+                        .metadata
+                        .get("rust_impl_type")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("A")
+            })
+            .expect("A::helper");
+        let b_helper = duplicate_extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.name == "helper"
+                    && entity.kind == EntityKind::Method
+                    && entity
+                        .metadata
+                        .get("rust_impl_type")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("B")
+            })
+            .expect("B::helper");
+        let calls = duplicate_extraction
+            .edges
+            .iter()
+            .filter(|edge| edge.relation == RelationKind::Calls && edge.head_id == run.id)
+            .collect::<Vec<_>>();
+        assert!(calls.iter().any(|edge| {
+            edge.tail_id == a_helper.id && edge.exactness == Exactness::ParserVerified
+        }));
+        assert!(
+            calls.iter().all(|edge| edge.tail_id != b_helper.id),
+            "receiver-typed self.helper must not target another type's helper"
+        );
+    }
+
+    #[test]
+    fn rust_deterministic_path_alias_self_and_local_method_calls_are_exact() {
+        let source = r#"
+pub fn helper() {}
+
+pub fn direct_caller() {
+    helper();
+}
+
+pub mod util {
+    pub fn helper() {}
+
+    pub fn self_caller() {
+        self::helper();
+    }
+
+    pub mod nested {
+        pub fn child() {
+            super::helper();
+        }
+    }
+}
+
+use crate::util::helper as h;
+
+pub fn module_caller() {
+    util::helper();
+    crate::util::helper();
+    h();
+}
+
+pub struct Service;
+
+impl Service {
+    pub fn new() -> Self { Service }
+    pub fn build() {
+        Self::new();
+        Service::new();
+    }
+    pub fn run(&self) {}
+}
+
+pub fn method_caller() {
+    let s = Service::new();
+    s.run();
+}
+"#;
+        let extraction = extraction("src/lib.rs", source);
+        let entity = |name: &str, kind: EntityKind, qname_suffix: &str| {
+            extraction
+                .entities
+                .iter()
+                .find(|entity| {
+                    entity.name == name
+                        && entity.kind == kind
+                        && entity.qualified_name.ends_with(qname_suffix)
+                })
+                .unwrap_or_else(|| panic!("missing {kind:?} {name} ending {qname_suffix}"))
+        };
+        let direct_caller = entity("direct_caller", EntityKind::Function, ".direct_caller");
+        let module_caller = entity("module_caller", EntityKind::Function, ".module_caller");
+        let self_caller = entity("self_caller", EntityKind::Function, ".util.self_caller");
+        let child = entity("child", EntityKind::Function, ".util.nested.child");
+        let method_caller = entity("method_caller", EntityKind::Function, ".method_caller");
+        let build = entity("build", EntityKind::Method, ".build");
+        let root_helper = entity("helper", EntityKind::Function, ".helper");
+        let util_helper = entity("helper", EntityKind::Function, ".util.helper");
+        let new_method = entity("new", EntityKind::Method, ".new");
+        let run_method = entity("run", EntityKind::Method, ".run");
+
+        let exact_call = |caller_id: &str, callee_id: &str| {
+            extraction.edges.iter().any(|edge| {
+                edge.relation == RelationKind::Calls
+                    && edge.head_id == caller_id
+                    && edge.tail_id == callee_id
+                    && edge.exactness == Exactness::ParserVerified
+                    && edge.source_span.repo_relative_path == "src/lib.rs"
+            })
+        };
+
+        assert!(exact_call(&direct_caller.id, &root_helper.id));
+        assert!(exact_call(&module_caller.id, &util_helper.id));
+        assert_eq!(
+            extraction
+                .edges
+                .iter()
+                .filter(|edge| {
+                    edge.relation == RelationKind::Calls
+                        && edge.head_id == module_caller.id
+                        && edge.tail_id == util_helper.id
+                        && edge.exactness == Exactness::ParserVerified
+                })
+                .count(),
+            3,
+            "module path, crate path, and imported alias should all hit util::helper"
+        );
+        assert!(exact_call(&self_caller.id, &util_helper.id));
+        assert!(exact_call(&child.id, &util_helper.id));
+        assert!(exact_call(&build.id, &new_method.id));
+        assert!(exact_call(&method_caller.id, &new_method.id));
+        assert!(exact_call(&method_caller.id, &run_method.id));
+    }
+
+    #[test]
+    fn rust_trait_macro_and_comment_calls_are_not_exact_overclaims() {
+        let source = r#"
+pub struct Service;
+
+trait Run {
+    fn run(&self);
+}
+
+impl Run for Service {
+    fn run(&self) {}
+}
+
+macro_rules! my_macro {
+    () => {};
+}
+
+pub fn caller(s: Service) {
+    s.run();
+    my_macro!();
+    let text = "run()";
+    // run();
+}
+"#;
+        let extraction = extraction("src/lib.rs", source);
+        let caller = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.name == "caller" && entity.kind == EntityKind::Function)
+            .expect("caller");
+        let run_ids = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.name == "run")
+            .map(|entity| entity.id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !run_ids.is_empty(),
+            "fixture should contain trait/impl run declarations"
+        );
+        assert!(
+            extraction.edges.iter().all(|edge| {
+                !(edge.relation == RelationKind::Calls
+                    && edge.head_id == caller.id
+                    && run_ids.contains(edge.tail_id.as_str())
+                    && edge.exactness == Exactness::ParserVerified)
+            }),
+            "trait receiver call must not become exact without deterministic trait resolution"
+        );
+        assert!(
+            extraction.edges.iter().any(|edge| {
+                edge.relation == RelationKind::Calls
+                    && edge.head_id == caller.id
+                    && edge.exactness == Exactness::StaticHeuristic
+            }),
+            "unresolved trait method call should be surfaced as static heuristic"
+        );
+        assert!(
+            extraction
+                .edges
+                .iter()
+                .filter(|edge| edge.relation == RelationKind::Calls && edge.head_id == caller.id)
+                .all(|edge| {
+                    let tail = extraction
+                        .entities
+                        .iter()
+                        .find(|entity| entity.id == edge.tail_id)
+                        .expect("tail entity");
+                    !tail.name.contains("my_macro")
+                }),
+            "macro invocation must not be overclaimed as a CALLS edge"
+        );
     }
 
     #[test]

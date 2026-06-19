@@ -174,6 +174,100 @@
         }
       }
     },
+    "recovery_pointer": {
+      "type": "object",
+      "required": ["id", "commands_ref"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "commands_ref": {
+          "const": "recovery_commands"
+        },
+        "agent_use_query_available": {
+          "type": "boolean"
+        },
+        "agent_use_mcp_config_available": {
+          "type": "boolean"
+        }
+      }
+    },
+    "recovery_commands": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "repo_ref", "commands"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "const": "agent_use_recovery_commands"
+            },
+            "repo_ref": {
+              "const": "repo"
+            },
+            "commands": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "agent_json_budget": {
+      "type": "object",
+      "required": [
+        "mode",
+        "max_output_bytes",
+        "output_bytes",
+        "required_safety_fields_preserved"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["compact", "explain", "audit"]
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1024
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated_sections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_output_bytes_exceeded": {
+          "type": "boolean"
+        },
+        "required_safety_fields_preserved": {
+          "const": true
+        }
+      }
+    },
     "source_span": {
       "type": "object",
       "required": ["file", "start_line", "end_line"],
@@ -630,6 +724,21 @@
         "file": {
           "type": "string"
         },
+        "path": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "name_unavailable": {
+          "type": "boolean"
+        },
         "source_role": {
           "$ref": "#/$defs/evidence_role"
         },
@@ -643,7 +752,7 @@
     },
     "evidence_role": {
       "type": "string",
-      "enum": ["production", "test", "mock", "mixed", "text_evidence", "unknown"]
+      "enum": ["production", "test", "mock", "stub", "generated", "mixed", "text_evidence", "unknown"]
     },
     "exactness": {
       "type": "string",
@@ -721,6 +830,224 @@
         "evidence_role": {
           "$ref": "#/$defs/evidence_role"
         }
+      }
+    },
+    "dirty_evidence_freshness_state": {
+      "type": "string",
+      "enum": [
+        "fresh",
+        "stale",
+        "dirty",
+        "missing",
+        "corrupt",
+        "inaccessible",
+        "permission_denied",
+        "not_applicable",
+        "rebuilding",
+        "publishing",
+        "partial",
+        "truncated",
+        "diagnostic_only",
+        "unknown"
+      ]
+    },
+    "proof_ladder_level": {
+      "type": "string",
+      "enum": [
+        "text_evidence",
+        "symbol_evidence",
+        "candidate_evidence",
+        "source_navigation_evidence",
+        "graph_relation_proof",
+        "mutation_proof",
+        "flow_proof",
+        "unknown",
+        "unsupported",
+        "diagnostic_only"
+      ]
+    },
+    "dirty_evidence_claimability_effect": {
+      "type": "string",
+      "enum": [
+        "graph_proof_available",
+        "supports_graph_proof_when_joined",
+        "graph_proof_unavailable",
+        "non_proof_evidence_only",
+        "sidecar_only",
+        "diagnostic_only",
+        "no_graph_db_effect",
+        "conditional_future_proof_only",
+        "not_applicable"
+      ]
+    },
+    "dirty_evidence_surface_status": {
+      "type": "object",
+      "required": [
+        "surface_name",
+        "evidence_kind",
+        "proof_ladder_level",
+        "freshness_state",
+        "claimability_effect",
+        "graph_proof_possible"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "surface_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proof_ladder_level": {
+          "$ref": "#/$defs/proof_ladder_level"
+        },
+        "freshness_state": {
+          "$ref": "#/$defs/dirty_evidence_freshness_state"
+        },
+        "claimability_effect": {
+          "$ref": "#/$defs/dirty_evidence_claimability_effect"
+        },
+        "graph_proof_possible": {
+          "type": "boolean"
+        },
+        "stale_non_proof_reason": {
+          "type": "string"
+        },
+        "recovery_command": {
+          "type": "string"
+        }
+      }
+    },
+    "dirty_evidence_surface_status_list": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/dirty_evidence_surface_status"
+      }
+    },
+    "dirty_evidence_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "surfaces_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fresh_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stale_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dirty_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unavailable_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "corrupt_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_applicable_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "graph_proof_available": {
+          "type": "boolean"
+        },
+        "sidecar_corrupt_or_unavailable": {
+          "type": "boolean"
+        },
+        "graph_db_corrupt_or_unavailable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "proof_ladder_change_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "properties": {
+        "text_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "symbol_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "candidate_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_navigation_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "graph_relation_proof": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mutation_proof": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "flow_proof": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsupported": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "diagnostic_only": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "sidecar_statuses": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "candidate_layer_status": {
+          "$ref": "#/$defs/dirty_evidence_freshness_state"
+        },
+        "vector_layer_status": {
+          "$ref": "#/$defs/dirty_evidence_freshness_state"
+        },
+        "path_evidence_status": {
+          "$ref": "#/$defs/dirty_evidence_freshness_state"
+        },
+        "source_navigation_status": {
+          "$ref": "#/$defs/dirty_evidence_freshness_state"
+        },
+        "routing_handle_status": {
+          "$ref": "#/$defs/dirty_evidence_freshness_state"
+        }
+      }
+    },
+    "stale_non_proof_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     }
   }

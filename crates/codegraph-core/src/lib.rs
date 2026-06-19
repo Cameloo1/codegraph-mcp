@@ -8,26 +8,64 @@
 
 #![forbid(unsafe_code)]
 
+mod dirty_evidence;
 mod ids;
 mod kinds;
 mod model;
+mod normalized;
 mod validation;
 
+pub use dirty_evidence::{
+    all_known_dirty_evidence_surfaces, dirty_evidence_registry, proof_ladder_invalidation_contract,
+    DirtyEvidenceBinding, DirtyEvidenceClaimabilityEffect, DirtyEvidenceFreshnessState,
+    DirtyEvidenceKind, DirtyEvidenceRefreshStrategy, DirtyEvidenceRegistryEntry,
+    DirtyEvidenceStorageLayer, ProofLadderInvalidationRule, ProofLadderLevel,
+    DIRTY_EVIDENCE_REGISTRY_SCHEMA_VERSION, PROOF_LADDER_INVALIDATION_CONTRACT_SCHEMA_VERSION,
+};
 pub use ids::{
     normalize_repo_relative_path, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
+    stable_fact_hash, stable_fact_identity_key,
 };
 pub use kinds::{
     EdgeClass, EdgeContext, EntityKind, EvidenceRole, Exactness, ParseEnumError, RelationKind,
 };
 pub use model::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
-    infer_edge_class, infer_edge_context, normalize_edge_classification, ContextPacket,
+    entity_kind_defines_symbol, infer_edge_class, infer_edge_context,
+    normalize_edge_classification, ContextPacket,
     ContextSnippet, DerivedClosureEdge, Edge, Entity, EvidenceRoleDecision, FileRecord, Metadata,
     PathEvidence, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
     RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
     RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
 };
-pub use validation::{relation_allows, RelationEndpointClass};
+pub use normalized::{
+    classify_normalized_fact_changes, NormalizedClaimabilityMetadata, NormalizedEdgeFact,
+    NormalizedEntityFact, NormalizedFactChangeSet, NormalizedFactEnvelope, NormalizedFactKind,
+    NormalizedFactOmission, NormalizedFileFact, NormalizedLifecycleMetadata,
+    NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact,
+    NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NormalizedUnresolvedReferenceFact,
+    NORMALIZED_FACT_SCHEMA_VERSION,
+};
+pub use validation::{
+    aggregate_final_validation_status, classify_validation_finding,
+    interrupt_eligibility_for_finding, map_finding_to_severity,
+    map_finding_to_severity_with_lifecycle, map_no_findings_to_severity,
+    mvp3_6_severity_decision_table, mvp3_6_severity_levels, mvp3_6_severity_policy_contract,
+    relation_allows, reverify_validation_graph_source_contract, AgentContinuationPolicy,
+    ClaimabilityEffect, FinalStatusAggregation, FinalValidationStatus, HardInterruptError,
+    HardInterruptPacket, HardInterruptPacketKind, InterruptEligibility, InterruptExpansionHandle,
+    InterruptFixHint, InterruptPacketSummary, InterruptSourceFinding, RelationEndpointClass,
+    SeverityAggregationTrace, SeverityDecision, SeverityDecisionTableRow, SeverityLevelDefinition,
+    SeverityOverride, SeverityPolicy, SeverityReason, SeveritySource, SupportedRelationStatus,
+    ToolErrorKind, ValidationBlockingLevel, ValidationClassification, ValidationEvidenceItem,
+    ValidationEvidenceKind, ValidationFinding, ValidationLifecycleRequirement,
+    ValidationLifecycleState, ValidationPacket, ValidationPacketKind, ValidationPacketStatus,
+    ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
+    ValidationReverification, ValidationReverificationInput, ValidationRule, ValidationRuleKind,
+    ValidationSeverity, ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
+    HARD_INTERRUPT_PACKET_SCHEMA_VERSION, MVP3_6_SEVERITY_POLICY_SCHEMA_VERSION,
+    VALIDATION_PACKET_SCHEMA_VERSION,
+};
 
 #[cfg(test)]
 mod tests {
@@ -370,7 +408,7 @@ mod tests {
         let mut candidate = RetrievalCandidate::new(
             "vector://text-evidence/src/auth.ts/chunk-0001",
             RetrievalCandidateSource::VectorSemantic,
-            "vector semantic candidate over text evidence; not graph proof",
+            "deterministic token-projection candidate over text evidence; not graph proof",
         );
         candidate.embedding_source = Some(VectorEmbeddingSource::TextEvidence);
         candidate.file_id = Some("src/auth.ts".to_string());
@@ -486,7 +524,7 @@ mod tests {
         let mut candidate = RetrievalCandidate::new(
             "vector://graph-entity/AuthService.login",
             RetrievalCandidateSource::VectorSemantic,
-            "vector semantic graph-entity candidate; source span not verified",
+            "deterministic token-projection graph-entity candidate; source span not verified",
         );
         candidate.embedding_source = Some(VectorEmbeddingSource::GraphEntity);
         candidate.file_id = Some("src/auth.ts".to_string());

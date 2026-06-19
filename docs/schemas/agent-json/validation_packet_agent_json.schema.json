@@ -1,0 +1,737 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/validation_packet_agent_json.schema.json",
+  "title": "validation_packet_agent_json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "packet_kind",
+    "status",
+    "must_fix_before_continuing",
+    "changed_files",
+    "graph_delta",
+    "blocking_errors",
+    "warnings",
+    "unknowns",
+    "diagnostics",
+    "summary_counts_by_rule_id",
+    "summary_counts_by_classification",
+    "summary_counts_by_relation_kind",
+    "validation_rules_evaluated",
+    "validation_rules_skipped",
+    "relation_family_status",
+    "activation_gate_state",
+    "claimability",
+    "proof_ladder_changes",
+    "lifecycle",
+    "stale_unsafe_blockers",
+    "top_blocking_source_spans",
+    "recommended_next_steps",
+    "severity_summary",
+    "severity_decisions",
+    "severity_aggregation_trace",
+    "editor_policy",
+    "hard_interrupt_available",
+    "omitted_count",
+    "expansion_handles"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "packet_kind": {
+      "const": "graph_validation_packet"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "blocking_graph_error",
+        "warning",
+        "ok",
+        "diagnostic_only",
+        "unknown"
+      ]
+    },
+    "final_status": {
+      "$ref": "#/$defs/final_validation_status"
+    },
+    "severity_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "max_severity": {
+          "$ref": "#/$defs/validation_severity"
+        },
+        "tool_error": {
+          "type": "boolean"
+        },
+        "hard_interrupt_available": {
+          "type": "boolean"
+        },
+        "must_fix_before_continuing": {
+          "type": "boolean"
+        }
+      }
+    },
+    "severity_decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/severity_decision"
+      }
+    },
+    "severity_aggregation_trace": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/severity_decision"
+          }
+        },
+        "final_status": {
+          "$ref": "#/$defs/final_validation_status"
+        },
+        "max_severity": {
+          "$ref": "#/$defs/validation_severity"
+        },
+        "hard_interrupt_available": {
+          "type": "boolean"
+        },
+        "tool_error": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "editor_policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "editor_policy_version",
+        "recommended_editor_action",
+        "should_show_modal",
+        "should_show_warning_panel",
+        "should_allow_continue",
+        "should_request_revalidation",
+        "safe_to_autofix",
+        "source_edits_performed",
+        "daemon_integration_available"
+      ],
+      "properties": {
+        "editor_policy_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recommended_editor_action": {
+          "type": "string"
+        },
+        "should_show_modal": {
+          "type": "boolean"
+        },
+        "should_show_warning_panel": {
+          "type": "boolean"
+        },
+        "should_allow_continue": {
+          "type": "boolean"
+        },
+        "should_request_revalidation": {
+          "type": "boolean"
+        },
+        "safe_to_autofix": {
+          "const": false
+        },
+        "source_edits_performed": {
+          "const": false
+        },
+        "daemon_integration_available": {
+          "const": false
+        },
+        "plugin_integration_available": {
+          "const": false
+        }
+      }
+    },
+    "must_fix_before_continuing": {
+      "type": "boolean"
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "graph_delta": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "blocking_errors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/validation_finding"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/validation_finding"
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/validation_finding"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/validation_finding"
+      }
+    },
+    "summary_counts_by_rule_id": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "summary_counts_by_classification": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "summary_counts_by_relation_kind": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "validation_rules_evaluated": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/validation_rule"
+      }
+    },
+    "validation_rules_skipped": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/validation_rule"
+      }
+    },
+    "relation_family_status": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "activation_gate_state": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "claimability": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "proof_ladder_changes": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "proof_ladder_change_counts": {
+      "$ref": "common.schema.json#/$defs/proof_ladder_change_counts"
+    },
+    "dirty_evidence_summary": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_summary"
+    },
+    "invalidated_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "refreshed_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "stale_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "unavailable_evidence": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "claimability_effect": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_claimability_effect"
+    },
+    "candidate_layer_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "vector_layer_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "path_evidence_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "source_navigation_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "routing_handle_status": {
+      "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
+    },
+    "sidecar_statuses": {
+      "$ref": "common.schema.json#/$defs/sidecar_statuses"
+    },
+    "recovery_commands": {
+      "$ref": "common.schema.json#/$defs/recovery_commands"
+    },
+    "stale_non_proof_reasons": {
+      "$ref": "common.schema.json#/$defs/stale_non_proof_reasons"
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "stale_unsafe_blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "top_blocking_source_spans": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source_span"
+      }
+    },
+    "recommended_next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "hard_interrupt_available": {
+      "type": "boolean"
+    },
+    "hard_interrupt": {
+      "anyOf": [
+        {
+          "$ref": "hard_interrupt_agent_json.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expansion_handles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "validation_classification": {
+      "type": "string",
+      "enum": ["block", "warn", "unknown", "unsupported", "degraded", "diagnostic"]
+    },
+    "validation_blocking_level": {
+      "type": "string",
+      "enum": ["blocking", "warning", "unknown", "diagnostic_only", "not_applicable"]
+    },
+    "validation_severity": {
+      "type": "string",
+      "enum": ["blocking", "warning", "diagnostic_only", "unknown", "ok"]
+    },
+    "final_validation_status": {
+      "type": "string",
+      "enum": [
+        "blocking_graph_error",
+        "warning",
+        "diagnostic_only",
+        "unknown",
+        "ok",
+        "tool_error"
+      ]
+    },
+    "claimability_effect": {
+      "type": "string",
+      "enum": ["claimable", "non_claimable", "diagnostic_only", "unknown"]
+    },
+    "tool_error_kind": {
+      "type": "string",
+      "enum": [
+        "none",
+        "invalid_input",
+        "runtime_failure",
+        "protocol_failure",
+        "config_failure",
+        "internal_failure"
+      ]
+    },
+    "severity_decision": {
+      "type": "object",
+      "required": [
+        "severity",
+        "source",
+        "reason",
+        "proof_level",
+        "claimability_effect",
+        "interrupt_eligible",
+        "tool_error",
+        "tool_error_kind",
+        "agent_action",
+        "lifecycle_effect"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/validation_severity"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finding_id": {
+          "type": ["string", "null"]
+        },
+        "validation_rule_id": {
+          "type": ["string", "null"]
+        },
+        "proof_level": {
+          "type": "string"
+        },
+        "claimability_effect": {
+          "$ref": "#/$defs/claimability_effect"
+        },
+        "interrupt_eligible": {
+          "type": "boolean"
+        },
+        "tool_error": {
+          "type": "boolean"
+        },
+        "tool_error_kind": {
+          "$ref": "#/$defs/tool_error_kind"
+        },
+        "agent_action": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "lifecycle_effect": {
+          "type": "string"
+        },
+        "evidence_kind": {
+          "type": ["string", "null"]
+        },
+        "source_role": {
+          "type": ["string", "null"]
+        },
+        "exactness": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "validation_rule_kind": {
+      "type": "string",
+      "enum": [
+        "dangling_target",
+        "broken_contract",
+        "proof_integrity",
+        "source_role_boundary",
+        "lifecycle_integrity",
+        "unsupported_relation_boundary",
+        "closure_budget_boundary",
+        "diagnostic"
+      ]
+    },
+    "supported_relation_status": {
+      "type": "string",
+      "enum": [
+        "exact_blocking_candidate",
+        "exact_warning_candidate",
+        "activation_gated",
+        "unsupported",
+        "diagnostic_only",
+        "unknown"
+      ]
+    },
+    "source_span": {
+      "type": "object",
+      "additionalProperties": true,
+      "anyOf": [
+        {
+          "required": ["repo_relative_path", "start_line", "end_line"]
+        },
+        {
+          "required": ["file", "start_line", "end_line"]
+        }
+      ],
+      "properties": {
+        "repo_relative_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_column": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_column": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
+      }
+    },
+    "validation_rule": {
+      "type": "object",
+      "required": [
+        "validation_rule_id",
+        "rule_kind",
+        "relation_kind",
+        "invariant",
+        "activation_condition",
+        "proof_requirement",
+        "source_span_requirement",
+        "provenance_requirement",
+        "source_role_requirement",
+        "lifecycle_requirement",
+        "supported_relation_status",
+        "default_classification_when_unsupported",
+        "docs_summary"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "validation_rule_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rule_kind": {
+          "$ref": "#/$defs/validation_rule_kind"
+        },
+        "relation_kind": {
+          "type": ["string", "null"]
+        },
+        "invariant": {
+          "type": "string",
+          "minLength": 1
+        },
+        "activation_condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proof_requirement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_span_requirement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance_requirement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_role_requirement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle_requirement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supported_relation_status": {
+          "$ref": "#/$defs/supported_relation_status"
+        },
+        "default_classification_when_unsupported": {
+          "$ref": "#/$defs/validation_classification"
+        },
+        "docs_summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "validation_finding": {
+      "type": "object",
+      "required": [
+        "finding_id",
+        "validation_rule_id",
+        "invariant",
+        "classification",
+        "blocking_level",
+        "integrity_kind",
+        "proof_level",
+        "proof_strength",
+        "proof_status",
+        "affected_evidence",
+        "affected_delta",
+        "affected_edge",
+        "affected_entity",
+        "file",
+        "affected_file",
+        "source_span",
+        "source_role",
+        "relation_kind",
+        "exactness",
+        "provenance",
+        "old_fact_claim_state",
+        "new_fact_claim_state",
+        "lifecycle",
+        "reverified_graph_source_proof",
+        "evidence_items",
+        "reason",
+        "recommended_fix",
+        "suggested_next_steps",
+        "unknowns",
+        "diagnostics",
+        "expansion_handle"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validation_rule_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invariant": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classification": {
+          "$ref": "#/$defs/validation_classification"
+        },
+        "blocking_level": {
+          "$ref": "#/$defs/validation_blocking_level"
+        },
+        "integrity_kind": {
+          "type": ["string", "null"]
+        },
+        "proof_level": {
+          "type": "string"
+        },
+        "proof_strength": {
+          "type": "string"
+        },
+        "proof_status": {
+          "type": "string"
+        },
+        "affected_evidence": {
+          "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "affected_delta": {
+          "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "affected_edge": {
+          "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "affected_entity": {
+          "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "file": {
+          "type": ["string", "null"]
+        },
+        "affected_file": {
+          "type": ["string", "null"]
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/source_span"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_role": {
+          "type": ["string", "null"]
+        },
+        "relation_kind": {
+          "type": ["string", "null"]
+        },
+        "exactness": {
+          "type": ["string", "null"]
+        },
+        "provenance": {
+          "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "old_fact_claim_state": {
+          "type": "string"
+        },
+        "new_fact_claim_state": {
+          "type": "string"
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "reverified_graph_source_proof": {
+          "type": "boolean"
+        },
+        "evidence_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "recommended_fix": {
+          "type": ["string", "null"]
+        },
+        "suggested_next_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expansion_handle": {
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}

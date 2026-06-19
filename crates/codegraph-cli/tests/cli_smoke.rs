@@ -6,7 +6,8 @@ use std::{
 };
 
 use codegraph_core::{
-    Edge, EdgeClass, EdgeContext, Exactness, FileRecord, RelationKind, SourceSpan,
+    Edge, EdgeClass, EdgeContext, Entity, EntityKind, Exactness, FileRecord, RelationKind,
+    SourceSpan,
 };
 use codegraph_index::{
     build_in_memory_vector_chunk_index, extract_file_path_title_embedding_chunk_for_path,
@@ -154,6 +155,84 @@ fn assert_hits_empty(value: &Value, label: &str) {
         value["hits"].as_array().expect("hits").is_empty(),
         "expected no hits for {label}: {value:?}"
     );
+}
+
+fn assert_agent_results_present(value: &Value, label: &str) {
+    assert!(
+        value["result_count"].as_u64().unwrap_or_else(|| {
+            value["results"]
+                .as_array()
+                .map(|results| results.len() as u64)
+                .unwrap_or_default()
+        }) > 0,
+        "expected agent-use results for {label}: {value:?}"
+    );
+}
+
+fn assert_agent_results_empty(value: &Value, label: &str) {
+    assert_eq!(
+        agent_result_count(value),
+        0,
+        "expected no agent-use results for {label}: {value:?}"
+    );
+}
+
+fn agent_result_count(value: &Value) -> u64 {
+    value["result_count"].as_u64().unwrap_or_else(|| {
+        value["results"]
+            .as_array()
+            .map(|results| results.len() as u64)
+            .unwrap_or_default()
+    })
+}
+
+fn assert_agent_results_contain_file(value: &Value, repo_relative_path: &str, label: &str) {
+    assert!(
+        value["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .any(|result| result["file"].as_str() == Some(repo_relative_path)
+                || result["entity"]["file"].as_str() == Some(repo_relative_path)),
+        "expected {label} to contain {repo_relative_path}: {value:?}"
+    );
+}
+
+fn assert_agent_results_do_not_contain_file(value: &Value, repo_relative_path: &str, label: &str) {
+    assert!(
+        !value["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .any(|result| result["file"].as_str() == Some(repo_relative_path)
+                || result["entity"]["file"].as_str() == Some(repo_relative_path)),
+        "expected {label} not to contain {repo_relative_path}: {value:?}"
+    );
+}
+
+fn context_verified_paths_contain(value: &Value, needle: &str) -> bool {
+    value["packet"]["verified_paths"]
+        .as_array()
+        .map(|paths| {
+            paths
+                .iter()
+                .any(|path| serde_json::to_string(path).is_ok_and(|text| text.contains(needle)))
+        })
+        .unwrap_or(false)
+}
+
+fn entity_by_file_kind_and_name(
+    store: &SqliteGraphStore,
+    repo_relative_path: &str,
+    kind: EntityKind,
+    name: &str,
+) -> Entity {
+    store
+        .list_entities_by_file(repo_relative_path)
+        .expect("list entities by file")
+        .into_iter()
+        .find(|entity| entity.kind == kind && entity.name == name)
+        .unwrap_or_else(|| panic!("missing {kind:?} {name} in {repo_relative_path}"))
 }
 
 fn passport_scope_hash(value: &Value) -> &str {
@@ -892,12 +971,20 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
                 { "name": "idx_template_edges_head_relation", "object_type": "index", "row_count": null, "total_bytes": 50 }
             ],
             "aggregate_metrics": {
+                "edge_count": 3,
+                "proof_edge_count": 3,
+                "edge_table_payload_bytes": 240,
+                "edge_index_payload_bytes": 90,
+                "edge_table_plus_index_payload_bytes": 330,
+                "average_edge_payload_bytes_per_proof_edge": 80.0,
+                "average_edge_table_plus_index_payload_bytes_per_proof_edge": 110.0,
                 "average_database_bytes_per_edge": 100_000.0,
                 "average_edge_table_plus_index_bytes_per_edge": 100.0
             },
             "fts_storage": { "stores_source_snippets": false },
             "table_row_metrics": [
                 { "table": "entities", "average_total_bytes_per_row": 100.0 },
+                { "table": "edges", "average_total_bytes_per_row": 100.0, "average_payload_bytes_per_row": 80.0 },
                 { "table": "template_entities", "average_total_bytes_per_row": 100.0 },
                 { "table": "template_edges", "average_total_bytes_per_row": 100.0 },
                 { "table": "file_source_spans", "average_total_bytes_per_row": 100.0 },
@@ -907,6 +994,79 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         .expect("storage JSON"),
     )
     .expect("write storage");
+
+    let update_integrity_path = artifact_dir.join("update_integrity.json");
+    fs::write(
+        &update_integrity_path,
+        serde_json::to_string_pretty(&json!({
+            "status": "passed",
+            "repos": [
+                {
+                    "name": "first_fixture",
+                    "iteration_results": [
+                        {
+                            "iteration": 1,
+                            "update": {
+                                "wall_ms": 100,
+                                "files_walked": 1,
+                                "files_read": 1,
+                                "files_hashed": 1,
+                                "files_parsed": 1,
+                                "entities_inserted": 1,
+                                "edges_inserted": 1,
+                                "dirty_path_evidence_count": 1,
+                                "integrity_status": "ok",
+                                "global_hash_check_ran": false,
+                                "profile": {
+                                    "spans": [
+                                        { "name": "lifecycle_preflight", "elapsed_ms": 10.0 },
+                                        { "name": "file_walk", "elapsed_ms": 0.0 },
+                                        { "name": "file_read", "elapsed_ms": 1.0 },
+                                        { "name": "file_hash", "elapsed_ms": 2.0 },
+                                        { "name": "parse", "elapsed_ms": 3.0 },
+                                        { "name": "stale_fact_delete", "elapsed_ms": 4.0 },
+                                        { "name": "stale_missing_manifest_scan", "elapsed_ms": 5.0 },
+                                        { "name": "entity_insert", "elapsed_ms": 6.0 },
+                                        { "name": "edge_insert", "elapsed_ms": 7.0 },
+                                        { "name": "path_evidence_insert", "elapsed_ms": 8.0 },
+                                        { "name": "transaction_commit", "elapsed_ms": 9.0 },
+                                        { "name": "wal_checkpoint", "elapsed_ms": 11.0 },
+                                        { "name": "cache_refresh", "elapsed_ms": 12.0 },
+                                        { "name": "graph_fact_hash", "elapsed_ms": 13.0 }
+                                    ]
+                                }
+                            },
+                            "restore": { "wall_ms": 90, "integrity_status": "ok" }
+                        }
+                    ]
+                },
+                {
+                    "name": "second_fixture",
+                    "iteration_results": [
+                        {
+                            "iteration": 1,
+                            "update": {
+                                "wall_ms": 740,
+                                "files_walked": 1,
+                                "files_read": 1,
+                                "files_hashed": 1,
+                                "files_parsed": 1,
+                                "entities_inserted": 2,
+                                "edges_inserted": 3,
+                                "dirty_path_evidence_count": 2,
+                                "integrity_status": "ok",
+                                "global_hash_check_ran": false,
+                                "profile": { "spans": [] }
+                            },
+                            "restore": { "wall_ms": 120, "integrity_status": "ok" }
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("update-integrity JSON"),
+    )
+    .expect("write update-integrity");
 
     let baseline_path = workspace.join("baseline.json");
     fs::write(
@@ -928,7 +1088,8 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
         &gate_path,
         serde_json::to_string_pretty(&json!({
             "artifacts": {
-                "proof_storage_json": proof_storage_path.to_string_lossy()
+                "proof_storage_json": proof_storage_path.to_string_lossy(),
+                "update_integrity_json": update_integrity_path.to_string_lossy()
             },
             "gates": {
                 "graph_truth": {
@@ -1224,6 +1385,48 @@ fn bench_comprehensive_writes_machine_json_and_human_markdown() {
             .iter()
             .any(|target| target.as_str() == Some("cold_build_result_claimable")));
     }
+    let update_metrics = summary["sections"]["single_file_update"]["metrics"]
+        .as_array()
+        .expect("single file update metrics");
+    let update_metric = |id: &str| {
+        update_metrics
+            .iter()
+            .find(|metric| metric["id"].as_str() == Some(id))
+            .unwrap_or_else(|| panic!("missing update metric {id}"))
+    };
+    assert_eq!(
+        update_metric("single_file_update_total_ms")["observed"].as_f64(),
+        Some(740.0),
+        "p95 should include detailed update iterations from every repo, not just the first"
+    );
+    assert_eq!(
+        update_metric("single_file_update_total_ms")["status"].as_str(),
+        Some("pass")
+    );
+    assert_eq!(
+        update_metric("update_lifecycle_preflight_ms")["observed"].as_f64(),
+        Some(10.0)
+    );
+    assert_eq!(
+        update_metric("update_stale_missing_manifest_scan_ms")["observed"].as_f64(),
+        Some(5.0)
+    );
+    assert_eq!(
+        update_metric("update_path_evidence_regeneration_time_ms")["observed"].as_f64(),
+        Some(8.0)
+    );
+    assert_eq!(
+        update_metric("update_wal_checkpoint_time_ms")["observed"].as_f64(),
+        Some(11.0)
+    );
+    assert_eq!(
+        update_metric("update_cache_refresh_time_ms")["observed"].as_f64(),
+        Some(12.0)
+    );
+    assert_eq!(
+        update_metric("update_graph_hash_update_time_ms")["observed"].as_f64(),
+        Some(13.0)
+    );
     let markdown =
         fs::read_to_string(output_dir.join("comprehensive_benchmark_latest.md")).expect("markdown");
     assert!(markdown.contains("Section 1 - Executive Verdict"));
@@ -2975,7 +3178,11 @@ fn unresolved_calls_query_is_bounded_and_instrumented() {
     let snippet = &with_snippet["calls"].as_array().expect("snippet calls")[0]["source_snippet"];
     assert_eq!(snippet["requested"].as_bool(), Some(true));
     assert_eq!(snippet["loaded"].as_bool(), Some(true));
-    assert!(snippet["text"].as_str().expect("snippet text").trim().len() > 0);
+    assert!(!snippet["text"]
+        .as_str()
+        .expect("snippet text")
+        .trim()
+        .is_empty());
 
     fs::remove_dir_all(repo).expect("cleanup fixture workspace");
 }
@@ -3813,6 +4020,1307 @@ fn watch_once_uses_external_db_and_does_not_create_default_db() {
     );
 
     fs::remove_dir_all(repo).expect("cleanup external watch fixture");
+}
+
+#[test]
+fn agent_use_watch_once_modified_and_added_source_happy_path() {
+    let repo = empty_repo();
+    let agent_data_root = empty_repo().join("agent-use-data");
+    fs::create_dir_all(repo.join("src")).expect("create src");
+    fs::create_dir_all(&agent_data_root).expect("create agent data root");
+    fs::write(
+        repo.join("src").join("auth.ts"),
+        "export function oldHotPathLogin(input: string) {\n  return input.trim();\n}\n\nexport function stableHelper() {\n  return 'stable';\n}\n",
+    )
+    .expect("write auth");
+    fs::write(
+        repo.join("src").join("unrelated.ts"),
+        "export function unrelatedHotPathSymbol() {\n  return 42;\n}\n",
+    )
+    .expect("write unrelated");
+
+    let repo_arg = repo.to_string_lossy().to_string();
+    let data_root_arg = agent_data_root.to_string_lossy().to_string();
+    let env = [("CODEGRAPH_AGENT_USE_DATA_ROOT", data_root_arg.as_str())];
+    let index = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &["agent-use", "index", "--repo", &repo_arg, "--json"],
+        &env,
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+    assert_eq!(index["claimable"].as_bool(), Some(true));
+    assert_eq!(index["external_db_used"].as_bool(), Some(true));
+    assert_eq!(index["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+    let db_path = PathBuf::from(index["db_path"].as_str().expect("agent-use db path"));
+    assert!(
+        db_path.starts_with(&agent_data_root),
+        "profile DB must be under test agent data root"
+    );
+    assert!(
+        !repo.join(".codegraph").exists(),
+        "agent-use index must not create repo-local .codegraph"
+    );
+
+    let old_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "oldHotPathLogin",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&old_symbol, "old symbol before update");
+
+    fs::write(
+        repo.join("src").join("auth.ts"),
+        "export function newHotPathLogin(input: string) {\n  const normalized = input.trim().toLowerCase();\n  return stableHelper() + normalized;\n}\n\nexport function stableHelper() {\n  return 'stable';\n}\n",
+    )
+    .expect("rewrite auth");
+    let modified = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/auth.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(modified["status"].as_str(), Some("updated"));
+    assert_eq!(modified["watch_mode"].as_str(), Some("once_changed"));
+    assert_eq!(
+        modified["delta_sync_phase"].as_str(),
+        Some("real_time_delta_sync")
+    );
+    assert_eq!(modified["old_graph_valid"].as_bool(), Some(true));
+    assert_eq!(modified["new_graph_valid"].as_bool(), Some(true));
+    assert_eq!(modified["old_db_preserved"].as_bool(), Some(true));
+    assert_eq!(modified["temp_db_claimable"].as_bool(), Some(false));
+    assert_eq!(modified["claimability"]["claimable"].as_bool(), Some(true));
+    assert_eq!(
+        modified["watch_db"]["requested_db_path"].as_str(),
+        Some(db_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        modified["watch_db"]["actual_db_path_opened"].as_str(),
+        Some(db_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(modified["files_walked"].as_u64(), Some(1));
+    assert_eq!(modified["files_read"].as_u64(), Some(1));
+    assert_eq!(modified["files_hashed"].as_u64(), Some(1));
+    assert_eq!(modified["files_parsed"].as_u64(), Some(1));
+    assert_eq!(modified["no_full_repo_fallback"].as_bool(), Some(true));
+    assert_eq!(
+        modified["closure_files_considered"]
+            .as_array()
+            .expect("closure"),
+        &[json!("src/auth.ts")]
+    );
+    assert!(modified["entities_added"].as_u64().unwrap_or_default() > 0);
+    assert!(modified["entities_removed"].as_u64().unwrap_or_default() > 0);
+    assert!(modified["edges_added"].as_u64().unwrap_or_default() > 0);
+    assert!(modified["edges_removed"].as_u64().unwrap_or_default() > 0);
+    assert!(modified["source_spans_added"].as_u64().unwrap_or_default() > 0);
+    assert!(
+        modified["source_spans_removed"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+    assert_eq!(
+        modified["path_evidence_invalidated"]["action"].as_str(),
+        Some("refreshed")
+    );
+    assert_eq!(
+        modified["candidate_spool_invalidated_or_rebuilt"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        modified["candidate_query_index_invalidated_or_rebuilt"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        modified["vector_chunks_invalidated_or_rebuilt"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+
+    let stale_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "oldHotPathLogin",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&stale_symbol, "old symbol after update");
+    let fresh_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "newHotPathLogin",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&fresh_symbol, "new symbol after update");
+    let stale_text = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "text",
+            "oldHotPathLogin",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&stale_text, "old text after update");
+
+    {
+        let store = SqliteGraphStore::open(&db_path).expect("open profile DB");
+        assert!(
+            store
+                .find_entities_by_exact_symbol("oldHotPathLogin")
+                .expect("old symbol lookup")
+                .is_empty(),
+            "stale entity must be removed from graph store"
+        );
+        let new_login = entity_by_file_kind_and_name(
+            &store,
+            "src/auth.ts",
+            EntityKind::Function,
+            "newHotPathLogin",
+        );
+        assert!(
+            new_login.source_span.is_some(),
+            "changed function must have a regenerated source span"
+        );
+    }
+
+    fs::write(
+        repo.join("src").join("added.ts"),
+        "export function addedHotPathSymbol() {\n  return newHotPathLogin('Example@Mail.test');\n}\n",
+    )
+    .expect("write added source");
+    let added = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/added.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(added["status"].as_str(), Some("updated"));
+    assert_eq!(added["files_walked"].as_u64(), Some(1));
+    assert_eq!(added["files_read"].as_u64(), Some(1));
+    assert_eq!(added["files_hashed"].as_u64(), Some(1));
+    assert_eq!(added["files_parsed"].as_u64(), Some(1));
+    assert_eq!(added["no_full_repo_fallback"].as_bool(), Some(true));
+    assert!(added["entities_added"].as_u64().unwrap_or_default() > 0);
+    assert_eq!(added["entities_removed"].as_u64(), Some(0));
+    assert!(added["source_spans_added"].as_u64().unwrap_or_default() > 0);
+    let added_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "addedHotPathSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&added_symbol, "added source symbol");
+    let context_pack = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "context-pack",
+            "--repo",
+            &repo_arg,
+            "--task",
+            "Use addedHotPathSymbol from src/added.ts",
+            "--agent-json",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    let context_pack_json = serde_json::to_string(&context_pack).expect("context-pack JSON");
+    assert!(
+        context_pack_json.contains("src/added.ts")
+            || context_pack_json.contains("addedHotPathSymbol"),
+        "context-pack should reference the added file or symbol: {context_pack_json}"
+    );
+    assert!(
+        !repo.join(".codegraph").exists(),
+        "agent-use watch must not mutate repo-local .codegraph"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup agent-use happy path repo");
+    fs::remove_dir_all(
+        agent_data_root
+            .parent()
+            .expect("agent data root parent")
+            .to_path_buf(),
+    )
+    .expect("cleanup agent-use data root");
+}
+
+#[test]
+fn agent_use_watch_once_alias_and_inline_test_boundaries() {
+    let repo = empty_repo();
+    let agent_data_root = empty_repo().join("agent-use-data");
+    fs::create_dir_all(repo.join("src")).expect("create src");
+    fs::create_dir_all(&agent_data_root).expect("create agent data root");
+    fs::write(
+        repo.join("src").join("service.ts"),
+        "export function oldAliasTarget() { return 'old'; }\nexport function newAliasTarget() { return 'new'; }\n",
+    )
+    .expect("write service");
+    fs::write(
+        repo.join("src").join("consumer.ts"),
+        "import { oldAliasTarget as selectedAlias } from './service';\nexport function runAliasConsumer() { return selectedAlias(); }\n",
+    )
+    .expect("write consumer");
+    fs::write(
+        repo.join("src").join("lib.rs"),
+        "pub fn production_entry() -> i32 {\n    1\n}\n",
+    )
+    .expect("write rust lib");
+
+    let repo_arg = repo.to_string_lossy().to_string();
+    let data_root_arg = agent_data_root.to_string_lossy().to_string();
+    let env = [("CODEGRAPH_AGENT_USE_DATA_ROOT", data_root_arg.as_str())];
+    let index = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &["agent-use", "index", "--repo", &repo_arg, "--json"],
+        &env,
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+    let db_path = PathBuf::from(index["db_path"].as_str().expect("agent-use db path"));
+
+    fs::write(
+        repo.join("src").join("consumer.ts"),
+        "import { newAliasTarget as selectedAlias } from './service';\nexport function runAliasConsumer() { return selectedAlias(); }\n",
+    )
+    .expect("retarget consumer");
+    let alias_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/consumer.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert!(
+        matches!(
+            alias_update["status"].as_str(),
+            Some("updated") | Some("degraded")
+        ),
+        "alias update should apply or report bounded degradation: {alias_update:?}"
+    );
+    assert!(
+        alias_update["closure_relation_classes"]
+            .as_array()
+            .expect("closure relation classes")
+            .iter()
+            .any(|class| class.as_str() == Some("direct_import_alias")),
+        "alias change should report direct_import_alias closure: {alias_update:?}"
+    );
+    {
+        let store = SqliteGraphStore::open(&db_path).expect("open profile DB");
+        let old_target = entity_by_file_kind_and_name(
+            &store,
+            "src/service.ts",
+            EntityKind::Function,
+            "oldAliasTarget",
+        );
+        let new_target = entity_by_file_kind_and_name(
+            &store,
+            "src/service.ts",
+            EntityKind::Function,
+            "newAliasTarget",
+        );
+        let run = entity_by_file_kind_and_name(
+            &store,
+            "src/consumer.ts",
+            EntityKind::Function,
+            "runAliasConsumer",
+        );
+        let calls = store
+            .find_edges_by_head_relation(&run.id, RelationKind::Calls)
+            .expect("calls from alias consumer");
+        assert!(
+            calls.iter().any(|edge| edge.tail_id == new_target.id),
+            "CALLS should move to the new alias target"
+        );
+        assert!(
+            calls.iter().all(|edge| edge.tail_id != old_target.id),
+            "old alias target must not remain in CALLS facts"
+        );
+        assert!(
+            store
+                .list_edges(10_000)
+                .expect("list edges")
+                .iter()
+                .filter(|edge| edge.derived)
+                .all(|edge| !edge.provenance_edges.is_empty()
+                    && edge.metadata.get("claim_state").and_then(Value::as_str)
+                        == Some("derived_with_provenance")),
+            "derived edges must retain provenance after alias update"
+        );
+    }
+
+    fs::write(
+        repo.join("src").join("lib.rs"),
+        "pub fn production_entry() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn inline_hot_path_test_case() {\n        assert_eq!(production_entry(), 1);\n    }\n}\n",
+    )
+    .expect("add inline rust test");
+    let inline_test_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/lib.rs",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(inline_test_update["status"].as_str(), Some("updated"));
+    assert_eq!(inline_test_update["files_read"].as_u64(), Some(1));
+    assert_eq!(inline_test_update["files_parsed"].as_u64(), Some(1));
+    assert!(
+        inline_test_update["source_spans_added"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+    let test_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "inline_hot_path_test_case",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&test_symbol, "inline test symbol");
+    let results = test_symbol["results"].as_array().expect("results");
+    assert!(
+        results
+            .iter()
+            .any(|result| result["evidence_role"].as_str() == Some("test")
+                || result["entity"]["evidence_role"].as_str() == Some("test")),
+        "inline test symbol must remain test evidence: {test_symbol:?}"
+    );
+    assert!(
+        results.iter().all(
+            |result| result["evidence_role"].as_str() != Some("production")
+                && result["entity"]["evidence_role"].as_str() != Some("production")
+        ),
+        "inline test symbol must not be promoted to production evidence: {test_symbol:?}"
+    );
+
+    fs::remove_dir_all(repo).expect("cleanup agent-use alias/test repo");
+    fs::remove_dir_all(
+        agent_data_root
+            .parent()
+            .expect("agent data root parent")
+            .to_path_buf(),
+    )
+    .expect("cleanup agent-use data root");
+}
+
+#[test]
+fn agent_use_watch_once_deleted_renamed_text_and_atomic_edges() {
+    let repo = empty_repo();
+    let agent_data_root = empty_repo().join("agent-use-data");
+    fs::create_dir_all(repo.join("src")).expect("create src");
+    fs::create_dir_all(repo.join("package").join("foo")).expect("create package");
+    fs::create_dir_all(&agent_data_root).expect("create agent data root");
+    fs::write(repo.join(".gitignore"), "*.tmp\ngenerated/\n").expect("write ignore");
+    fs::write(
+        repo.join("src").join("delete_me.ts"),
+        "export function deletedHotPathSymbol() { return 'delete'; }\n",
+    )
+    .expect("write delete fixture");
+    fs::write(
+        repo.join("src").join("old_name.ts"),
+        "export function renamedHotPathSymbol() { return 'same'; }\n",
+    )
+    .expect("write rename fixture");
+    fs::write(
+        repo.join("src").join("atomic.ts"),
+        "export function oldAtomicSaveSymbol() { return 'old'; }\n",
+    )
+    .expect("write atomic fixture");
+    fs::write(
+        repo.join("package").join("foo").join("foo.mk"),
+        "OLD_TEXT_EVIDENCE_TOKEN = y\n$(eval $(generic-package))\n",
+    )
+    .expect("write text evidence");
+
+    let repo_arg = repo.to_string_lossy().to_string();
+    let data_root_arg = agent_data_root.to_string_lossy().to_string();
+    let env = [("CODEGRAPH_AGENT_USE_DATA_ROOT", data_root_arg.as_str())];
+    let index = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &["agent-use", "index", "--repo", &repo_arg, "--json"],
+        &env,
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+    let db_path = PathBuf::from(index["db_path"].as_str().expect("agent-use db path"));
+
+    let deleted_before = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "deletedHotPathSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&deleted_before, "deleted symbol before delete");
+    let old_text_before = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "text",
+            "OLD_TEXT_EVIDENCE_TOKEN",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&old_text_before, "old text before update");
+
+    fs::remove_file(repo.join("src").join("delete_me.ts")).expect("delete source file");
+    let deleted_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/delete_me.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(deleted_update["status"].as_str(), Some("updated"));
+    assert_eq!(
+        deleted_update["reason"].as_str(),
+        Some("stale_facts_removed")
+    );
+    assert_eq!(
+        deleted_update["deleted_path"].as_str(),
+        Some("src/delete_me.ts")
+    );
+    assert!(deleted_update["deleted_paths"]
+        .as_array()
+        .expect("deleted paths")
+        .iter()
+        .any(|path| path.as_str() == Some("src/delete_me.ts")));
+    assert!(deleted_update["facts_deleted"].as_u64().unwrap_or_default() > 0);
+    assert!(deleted_update["files_deleted"].as_u64().unwrap_or_default() > 0);
+    assert_eq!(
+        deleted_update["path_evidence_invalidated"]["action"].as_str(),
+        Some("invalidated")
+    );
+    assert_eq!(
+        deleted_update["candidate_spool_invalidated_or_rebuilt"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        deleted_update["vector_chunks_invalidated_or_rebuilt"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        deleted_update["routing_handles_invalidated"]["action"].as_str(),
+        Some("dirty_file_cleanup")
+    );
+    let deleted_after = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "deletedHotPathSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&deleted_after, "deleted symbol after delete");
+    let deleted_context = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "context-pack",
+            "--repo",
+            &repo_arg,
+            "--task",
+            "Find deletedHotPathSymbol implementation",
+            "--agent-json",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    assert!(
+        !context_verified_paths_contain(&deleted_context, "src/delete_me.ts"),
+        "context-pack must not cite deleted source as fresh evidence: {deleted_context:?}"
+    );
+
+    fs::write(
+        repo.join("package").join("foo").join("foo.mk"),
+        "NEW_TEXT_EVIDENCE_TOKEN = y\nFOO_LICENSE = MIT\n$(eval $(generic-package))\n",
+    )
+    .expect("update text evidence");
+    let text_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "package/foo/foo.mk",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(text_update["status"].as_str(), Some("updated"));
+    assert_eq!(text_update["files_read"].as_u64(), Some(1));
+    assert_eq!(text_update["files_parsed"].as_u64(), Some(0));
+    assert_eq!(text_update["text_evidence_changed"].as_bool(), Some(true));
+    let old_text_after = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "text",
+            "OLD_TEXT_EVIDENCE_TOKEN",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&old_text_after, "old text after text update");
+    let new_text = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "text",
+            "NEW_TEXT_EVIDENCE_TOKEN",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&new_text, "new text after text update");
+    assert_eq!(
+        new_text["claimability"]["graph_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        new_text["claimability"]["text_evidence_is_not_graph_proof"].as_bool(),
+        Some(true)
+    );
+    let text_context = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "context-pack",
+            "--repo",
+            &repo_arg,
+            "--task",
+            "Investigate NEW_TEXT_EVIDENCE_TOKEN in package foo",
+            "--agent-json",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    let text_context_json = serde_json::to_string(&text_context).expect("text context JSON");
+    assert!(text_context_json.contains("NEW_TEXT_EVIDENCE_TOKEN"));
+    assert!(text_context_json.contains("text_evidence"));
+    {
+        let store = SqliteGraphStore::open(&db_path).expect("open profile DB");
+        assert!(store
+            .list_entities_by_file("package/foo/foo.mk")
+            .expect("text entities")
+            .is_empty());
+        assert!(store
+            .list_edges(10_000)
+            .expect("edges")
+            .iter()
+            .all(|edge| edge.source_span.repo_relative_path != "package/foo/foo.mk"));
+    }
+    fs::remove_file(repo.join("package").join("foo").join("foo.mk")).expect("delete text evidence");
+    let text_delete = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "package/foo/foo.mk",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(text_delete["status"].as_str(), Some("updated"));
+    assert_eq!(
+        text_delete["deleted_path"].as_str(),
+        Some("package/foo/foo.mk")
+    );
+    assert!(text_delete["facts_deleted"].as_u64().unwrap_or_default() > 0);
+    let deleted_text = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "text",
+            "NEW_TEXT_EVIDENCE_TOKEN",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&deleted_text, "deleted text evidence");
+
+    fs::rename(
+        repo.join("src").join("old_name.ts"),
+        repo.join("src").join("new_name.ts"),
+    )
+    .expect("rename source");
+    let renamed_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/old_name.ts",
+            "--changed",
+            "src/new_name.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(renamed_update["status"].as_str(), Some("updated"));
+    assert!(renamed_update["files_deleted"].as_u64().unwrap_or_default() > 0);
+    assert!(renamed_update["files_indexed"].as_u64().unwrap_or_default() > 0);
+    let old_file = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "files",
+            "src/old_name.ts",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_do_not_contain_file(&old_file, "src/old_name.ts", "old rename path");
+    let renamed_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "renamedHotPathSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&renamed_symbol, "renamed symbol");
+    assert_agent_results_contain_file(&renamed_symbol, "src/new_name.ts", "renamed symbol");
+
+    fs::write(
+        repo.join("src").join("duplicate.ts"),
+        "export function renamedHotPathSymbol() { return 'same'; }\n",
+    )
+    .expect("write duplicate content");
+    stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/duplicate.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    {
+        let store = SqliteGraphStore::open(&db_path).expect("open profile DB");
+        let first = entity_by_file_kind_and_name(
+            &store,
+            "src/new_name.ts",
+            EntityKind::Function,
+            "renamedHotPathSymbol",
+        );
+        let second = entity_by_file_kind_and_name(
+            &store,
+            "src/duplicate.ts",
+            EntityKind::Function,
+            "renamedHotPathSymbol",
+        );
+        assert_ne!(first.id, second.id);
+    }
+
+    fs::write(
+        repo.join("src").join("atomic.ts.tmp"),
+        "export function shouldNotBecomeFact() { return 'temp'; }\n",
+    )
+    .expect("write atomic temp");
+    let temp_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/atomic.ts.tmp",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(temp_update["status"].as_str(), Some("no_op"));
+    assert_eq!(
+        temp_update["reason"].as_str(),
+        Some("ignored_path_no_graph_changes")
+    );
+    assert_eq!(temp_update["files_read"].as_u64(), Some(0));
+    fs::remove_file(repo.join("src").join("atomic.ts.tmp")).expect("remove atomic temp");
+    fs::write(
+        repo.join("src").join("atomic.ts"),
+        "export function newAtomicSaveSymbol() { return 'new'; }\n",
+    )
+    .expect("replace atomic final path");
+    let atomic_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/atomic.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(atomic_update["status"].as_str(), Some("updated"));
+    let old_atomic = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "oldAtomicSaveSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&old_atomic, "old atomic symbol");
+    let new_atomic = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "newAtomicSaveSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&new_atomic, "new atomic symbol");
+    {
+        let store = SqliteGraphStore::open(&db_path).expect("open profile DB");
+        assert!(store
+            .get_file("src/atomic.ts.tmp")
+            .expect("temp file")
+            .is_none());
+        assert!(store
+            .find_entities_by_exact_symbol("shouldNotBecomeFact")
+            .expect("temp symbol")
+            .is_empty());
+    }
+
+    assert!(!repo.join(".codegraph").exists());
+    fs::remove_dir_all(repo).expect("cleanup delete/rename/text repo");
+    fs::remove_dir_all(
+        agent_data_root
+            .parent()
+            .expect("agent data root parent")
+            .to_path_buf(),
+    )
+    .expect("cleanup agent-use data root");
+}
+
+#[test]
+fn agent_use_watch_once_source_role_ignored_outside_and_failpoint_boundaries() {
+    let repo = empty_repo();
+    let agent_data_root = empty_repo().join("agent-use-data");
+    let outside_dir = empty_repo();
+    fs::create_dir_all(repo.join("src")).expect("create src");
+    fs::create_dir_all(repo.join("tests")).expect("create tests");
+    fs::create_dir_all(repo.join("generated")).expect("create generated");
+    fs::create_dir_all(&agent_data_root).expect("create agent data root");
+    fs::write(repo.join(".gitignore"), "generated/\n*.tmp\n").expect("write ignore");
+    fs::write(
+        repo.join("src").join("role_boundary.ts"),
+        "export function roleBoundarySymbol() { return 'prod'; }\n",
+    )
+    .expect("write production role file");
+    fs::write(
+        repo.join("src").join("rollback.ts"),
+        "export function oldRollbackSymbol() { return 'old'; }\n",
+    )
+    .expect("write rollback fixture");
+
+    let repo_arg = repo.to_string_lossy().to_string();
+    let data_root_arg = agent_data_root.to_string_lossy().to_string();
+    let env = [("CODEGRAPH_AGENT_USE_DATA_ROOT", data_root_arg.as_str())];
+    let index = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &["agent-use", "index", "--repo", &repo_arg, "--json"],
+        &env,
+    ));
+    assert_eq!(index["status"].as_str(), Some("indexed"));
+
+    let production_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "roleBoundarySymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&production_symbol, "production role symbol");
+    assert!(production_symbol["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .any(|result| result["evidence_role"].as_str() == Some("production")));
+
+    fs::rename(
+        repo.join("src").join("role_boundary.ts"),
+        repo.join("tests").join("role_boundary.test.ts"),
+    )
+    .expect("move production to test");
+    let to_test_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/role_boundary.ts",
+            "--changed",
+            "tests/role_boundary.test.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(to_test_update["status"].as_str(), Some("updated"));
+    let test_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "roleBoundarySymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&test_symbol, "test role symbol");
+    assert_agent_results_contain_file(&test_symbol, "tests/role_boundary.test.ts", "test role");
+    assert!(test_symbol["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .all(
+            |result| result["evidence_role"].as_str() != Some("production")
+                && result["entity"]["evidence_role"].as_str() != Some("production")
+        ));
+    let production_context = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "context-pack",
+            "--repo",
+            &repo_arg,
+            "--task",
+            "Use roleBoundarySymbol production implementation",
+            "--agent-json",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    assert!(
+        !context_verified_paths_contain(&production_context, "tests/role_boundary.test.ts"),
+        "production context must not cite test evidence by default: {production_context:?}"
+    );
+    let test_context = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "context-pack",
+            "--repo",
+            &repo_arg,
+            "--task",
+            "Assess test impact for roleBoundarySymbol",
+            "--mode",
+            "test-impact",
+            "--seed",
+            "roleBoundarySymbol",
+            "--agent-json",
+            "--max-output-bytes",
+            "65536",
+        ],
+        &env,
+    ));
+    assert!(
+        serde_json::to_string(&test_context)
+            .expect("test context JSON")
+            .contains("tests/role_boundary.test.ts"),
+        "test-impact context should intentionally include test evidence: {test_context:?}"
+    );
+
+    fs::rename(
+        repo.join("tests").join("role_boundary.test.ts"),
+        repo.join("src").join("role_boundary.ts"),
+    )
+    .expect("move test back to production");
+    let to_prod_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "tests/role_boundary.test.ts",
+            "--changed",
+            "src/role_boundary.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(to_prod_update["status"].as_str(), Some("updated"));
+    let production_again = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "roleBoundarySymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_contain_file(&production_again, "src/role_boundary.ts", "production role");
+    assert!(production_again["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .any(|result| result["evidence_role"].as_str() == Some("production")));
+
+    fs::write(
+        repo.join("generated").join("noop.ts"),
+        "export function generatedIgnoredSymbol() { return 'ignored'; }\n",
+    )
+    .expect("write ignored generated file");
+    let ignored_update = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "generated/noop.ts",
+            "--json",
+        ],
+        &env,
+    ));
+    assert_eq!(ignored_update["status"].as_str(), Some("no_op"));
+    assert_eq!(
+        ignored_update["reason"].as_str(),
+        Some("ignored_path_no_graph_changes")
+    );
+    assert_eq!(ignored_update["files_read"].as_u64(), Some(0));
+    assert_eq!(ignored_update["facts_deleted"].as_u64(), Some(0));
+    let ignored_symbol = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "generatedIgnoredSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&ignored_symbol, "ignored generated symbol");
+
+    let outside_file = outside_dir.join("outside.ts");
+    fs::write(
+        &outside_file,
+        "export function outsideShouldNotIndex() { return 'outside'; }\n",
+    )
+    .expect("write outside path");
+    let outside_arg = outside_file.to_string_lossy().to_string();
+    let outside_output = run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            &outside_arg,
+            "--json",
+        ],
+        &env,
+    );
+    let outside_value: Value = if outside_output.status.success() {
+        serde_json::from_slice(&outside_output.stdout).expect("outside stdout JSON")
+    } else {
+        serde_json::from_slice(&outside_output.stderr).expect("outside stderr JSON")
+    };
+    assert_eq!(outside_value["status"].as_str(), Some("rejected"));
+    assert_eq!(
+        outside_value["reason"].as_str(),
+        Some("one_or_more_changed_paths_are_outside_repo")
+    );
+    assert_eq!(outside_value["files_read"].as_u64(), Some(0));
+    assert_eq!(outside_value["facts_deleted"].as_u64(), Some(0));
+    assert_eq!(outside_value["old_db_preserved"].as_bool(), Some(true));
+    assert!(outside_value["rejected_paths"]
+        .as_array()
+        .expect("rejected paths")
+        .iter()
+        .any(|path| path["reason"].as_str() == Some("path_outside_repo")
+            && path["read"].as_bool() == Some(false)
+            && path["indexed"].as_bool() == Some(false)));
+
+    fs::write(
+        repo.join("src").join("rollback.ts"),
+        "export function newRollbackSymbol() { return 'new'; }\n",
+    )
+    .expect("write rollback replacement");
+    let fail_env = [
+        ("CODEGRAPH_AGENT_USE_DATA_ROOT", data_root_arg.as_str()),
+        (
+            "CODEGRAPH_WRITE_PATH_FAILPOINT",
+            "incremental_after_stale_cleanup_before_insert",
+        ),
+    ];
+    let fail_output = run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "watch",
+            "--repo",
+            &repo_arg,
+            "--once",
+            "--changed",
+            "src/rollback.ts",
+            "--json",
+        ],
+        &fail_env,
+    );
+    assert!(
+        !fail_output.status.success(),
+        "failpoint should abort update: stdout={}",
+        String::from_utf8_lossy(&fail_output.stdout)
+    );
+    let fail_stderr = String::from_utf8_lossy(&fail_output.stderr);
+    assert!(
+        fail_stderr.contains("incremental_after_stale_cleanup_before_insert"),
+        "stderr={fail_stderr}"
+    );
+    let old_rollback = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "oldRollbackSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_present(&old_rollback, "old rollback symbol after failpoint");
+    let new_rollback = stdout_json(&run_codegraph_in_with_env(
+        &repo,
+        &[
+            "agent-use",
+            "query",
+            "symbols",
+            "newRollbackSymbol",
+            "--repo",
+            &repo_arg,
+            "--limit",
+            "5",
+            "--agent-json",
+        ],
+        &env,
+    ));
+    assert_agent_results_empty(&new_rollback, "new rollback symbol after failpoint");
+
+    assert!(!repo.join(".codegraph").exists());
+    fs::remove_dir_all(repo).expect("cleanup role/ignored/outside repo");
+    fs::remove_dir_all(outside_dir).expect("cleanup outside dir");
+    fs::remove_dir_all(
+        agent_data_root
+            .parent()
+            .expect("agent data root parent")
+            .to_path_buf(),
+    )
+    .expect("cleanup agent-use data root");
 }
 
 #[test]

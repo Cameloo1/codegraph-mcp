@@ -22,7 +22,30 @@ symbols, and macro/preprocessor blindness.
 
 Use `codegraph-mcp languages` for the table view and `codegraph-mcp languages --json` for machine-readable capability metadata.
 
-## Current Frontends
+## Current Frontend Matrix
+
+Verified against the parser registry in
+`crates/codegraph-parser/src/lib.rs` (`LANGUAGE_FRONTENDS`) and the CLI
+surface exposed by `codegraph-mcp languages`. Counts are registry counts, not
+public benchmark scores.
+
+| Language | Extensions | Tier | Grammar | Compiler resolver | LSP resolver | Entity kinds | Relation kinds | Extractors | Exactness labels |
+| --- | --- | ---: | --- | --- | --- | ---: | ---: | ---: | --- |
+| JavaScript | `js`, `mjs`, `cjs` | 5 | yes | no | no | 27 | 46 | 3 | `parser_verified`, `static_heuristic` |
+| JSX | `jsx` | 5 | yes | no | no | 27 | 46 | 3 | `parser_verified`, `static_heuristic` |
+| TypeScript | `ts`, `mts`, `cts` | 5 | yes | optional | no | 27 | 46 | 4 | `compiler_verified`, `parser_verified`, `static_heuristic` |
+| TSX | `tsx` | 5 | yes | optional | no | 27 | 46 | 4 | `compiler_verified`, `parser_verified`, `static_heuristic` |
+| Python | `py` | 3 | yes | no | no | 19 | 12 | 2 | `parser_verified` |
+| Go | `go` | 3 | yes | no | no | 19 | 12 | 2 | `parser_verified` |
+| Rust | `rs` | 3 | yes | no | no | 19 | 12 | 2 | `parser_verified` |
+| Java | `java` | 1 | yes | no | no | 13 | 6 | 1 | `parser_verified` |
+| C# | `cs` | 1 | yes | no | no | 13 | 6 | 1 | `parser_verified` |
+| C | `c`, `h` | 1 | yes | no | no | 13 | 6 | 1 | `parser_verified` |
+| C++ | `cc`, `cpp`, `cxx`, `hpp`, `hh`, `hxx` | 1 | yes | no | no | 13 | 6 | 1 | `parser_verified` |
+| Ruby | `rb` | 1 | yes | no | no | 13 | 6 | 1 | `parser_verified` |
+| PHP | `php` | 1 | yes | no | no | 13 | 6 | 1 | `parser_verified` |
+
+## Tier Notes
 
 - TypeScript/TSX and JavaScript/JSX include syntax/entity/import/export
   extraction, parser-backed direct calls, reads/writes where AST-scoped, test
