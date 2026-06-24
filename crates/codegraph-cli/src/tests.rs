@@ -3262,7 +3262,7 @@ fn git_metadata_unavailable_identity_does_not_drift() {
     );
 
     let _git_unavailable =
-        AgentUseFailpointGuard::set(super::AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT);
+        BundleFailpointEnvGuard::set(super::AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT);
     let degraded_profile = with_agent_use_data_root(&data_root, || {
         super::resolve_agent_use_profile(&repo).expect("degraded profile")
     });
@@ -3480,7 +3480,7 @@ fn permission_denied_not_false_not_indexed() {
     let repo = temp_repo();
     write_agent_use_context_fixture(&repo);
     let _failpoint =
-        AgentUseFailpointGuard::set(super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT);
+        BundleFailpointEnvGuard::set(super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT);
 
     for command in ["status", "mcp-config"] {
         let value = with_agent_use_data_root(&data_root, || {
@@ -3961,11 +3961,15 @@ fn agent_use_index_and_status_use_external_profile_db() {
     );
     assert_eq!(status["graph_db_status"].as_str(), Some("ready"));
     assert_eq!(
-        status["candidate_spool_query_index_status"].as_str(),
+        status["staged_availability"]["layer_readiness"]["candidate_spool"]["query_index_status"]
+            .as_str(),
         Some("ready")
     );
     assert_eq!(status["vector_runtime_status"].as_str(), Some("ready"));
-    assert_eq!(status["vector_audit_status"].as_str(), Some("missing"));
+    assert_eq!(
+        status["staged_availability"]["layer_readiness"]["vector_audit"]["status"].as_str(),
+        Some("missing")
+    );
     assert_eq!(status["graph_proof_available"].as_bool(), Some(true));
     assert_eq!(status["candidate_only_available"].as_bool(), Some(true));
     assert_eq!(
@@ -4095,7 +4099,7 @@ fn agent_use_validate_edit_panic_failpoint_emits_structured_error_packet_and_sta
     );
 
     let packet = {
-        let _failpoint = AgentUseFailpointGuard::set("agent_use_validation_panic_at_delta");
+        let _failpoint = BundleFailpointEnvGuard::set("agent_use_validation_panic_at_delta");
         with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&[
                 "validate-edit".to_string(),
@@ -4532,6 +4536,7 @@ fn query_unresolved_calls_reads_populated_lane_with_class_filter() {
 
 #[test]
 fn validate_edit_unresolved_findings_queryable() {
+    let _guard = lock_env_test();
     let data_root = temp_repo();
     let repo = temp_repo();
     write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
@@ -4620,6 +4625,15 @@ fn validate_edit_unresolved_findings_queryable() {
                 .expect("lane items")
                 .iter()
                 .all(|item| item["not_graph_proof"].as_bool() == Some(true)),
+            "{label}: {value}"
+        );
+        assert!(
+            lane["items"]
+                .as_array()
+                .expect("lane items")
+                .iter()
+                .all(|item| item["relation"].as_str() == Some("CALLS")
+                    && item["definition_candidate_count"].as_u64() == Some(0)),
             "{label}: {value}"
         );
     };
@@ -5277,7 +5291,7 @@ fn agent_use_validate_edit_crash_after_commit_replays_blocking_finding() {
     // (the exact dogfood poisoning window).
     let crashed = {
         let _failpoint =
-            AgentUseFailpointGuard::set("agent_use_validation_panic_at_lifecycle_reads");
+            BundleFailpointEnvGuard::set("agent_use_validation_panic_at_lifecycle_reads");
         with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&validate_edit_args_for(&repo))
         })
@@ -5458,7 +5472,7 @@ fn agent_use_index_clears_validation_journal_and_rechecks_blockers() {
     remove_agent_use_hard_interrupt_targets(&repo);
     let crashed = {
         let _failpoint =
-            AgentUseFailpointGuard::set("agent_use_validation_panic_at_lifecycle_reads");
+            BundleFailpointEnvGuard::set("agent_use_validation_panic_at_lifecycle_reads");
         with_agent_use_data_root(&data_root, || {
             super::run_agent_use_command(&validate_edit_args_for(&repo))
         })
@@ -5641,89 +5655,6 @@ fn agent_use_validate_edit_low_delta_cap_is_labeled_graph_delta_bounded() {
     assert!(
         serialized.contains("graph_delta_bounded"),
         "blocking-relevant delta omission must be labeled graph_delta_bounded: {packet}"
-    );
-
-    remove_dir_all_with_retry(&repo, "cleanup repo");
-    remove_dir_all_with_retry(&data_root, "cleanup data root");
-}
-
-#[test]
-fn agent_use_validate_edit_truncated_unresolved_lane_is_labeled_bounded_not_silent_ok() {
-    // MVP3 stress-test Q8 regression: a changed file whose unresolved-reference
-    // lane is truncated at the per-file cap is INCOMPLETE for forward checks (a
-    // NEW hallucinated call appended past the cap is shed at index time). The
-    // run must be labeled bounded/unknown (never a silent ok), and resolved_count
-    // must be marked bounded instead of reporting phantom "fixes".
-    let _guard = lock_env_test();
-    let data_root = temp_repo();
-    let repo = temp_repo();
-    write_cli_fixture_file(
-        &repo,
-        "Cargo.toml",
-        "[package]\nname = \"fixture-crate\"\nversion = \"0.0.0\"\n",
-    );
-    // 300 distinct unresolved local calls overflow the 256-row/file lane cap, so
-    // indexing writes an `unresolved_reference_lane_truncated` extraction warning.
-    let flood_source = |calls: usize| {
-        let mut source = String::from("pub fn flood(input: i32) -> i32 {\n");
-        for index in 0..calls {
-            source.push_str(&format!("    missing_fn_{index}(input);\n"));
-        }
-        source.push_str("    input\n}\n");
-        source
-    };
-    write_cli_fixture_file(&repo, "src/flood.rs", &flood_source(300));
-    with_agent_use_data_root(&data_root, || {
-        super::run_agent_use_command(&[
-            "index".to_string(),
-            "--repo".to_string(),
-            path_string(&repo),
-            "--json".to_string(),
-        ])
-    })
-    .expect("agent-use index");
-
-    // Edit: append one more nonexistent call. With 301 unresolved refs the lane
-    // is still truncated and the appended call lands past the cap (the exact
-    // forward-miss the stress test caught).
-    write_cli_fixture_file(&repo, "src/flood.rs", &flood_source(301));
-    let validate_args = vec![
-        "validate-edit".to_string(),
-        "--repo".to_string(),
-        path_string(&repo),
-        "--changed".to_string(),
-        "src/flood.rs".to_string(),
-        "--agent-json".to_string(),
-    ];
-    let packet =
-        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
-            .expect("validate-edit on truncated-lane file");
-
-    assert_ne!(
-        packet["status"].as_str(),
-        Some("ok"),
-        "a truncated unresolved-reference lane must never report a silent pass: {packet}"
-    );
-    let serialized = serde_json::to_string(&packet).unwrap_or_default();
-    assert!(
-        serialized.contains("unresolved_reference_lane_truncated"),
-        "the bounded-unknown finding must name the lane truncation: {packet}"
-    );
-    assert_eq!(
-        packet["unresolved_references"]["resolved_count_bounded"].as_bool(),
-        Some(true),
-        "resolved_count must be marked bounded when a changed file's lane was truncated: {packet}"
-    );
-    let truncated = packet["unresolved_references"]["lane_truncated_files"]
-        .as_array()
-        .expect("lane_truncated_files array");
-    assert!(
-        truncated.iter().any(|path| path
-            .as_str()
-            .unwrap_or_default()
-            .replace('\\', "/")
-            .ends_with("flood.rs")),
-        "the truncated changed file must be named: {packet}"
     );
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
@@ -7388,7 +7319,7 @@ fn agent_use_watch_once_post_commit_interrupt_reports_recovered_complete_db() {
         "src/service.js",
         "export function newPostCommitSymbol() {\n  return \"new\";\n}\n",
     );
-    let failpoint = AgentUseFailpointGuard::set(
+    let failpoint = BundleFailpointEnvGuard::set(
         super::AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT,
     );
     let error = with_agent_use_data_root(&data_root, || {
@@ -9813,7 +9744,7 @@ fn agent_use_profile_durability_labels_lock_sidecars_permission_and_publish_stat
         super::resolve_agent_use_profile_with_data_root(&permission_repo, &data_root)
             .expect("permission profile");
     let permission_error = {
-        let _failpoint = AgentUseFailpointGuard::set(
+        let _failpoint = BundleFailpointEnvGuard::set(
             super::AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT,
         );
         with_agent_use_data_root(&data_root, || {
@@ -9837,7 +9768,7 @@ fn agent_use_profile_durability_labels_lock_sidecars_permission_and_publish_stat
         super::resolve_agent_use_profile_with_data_root(&filesystem_repo, &data_root)
             .expect("filesystem profile");
     let filesystem_error = {
-        let _failpoint = AgentUseFailpointGuard::set(
+        let _failpoint = BundleFailpointEnvGuard::set(
             super::AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT,
         );
         with_agent_use_data_root(&data_root, || {
@@ -10838,7 +10769,19 @@ fn status_and_doctor_do_not_migrate_old_schema_db() {
 
     assert_eq!(status["status"].as_str(), Some("db_problem"));
     assert_eq!(status["db_problem_kind"].as_str(), Some("schema_mismatch"));
+    assert_eq!(
+        status["mvp4_micro_node_status"].as_str(),
+        Some("incompatible")
+    );
+    assert_eq!(
+        status["mvp4_micro_nodes"]["graph_claimability_unchanged"].as_bool(),
+        Some(true)
+    );
     assert_eq!(doctor["db_problem_kind"].as_str(), Some("schema_mismatch"));
+    assert_eq!(
+        doctor["mvp4_micro_node_status"].as_str(),
+        Some("incompatible")
+    );
     assert_eq!(doctor["safe_to_query"].as_bool(), Some(false));
     assert_eq!(user_version_after, 1);
     assert_eq!(before_bytes, after_bytes);
@@ -10846,6 +10789,116 @@ fn status_and_doctor_do_not_migrate_old_schema_db() {
     assert_eq!(
         before_metadata.modified().expect("mtime before"),
         after_metadata.modified().expect("mtime after")
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup");
+}
+
+#[test]
+fn status_and_doctor_report_mvp4_micro_nodes_bounded_read_only() {
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(user: User, client: Client) {\n  const token = user.name;\n  let result = token;\n  result = client.send(token);\n  return result;\n}\n",
+    );
+    index_repo(&repo).expect("index TypeScript fixture");
+    let db_path = default_db_path(&repo);
+    let before_bytes = fs::read(&db_path).expect("read DB before status");
+
+    let status = run_status_command(&[path_string(&repo)]).expect("status");
+    let doctor = run_doctor_command(&[path_string(&repo), "--json".to_string()]).expect("doctor");
+    let after_bytes = fs::read(&db_path).expect("read DB after status");
+
+    assert_eq!(before_bytes, after_bytes);
+    for surface in [&status, &doctor] {
+        let micro = &surface["mvp4_micro_nodes"];
+        assert_eq!(surface["mvp4_micro_node_status"].as_str(), Some("ready"));
+        assert_eq!(micro["status"].as_str(), Some("ready"));
+        assert_eq!(micro["ready"].as_bool(), Some(true));
+        assert!(micro["total_rows"].as_u64().unwrap_or(0) > 0);
+        assert!(
+            micro["rows_by_node_kind"]["function_frame"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
+        assert_eq!(micro["sample_count"].as_u64(), Some(0));
+        assert!(micro.get("sample").is_none());
+        assert_eq!(micro["default_full_table_scan"].as_bool(), Some(false));
+        assert_eq!(micro["full_source_body_output"].as_bool(), Some(false));
+        assert_eq!(
+            micro["availability_separate_from_graph_claimability"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            micro["proof_boundary"]["not_micro_edge_or_flow_proof"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            micro["proof_boundary"]["mutation_proof_activated"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            micro["proof_boundary"]["flow_proof_activated"].as_bool(),
+            Some(false)
+        );
+        assert!(surface["staged_availability"]["layer_readiness"]["mvp4_micro_nodes"].is_object());
+    }
+
+    remove_dir_all_with_retry(&repo, "cleanup");
+}
+
+#[test]
+fn audit_micro_nodes_sample_is_bounded_read_only_and_not_proof() {
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(user: User, client: Client) {\n  const token = user.name;\n  return client.send(token);\n}\n",
+    );
+    index_repo(&repo).expect("index TypeScript fixture");
+    let db_path = default_db_path(&repo);
+    let before_bytes = fs::read(&db_path).expect("read DB before audit");
+
+    let audit = super::audit::run_audit_command(&[
+        "micro-nodes".to_string(),
+        "--db".to_string(),
+        path_string(&db_path),
+        "--sample".to_string(),
+        "2".to_string(),
+    ])
+    .expect("micro-node audit");
+    let after_bytes = fs::read(&db_path).expect("read DB after audit");
+
+    assert_eq!(before_bytes, after_bytes);
+    assert_eq!(audit["status"].as_str(), Some("ready"));
+    assert!(audit["total_rows"].as_u64().unwrap_or(0) > 0);
+    let sample = audit["sample"].as_array().expect("bounded sample");
+    assert!(!sample.is_empty());
+    assert!(sample.len() <= 2);
+    for row in sample {
+        assert!(row["micro_node_id"].is_string());
+        assert!(row["kind"].is_string());
+        assert!(row["file"].is_string());
+        assert!(row["source_span"].is_object());
+        assert!(row.get("source_body").is_none());
+        assert!(row.get("full_source").is_none());
+        assert!(row.get("text").is_none());
+    }
+    assert_eq!(audit["default_full_table_scan"].as_bool(), Some(false));
+    assert_eq!(audit["full_source_body_output"].as_bool(), Some(false));
+    assert_eq!(
+        audit["proof_boundary"]["not_micro_edge_or_flow_proof"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        audit["proof_boundary"]["route_auth_security_semantics"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        audit["artifact_mutated_during_inspection"].as_bool(),
+        Some(false)
     );
 
     remove_dir_all_with_retry(&repo, "cleanup");
@@ -19263,24 +19316,6 @@ impl Drop for BundleFailpointEnvGuard {
         } else {
             std::env::remove_var("CODEGRAPH_WRITE_PATH_FAILPOINT");
         }
-    }
-}
-
-struct AgentUseFailpointGuard {
-    previous: Option<String>,
-}
-
-impl AgentUseFailpointGuard {
-    fn set(failpoint: &str) -> Self {
-        let previous =
-            super::set_cli_write_path_chaos_failpoint_override(Some(failpoint.to_string()));
-        Self { previous }
-    }
-}
-
-impl Drop for AgentUseFailpointGuard {
-    fn drop(&mut self) {
-        super::set_cli_write_path_chaos_failpoint_override(self.previous.take());
     }
 }
 

@@ -22,7 +22,7 @@ use crate::{
     GraphStore, RetrievalTraceRecord, StoreError, StoreResult, TextSearchHit, TextSearchKind,
 };
 
-pub const SCHEMA_VERSION: u32 = 21;
+pub const SCHEMA_VERSION: u32 = 22;
 pub const DB_PASSPORT_VERSION: u32 = 1;
 pub const MAX_SYMBOL_VALUE_BYTES: usize = 512;
 pub const MAX_QUALIFIED_NAME_BYTES: usize = 1024;
@@ -39,13 +39,26 @@ pub const SPARSE_SIDECAR_TABLES: &[&str] = &[
     "validation_findings",
 ];
 pub const SPARSE_SIDECAR_INDEXES: &[&str] = &[
+    "idx_entity_features_file_kind",
+    "idx_edge_features_file_kind",
     "idx_ast_micro_nodes_file_scope_kind",
+    "idx_ast_micro_nodes_source_span",
+    "idx_ast_micro_nodes_exact_claim",
     "idx_ast_micro_edges_file_relation",
+    "idx_ast_micro_edges_function_relation",
+    "idx_ast_micro_edges_source_span",
+    "idx_ast_micro_edges_exact_claim",
     "idx_local_flow_packets_function",
+    "idx_local_flow_packets_source_span",
+    "idx_local_flow_packets_exact_claim",
     "idx_routing_packet_handles_lifecycle",
     "idx_validation_findings_file_severity",
+    "idx_validation_findings_source_span",
 ];
 const CONTENT_TEMPLATE_EXTRACTION_VERSION: &str = "local-fact-template-v1";
+const MVP4_1_MICRO_NODE_CAP_HIT_WARNING_KIND: &str = "mvp4_1_micro_node_cap_hit";
+const MVP4_1_MICRO_NODE_CAP_HIT_WARNING_PREFIX: &str = "mvp4_1_micro_node_cap_hit:";
+const MVP4_1_MICRO_NODE_CAP_HIT_DETAIL_LIMIT: usize = 8;
 
 const EDGE_FLAG_HEURISTIC: i64 = 1 << 0;
 const EDGE_FLAG_UNRESOLVED: i64 = 1 << 1;
@@ -145,13 +158,22 @@ pub struct DbPassport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityFeatureRow {
+    pub feature_id: String,
+    pub file_id: Option<String>,
     pub entity_id: String,
+    pub function_entity_id: Option<String>,
     pub feature_kind: String,
+    pub schema_version: u32,
     pub payload_version: u32,
     pub compact_payload: String,
     pub extraction_version: String,
+    pub exactness: String,
+    pub provenance_id: Option<String>,
     pub source_span_id: Option<String>,
+    pub source_role: String,
+    pub language: String,
     pub claimability: String,
+    pub lifecycle_binding: String,
 }
 
 /// One persisted unresolved-reference lane row (an explicitly non-proof fact:
@@ -170,15 +192,23 @@ pub struct UnresolvedReferenceRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeFeatureRow {
+    pub feature_id: String,
+    pub file_id: Option<String>,
     pub edge_id: String,
+    pub function_entity_id: Option<String>,
     pub feature_kind: String,
+    pub schema_version: u32,
     pub payload_version: u32,
     pub compact_payload: String,
     pub extraction_version: String,
+    pub exactness: String,
     pub provenance_id: Option<String>,
     pub source_span_id: Option<String>,
+    pub source_role: String,
+    pub language: String,
     pub derived: bool,
     pub claimability: String,
+    pub lifecycle_binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,24 +220,94 @@ pub struct AstMicroNodeRow {
     pub micro_kind: String,
     pub symbol: Option<String>,
     pub source_span_id: String,
+    pub schema_version: u32,
     pub extraction_version: String,
+    pub exactness: String,
+    pub provenance_id: Option<String>,
+    pub source_role: String,
+    pub language: String,
     pub payload_version: u32,
     pub claimability: String,
+    pub lifecycle_binding: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AstMicroNodeVisibilitySample {
+    pub micro_node_id: String,
+    pub kind: String,
+    pub file: String,
+    pub function_entity_id: Option<String>,
+    pub scope_entity_id: Option<String>,
+    pub source_span_id: String,
+    pub source_span: Option<SourceSpan>,
+    pub name_or_literal: Option<String>,
+    pub exactness: String,
+    pub claimability: String,
+    pub binding_status: String,
+    pub schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub source_role: String,
+    pub language: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AstMicroNodeCapHitVisibility {
+    pub file: String,
+    pub cap_kind: String,
+    pub function_identity: Option<String>,
+    pub node_kind: Option<String>,
+    pub retained_count: u64,
+    pub omitted_count: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AstMicroNodeVisibilitySummary {
+    pub total_rows: u64,
+    pub rows_by_node_kind: BTreeMap<String, u64>,
+    pub rows_by_language: BTreeMap<String, u64>,
+    pub rows_by_source_role: BTreeMap<String, u64>,
+    pub files_represented: u64,
+    pub functions_represented: u64,
+    pub row_schema_versions: Vec<u32>,
+    pub payload_versions: Vec<u32>,
+    pub extraction_versions: Vec<String>,
+    pub exactness_counts: BTreeMap<String, u64>,
+    pub claimability_counts: BTreeMap<String, u64>,
+    pub truncated_file_count: u64,
+    pub truncated_function_count: u64,
+    pub cap_hit_count: u64,
+    pub omitted_count: u64,
+    pub cap_hit_details: Vec<AstMicroNodeCapHitVisibility>,
+    pub estimated_payload_bytes: u64,
+    pub sample_limit: usize,
+    pub sample: Vec<AstMicroNodeVisibilitySample>,
+    pub query_plan: Vec<String>,
+    pub default_full_table_scan: bool,
+    pub full_source_body_output: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AstMicroEdgeRow {
     pub micro_edge_id: String,
     pub file_id: String,
+    pub function_entity_id: Option<String>,
+    pub scope_entity_id: Option<String>,
+    pub core_edge_id: Option<String>,
     pub source_micro_node_id: String,
     pub target_micro_node_id: String,
     pub relation_kind: String,
     pub source_span_id: Option<String>,
     pub exactness: String,
     pub provenance_id: Option<String>,
+    pub schema_version: u32,
     pub extraction_version: String,
+    pub source_role: String,
+    pub language: String,
     pub payload_version: u32,
     pub claimability: String,
+    pub lifecycle_binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,10 +318,17 @@ pub struct LocalFlowPacketRow {
     pub packet_kind: String,
     pub compressed_steps: String,
     pub source_span_ids_json: String,
+    pub primary_source_span_id: Option<String>,
     pub proof_status: String,
+    pub schema_version: u32,
     pub extraction_version: String,
+    pub exactness: String,
+    pub provenance_id: Option<String>,
+    pub source_role: String,
+    pub language: String,
     pub payload_version: u32,
     pub claimability: String,
+    pub lifecycle_binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,21 +338,37 @@ pub struct RoutingPacketHandleRow {
     pub task_intent_hash: String,
     pub packet_kind: String,
     pub evidence_refs_json: String,
+    pub source_span_id: Option<String>,
     pub expires_or_invalidates_on: String,
+    pub schema_version: u32,
+    pub exactness: String,
+    pub provenance_id: Option<String>,
+    pub source_role: String,
+    pub language: String,
     pub payload_version: u32,
     pub claimability: String,
+    pub lifecycle_binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceFeatureRow {
+    pub feature_id: String,
+    pub file_id: Option<String>,
     pub evidence_ref: String,
     pub evidence_kind: String,
+    pub function_entity_id: Option<String>,
     pub feature_kind: String,
+    pub schema_version: u32,
     pub payload_version: u32,
     pub compact_payload: String,
     pub extraction_version: String,
+    pub exactness: String,
+    pub provenance_id: Option<String>,
     pub source_span_id: Option<String>,
+    pub source_role: String,
+    pub language: String,
     pub claimability: String,
+    pub lifecycle_binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +380,12 @@ pub struct ValidationFindingRow {
     pub severity: String,
     pub finding_kind: String,
     pub source_span_id: Option<String>,
+    pub schema_version: u32,
+    pub extraction_version: String,
+    pub exactness: String,
+    pub provenance_id: Option<String>,
+    pub source_role: String,
+    pub language: String,
     pub claimability: String,
     pub lifecycle_binding: String,
     pub payload_version: u32,
@@ -702,7 +831,11 @@ impl SqliteGraphStore {
     /// even though the session itself is single-writer. The connection stays
     /// a normal (locking) reader; only row-level memoization is added.
     pub fn enable_session_read_caches(&mut self) {
-        if self.connection.is_readonly(rusqlite::DatabaseName::Main).unwrap_or(false) {
+        if self
+            .connection
+            .is_readonly(rusqlite::DatabaseName::Main)
+            .unwrap_or(false)
+        {
             self.read_cache_enabled = true;
         }
     }
@@ -728,7 +861,13 @@ impl SqliteGraphStore {
     /// the value→id_key mapping is stable for an open connection. Misses are
     /// not cached (absent entities must stay re-checkable after writes).
     fn lookup_object_id_memoized(&self, value: &str) -> StoreResult<Option<i64>> {
-        if let Some(id) = self.dictionary_cache.borrow().entity_ids.get(value).copied() {
+        if let Some(id) = self
+            .dictionary_cache
+            .borrow()
+            .entity_ids
+            .get(value)
+            .copied()
+        {
             return Ok(Some(id));
         }
         let resolved = lookup_object_id(&self.connection, value)?;
@@ -757,7 +896,9 @@ impl SqliteGraphStore {
             self.connection
                 .query_row("SELECT COUNT(*) FROM stage0_fts", [], |row| row.get(0))?;
         let authoritative = map_rows == fts_rows;
-        self.dictionary_cache.borrow_mut().fts_file_map_authoritative = Some(authoritative);
+        self.dictionary_cache
+            .borrow_mut()
+            .fts_file_map_authoritative = Some(authoritative);
         Ok(authoritative)
     }
 
@@ -1670,15 +1811,13 @@ impl SqliteGraphStore {
             ORDER BY warning
             ",
         )?;
-        let rows = statement.query_map(
-            [normalize_repo_relative_path(repo_relative_path)],
-            |row| {
+        let rows =
+            statement.query_map([normalize_repo_relative_path(repo_relative_path)], |row| {
                 Ok((
                     row.get::<_, String>("warning")?,
                     json_column_by_name(row, "metadata_json")?,
                 ))
-            },
-        )?;
+            })?;
         collect_rows(rows)
     }
 
@@ -1820,17 +1959,28 @@ impl SqliteGraphStore {
         )?;
         self.connection.execute(
             "INSERT INTO entity_features (
-                entity_id, feature_kind, payload_version, compact_payload,
-                extraction_version, source_span_id, claimability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                feature_id, file_id, entity_id, function_entity_id, feature_kind,
+                schema_version, payload_version, compact_payload, extraction_version,
+                exactness, provenance_id, source_span_id, source_role, language,
+                claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
+                row.feature_id,
+                row.file_id.as_deref(),
                 row.entity_id,
+                row.function_entity_id.as_deref(),
                 row.feature_kind,
+                i64::from(row.schema_version),
                 i64::from(row.payload_version),
                 row.compact_payload,
                 row.extraction_version,
+                row.exactness,
+                row.provenance_id.as_deref(),
                 row.source_span_id.as_deref(),
-                row.claimability
+                row.source_role,
+                row.language,
+                row.claimability,
+                row.lifecycle_binding
             ],
         )?;
         Ok(())
@@ -1840,20 +1990,29 @@ impl SqliteGraphStore {
         validate_sparse_sidecar_payload_len("edge_features.compact_payload", &row.compact_payload)?;
         self.connection.execute(
             "INSERT INTO edge_features (
-                edge_id, feature_kind, payload_version, compact_payload,
-                extraction_version, provenance_id, source_span_id, derived,
-                claimability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                feature_id, file_id, edge_id, function_entity_id, feature_kind,
+                schema_version, payload_version, compact_payload, extraction_version,
+                exactness, provenance_id, source_span_id, source_role, language,
+                derived, claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
+                row.feature_id,
+                row.file_id.as_deref(),
                 row.edge_id,
+                row.function_entity_id.as_deref(),
                 row.feature_kind,
+                i64::from(row.schema_version),
                 i64::from(row.payload_version),
                 row.compact_payload,
                 row.extraction_version,
+                row.exactness,
                 row.provenance_id.as_deref(),
                 row.source_span_id.as_deref(),
+                row.source_role,
+                row.language,
                 if row.derived { 1_i64 } else { 0_i64 },
-                row.claimability
+                row.claimability,
+                row.lifecycle_binding
             ],
         )?;
         Ok(())
@@ -1864,8 +2023,9 @@ impl SqliteGraphStore {
             "INSERT INTO ast_micro_nodes (
                 micro_node_id, file_id, function_entity_id, scope_entity_id,
                 micro_kind, symbol, source_span_id, extraction_version,
-                payload_version, claimability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                schema_version, exactness, provenance_id, source_role, language,
+                payload_version, claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 row.micro_node_id,
                 row.file_id,
@@ -1875,32 +2035,218 @@ impl SqliteGraphStore {
                 row.symbol.as_deref(),
                 row.source_span_id,
                 row.extraction_version,
+                i64::from(row.schema_version),
+                row.exactness,
+                row.provenance_id.as_deref(),
+                row.source_role,
+                row.language,
                 i64::from(row.payload_version),
-                row.claimability
+                row.claimability,
+                row.lifecycle_binding
             ],
         )?;
         Ok(())
     }
 
+    pub fn ast_micro_node_count(&self) -> StoreResult<u64> {
+        count_rows(&self.connection, "ast_micro_nodes")
+    }
+
+    pub fn ast_micro_node_count_for_file(&self, file_id: &str) -> StoreResult<u64> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM ast_micro_nodes WHERE file_id = ?1",
+                [normalize_repo_relative_path(file_id)],
+                |row| row.get::<_, u64>(0),
+            )
+            .map_err(StoreError::from)
+    }
+
+    pub fn ast_micro_node_visibility_summary(
+        &self,
+        sample_limit: usize,
+    ) -> StoreResult<AstMicroNodeVisibilitySummary> {
+        let sample_limit = sample_limit.min(100);
+        let total_rows = self.ast_micro_node_count()?;
+        let mut query_plan = explain_query_plan_details(
+            &self.connection,
+            "SELECT micro_kind, COUNT(*) FROM ast_micro_nodes GROUP BY micro_kind",
+        )?;
+        let cap_hit_visibility = ast_micro_node_cap_hit_visibility(&self.connection)?;
+        query_plan.extend(cap_hit_visibility.query_plan.iter().cloned());
+        let mut statement = self.connection.prepare_cached(
+            "
+            SELECT
+                micro_node_id, file_id, function_entity_id, scope_entity_id,
+                micro_kind, symbol, source_span_id, schema_version,
+                extraction_version, exactness, provenance_id, source_role,
+                language, payload_version, claimability, lifecycle_binding
+            FROM ast_micro_nodes
+            ORDER BY file_id, function_entity_id, scope_entity_id, micro_kind, micro_node_id
+            LIMIT ?1
+            ",
+        )?;
+        let rows = statement.query_map([sample_limit as i64], |row| {
+            Ok(AstMicroNodeRow {
+                micro_node_id: row.get("micro_node_id")?,
+                file_id: row.get("file_id")?,
+                function_entity_id: row.get("function_entity_id")?,
+                scope_entity_id: row.get("scope_entity_id")?,
+                micro_kind: row.get("micro_kind")?,
+                symbol: row.get("symbol")?,
+                source_span_id: row.get("source_span_id")?,
+                schema_version: row.get::<_, u32>("schema_version")?,
+                extraction_version: row.get("extraction_version")?,
+                exactness: row.get("exactness")?,
+                provenance_id: row.get("provenance_id")?,
+                source_role: row.get("source_role")?,
+                language: row.get("language")?,
+                payload_version: row.get::<_, u32>("payload_version")?,
+                claimability: row.get("claimability")?,
+                lifecycle_binding: row.get("lifecycle_binding")?,
+            })
+        })?;
+        let mut sample = Vec::new();
+        for row in collect_rows(rows)? {
+            let source_span = <Self as GraphStore>::get_source_span(self, &row.source_span_id)?;
+            let binding_status =
+                if row.function_entity_id.is_some() || row.scope_entity_id.is_some() {
+                    "scope_or_function_linked"
+                } else {
+                    "symbol_binding_absent"
+                }
+                .to_string();
+            sample.push(AstMicroNodeVisibilitySample {
+                micro_node_id: row.micro_node_id,
+                kind: row.micro_kind,
+                file: row.file_id,
+                function_entity_id: row.function_entity_id,
+                scope_entity_id: row.scope_entity_id,
+                source_span_id: row.source_span_id,
+                source_span,
+                name_or_literal: row.symbol,
+                exactness: row.exactness,
+                claimability: row.claimability,
+                binding_status,
+                schema_version: row.schema_version,
+                payload_version: row.payload_version,
+                extraction_version: row.extraction_version,
+                source_role: row.source_role,
+                language: row.language,
+            });
+        }
+
+        Ok(AstMicroNodeVisibilitySummary {
+            total_rows,
+            rows_by_node_kind: count_ast_micro_nodes_by_text_column(
+                &self.connection,
+                "micro_kind",
+            )?,
+            rows_by_language: count_ast_micro_nodes_by_text_column(&self.connection, "language")?,
+            rows_by_source_role: count_ast_micro_nodes_by_text_column(
+                &self.connection,
+                "source_role",
+            )?,
+            files_represented: count_ast_micro_nodes_distinct(&self.connection, "file_id")?,
+            functions_represented: count_ast_micro_nodes_distinct_non_null(
+                &self.connection,
+                "function_entity_id",
+            )?,
+            row_schema_versions: distinct_ast_micro_node_u32_values(
+                &self.connection,
+                "schema_version",
+            )?,
+            payload_versions: distinct_ast_micro_node_u32_values(
+                &self.connection,
+                "payload_version",
+            )?,
+            extraction_versions: distinct_ast_micro_node_text_values(
+                &self.connection,
+                "extraction_version",
+            )?,
+            exactness_counts: count_ast_micro_nodes_by_text_column(&self.connection, "exactness")?,
+            claimability_counts: count_ast_micro_nodes_by_text_column(
+                &self.connection,
+                "claimability",
+            )?,
+            truncated_file_count: cap_hit_visibility.truncated_file_count,
+            truncated_function_count: cap_hit_visibility.truncated_function_count,
+            cap_hit_count: cap_hit_visibility.cap_hit_count,
+            omitted_count: cap_hit_visibility.omitted_count,
+            cap_hit_details: cap_hit_visibility.details,
+            estimated_payload_bytes: ast_micro_node_estimated_payload_bytes(&self.connection)?,
+            sample_limit,
+            sample,
+            query_plan,
+            default_full_table_scan: false,
+            full_source_body_output: false,
+        })
+    }
+
+    pub fn ast_micro_nodes_for_file(&self, file_id: &str) -> StoreResult<Vec<AstMicroNodeRow>> {
+        let mut statement = self.connection.prepare_cached(
+            "
+            SELECT
+                micro_node_id, file_id, function_entity_id, scope_entity_id,
+                micro_kind, symbol, source_span_id, schema_version,
+                extraction_version, exactness, provenance_id, source_role,
+                language, payload_version, claimability, lifecycle_binding
+            FROM ast_micro_nodes
+            WHERE file_id = ?1
+            ORDER BY micro_node_id
+            ",
+        )?;
+        let rows = statement.query_map([normalize_repo_relative_path(file_id)], |row| {
+            Ok(AstMicroNodeRow {
+                micro_node_id: row.get("micro_node_id")?,
+                file_id: row.get("file_id")?,
+                function_entity_id: row.get("function_entity_id")?,
+                scope_entity_id: row.get("scope_entity_id")?,
+                micro_kind: row.get("micro_kind")?,
+                symbol: row.get("symbol")?,
+                source_span_id: row.get("source_span_id")?,
+                schema_version: row.get::<_, u32>("schema_version")?,
+                extraction_version: row.get("extraction_version")?,
+                exactness: row.get("exactness")?,
+                provenance_id: row.get("provenance_id")?,
+                source_role: row.get("source_role")?,
+                language: row.get("language")?,
+                payload_version: row.get::<_, u32>("payload_version")?,
+                claimability: row.get("claimability")?,
+                lifecycle_binding: row.get("lifecycle_binding")?,
+            })
+        })?;
+        collect_rows(rows)
+    }
+
     pub fn insert_ast_micro_edge(&self, row: &AstMicroEdgeRow) -> StoreResult<()> {
         self.connection.execute(
             "INSERT INTO ast_micro_edges (
-                micro_edge_id, file_id, source_micro_node_id, target_micro_node_id,
+                micro_edge_id, file_id, function_entity_id, scope_entity_id,
+                core_edge_id, source_micro_node_id, target_micro_node_id,
                 relation_kind, source_span_id, exactness, provenance_id,
-                extraction_version, payload_version, claimability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                schema_version, extraction_version, source_role, language,
+                payload_version, claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 row.micro_edge_id,
                 row.file_id,
+                row.function_entity_id.as_deref(),
+                row.scope_entity_id.as_deref(),
+                row.core_edge_id.as_deref(),
                 row.source_micro_node_id,
                 row.target_micro_node_id,
                 row.relation_kind,
                 row.source_span_id.as_deref(),
                 row.exactness,
                 row.provenance_id.as_deref(),
+                i64::from(row.schema_version),
                 row.extraction_version,
+                row.source_role,
+                row.language,
                 i64::from(row.payload_version),
-                row.claimability
+                row.claimability,
+                row.lifecycle_binding
             ],
         )?;
         Ok(())
@@ -1918,9 +2264,11 @@ impl SqliteGraphStore {
         self.connection.execute(
             "INSERT INTO local_flow_packets (
                 packet_id, file_id, function_entity_id, packet_kind,
-                compressed_steps, source_span_ids_json, proof_status,
-                extraction_version, payload_version, claimability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                compressed_steps, source_span_ids_json, primary_source_span_id,
+                proof_status, schema_version, extraction_version, exactness,
+                provenance_id, source_role, language, payload_version,
+                claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 row.packet_id,
                 row.file_id,
@@ -1928,10 +2276,17 @@ impl SqliteGraphStore {
                 row.packet_kind,
                 row.compressed_steps,
                 row.source_span_ids_json,
+                row.primary_source_span_id.as_deref(),
                 row.proof_status,
+                i64::from(row.schema_version),
                 row.extraction_version,
+                row.exactness,
+                row.provenance_id.as_deref(),
+                row.source_role,
+                row.language,
                 i64::from(row.payload_version),
-                row.claimability
+                row.claimability,
+                row.lifecycle_binding
             ],
         )?;
         Ok(())
@@ -1945,18 +2300,26 @@ impl SqliteGraphStore {
         self.connection.execute(
             "INSERT INTO routing_packet_handles (
                 handle_id, db_passport_hash, task_intent_hash, packet_kind,
-                evidence_refs_json, expires_or_invalidates_on, payload_version,
-                claimability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                evidence_refs_json, source_span_id, expires_or_invalidates_on,
+                schema_version, exactness, provenance_id, source_role, language,
+                payload_version, claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 row.handle_id,
                 row.db_passport_hash,
                 row.task_intent_hash,
                 row.packet_kind,
                 row.evidence_refs_json,
+                row.source_span_id.as_deref(),
                 row.expires_or_invalidates_on,
+                i64::from(row.schema_version),
+                row.exactness,
+                row.provenance_id.as_deref(),
+                row.source_role,
+                row.language,
                 i64::from(row.payload_version),
-                row.claimability
+                row.claimability,
+                row.lifecycle_binding
             ],
         )?;
         Ok(())
@@ -1969,18 +2332,29 @@ impl SqliteGraphStore {
         )?;
         self.connection.execute(
             "INSERT INTO evidence_features (
-                evidence_ref, evidence_kind, feature_kind, payload_version,
-                compact_payload, extraction_version, source_span_id, claimability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                feature_id, file_id, evidence_ref, evidence_kind,
+                function_entity_id, feature_kind, schema_version, payload_version,
+                compact_payload, extraction_version, exactness, provenance_id,
+                source_span_id, source_role, language, claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
+                row.feature_id,
+                row.file_id.as_deref(),
                 row.evidence_ref,
                 row.evidence_kind,
+                row.function_entity_id.as_deref(),
                 row.feature_kind,
+                i64::from(row.schema_version),
                 i64::from(row.payload_version),
                 row.compact_payload,
                 row.extraction_version,
+                row.exactness,
+                row.provenance_id.as_deref(),
                 row.source_span_id.as_deref(),
-                row.claimability
+                row.source_role,
+                row.language,
+                row.claimability,
+                row.lifecycle_binding
             ],
         )?;
         Ok(())
@@ -1990,9 +2364,10 @@ impl SqliteGraphStore {
         self.connection.execute(
             "INSERT INTO validation_findings (
                 finding_id, file_id, entity_id, edge_id, severity,
-                finding_kind, source_span_id, claimability, lifecycle_binding,
-                payload_version
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                finding_kind, source_span_id, schema_version, extraction_version,
+                exactness, provenance_id, source_role, language, claimability,
+                lifecycle_binding, payload_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 row.finding_id,
                 row.file_id,
@@ -2001,6 +2376,12 @@ impl SqliteGraphStore {
                 row.severity,
                 row.finding_kind,
                 row.source_span_id.as_deref(),
+                i64::from(row.schema_version),
+                row.extraction_version,
+                row.exactness,
+                row.provenance_id.as_deref(),
+                row.source_role,
+                row.language,
                 row.claimability,
                 row.lifecycle_binding,
                 i64::from(row.payload_version)
@@ -2704,7 +3085,10 @@ impl GraphStore for SqliteGraphStore {
     fn list_edges_by_file(&self, repo_relative_path: &str) -> StoreResult<Vec<Edge>> {
         let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
         if self.read_cache_enabled {
-            if let Some(cached) = self.read_edges_by_file_cache.borrow().get(&repo_relative_path)
+            if let Some(cached) = self
+                .read_edges_by_file_cache
+                .borrow()
+                .get(&repo_relative_path)
             {
                 return Ok(cached.clone());
             }
@@ -3563,6 +3947,11 @@ fn sparse_sidecar_schema_ready(connection: &Connection) -> StoreResult<bool> {
             return Ok(false);
         }
     }
+    for (table, column, _) in SPARSE_SIDECAR_CONTRACT_COLUMNS {
+        if !table_has_column(connection, table, column)? {
+            return Ok(false);
+        }
+    }
     for index in SPARSE_SIDECAR_INDEXES {
         if !exists_in_sqlite_master(connection, "index", index)? {
             return Ok(false);
@@ -3573,6 +3962,226 @@ fn sparse_sidecar_schema_ready(connection: &Connection) -> StoreResult<bool> {
 
 fn migrate_sparse_sidecar_schema(connection: &Connection) -> StoreResult<()> {
     connection.execute_batch(SPARSE_SIDECAR_SCHEMA_SQL)?;
+    ensure_sparse_sidecar_contract_columns(connection)?;
+    connection.execute_batch(SPARSE_SIDECAR_INDEX_SQL)?;
+    Ok(())
+}
+
+const SPARSE_SIDECAR_CONTRACT_COLUMNS: &[(&str, &str, &str)] = &[
+    ("entity_features", "feature_id", "TEXT NOT NULL DEFAULT ''"),
+    ("entity_features", "file_id", "TEXT"),
+    ("entity_features", "function_entity_id", "TEXT"),
+    (
+        "entity_features",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "entity_features",
+        "exactness",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown'))",
+    ),
+    ("entity_features", "provenance_id", "TEXT"),
+    (
+        "entity_features",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    (
+        "entity_features",
+        "language",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+    (
+        "entity_features",
+        "lifecycle_binding",
+        "TEXT NOT NULL DEFAULT 'db_passport'",
+    ),
+    ("edge_features", "feature_id", "TEXT NOT NULL DEFAULT ''"),
+    ("edge_features", "file_id", "TEXT"),
+    ("edge_features", "function_entity_id", "TEXT"),
+    (
+        "edge_features",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "edge_features",
+        "exactness",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown'))",
+    ),
+    (
+        "edge_features",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    ("edge_features", "language", "TEXT NOT NULL DEFAULT 'unknown'"),
+    (
+        "edge_features",
+        "lifecycle_binding",
+        "TEXT NOT NULL DEFAULT 'db_passport'",
+    ),
+    (
+        "ast_micro_nodes",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "ast_micro_nodes",
+        "exactness",
+        "TEXT NOT NULL DEFAULT 'exact' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown'))",
+    ),
+    ("ast_micro_nodes", "provenance_id", "TEXT"),
+    (
+        "ast_micro_nodes",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    ("ast_micro_nodes", "language", "TEXT NOT NULL DEFAULT 'unknown'"),
+    (
+        "ast_micro_nodes",
+        "lifecycle_binding",
+        "TEXT NOT NULL DEFAULT 'db_passport'",
+    ),
+    ("ast_micro_edges", "function_entity_id", "TEXT"),
+    ("ast_micro_edges", "scope_entity_id", "TEXT"),
+    ("ast_micro_edges", "core_edge_id", "TEXT"),
+    (
+        "ast_micro_edges",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "ast_micro_edges",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    ("ast_micro_edges", "language", "TEXT NOT NULL DEFAULT 'unknown'"),
+    (
+        "ast_micro_edges",
+        "lifecycle_binding",
+        "TEXT NOT NULL DEFAULT 'db_passport'",
+    ),
+    ("local_flow_packets", "primary_source_span_id", "TEXT"),
+    (
+        "local_flow_packets",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "local_flow_packets",
+        "exactness",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown'))",
+    ),
+    ("local_flow_packets", "provenance_id", "TEXT"),
+    (
+        "local_flow_packets",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    (
+        "local_flow_packets",
+        "language",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+    (
+        "local_flow_packets",
+        "lifecycle_binding",
+        "TEXT NOT NULL DEFAULT 'db_passport'",
+    ),
+    ("routing_packet_handles", "source_span_id", "TEXT"),
+    (
+        "routing_packet_handles",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "routing_packet_handles",
+        "exactness",
+        "TEXT NOT NULL DEFAULT 'unsupported' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown'))",
+    ),
+    ("routing_packet_handles", "provenance_id", "TEXT"),
+    (
+        "routing_packet_handles",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    (
+        "routing_packet_handles",
+        "language",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+    (
+        "routing_packet_handles",
+        "lifecycle_binding",
+        "TEXT NOT NULL DEFAULT 'db_passport_hash'",
+    ),
+    ("evidence_features", "feature_id", "TEXT NOT NULL DEFAULT ''"),
+    ("evidence_features", "file_id", "TEXT"),
+    ("evidence_features", "function_entity_id", "TEXT"),
+    (
+        "evidence_features",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "evidence_features",
+        "exactness",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown'))",
+    ),
+    ("evidence_features", "provenance_id", "TEXT"),
+    (
+        "evidence_features",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    (
+        "evidence_features",
+        "language",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+    (
+        "evidence_features",
+        "lifecycle_binding",
+        "TEXT NOT NULL DEFAULT 'db_passport'",
+    ),
+    (
+        "validation_findings",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "validation_findings",
+        "extraction_version",
+        "TEXT NOT NULL DEFAULT 'validation-finding-v1'",
+    ),
+    (
+        "validation_findings",
+        "exactness",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown'))",
+    ),
+    ("validation_findings", "provenance_id", "TEXT"),
+    (
+        "validation_findings",
+        "source_role",
+        "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
+    ),
+    (
+        "validation_findings",
+        "language",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+];
+
+fn ensure_sparse_sidecar_contract_columns(connection: &Connection) -> StoreResult<()> {
+    for (table, column, declaration) in SPARSE_SIDECAR_CONTRACT_COLUMNS {
+        if !table_has_column(connection, table, column)? {
+            connection.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}"),
+                [],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -5597,6 +6206,207 @@ fn count_rows(connection: &Connection, table: &str) -> StoreResult<u64> {
     Ok(count.max(0) as u64)
 }
 
+fn count_ast_micro_nodes_by_text_column(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<BTreeMap<String, u64>> {
+    let sql = format!(
+        "SELECT {column}, COUNT(*) FROM ast_micro_nodes GROUP BY {column} ORDER BY {column}"
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?
+                .unwrap_or_else(|| "absent".to_string()),
+            row.get::<_, i64>(1)?.max(0) as u64,
+        ))
+    })?;
+    Ok(collect_rows(rows)?.into_iter().collect())
+}
+
+#[derive(Debug, Default)]
+struct AstMicroNodeCapHitVisibilityAggregate {
+    truncated_file_count: u64,
+    truncated_function_count: u64,
+    cap_hit_count: u64,
+    omitted_count: u64,
+    details: Vec<AstMicroNodeCapHitVisibility>,
+    query_plan: Vec<String>,
+}
+
+fn ast_micro_node_cap_hit_visibility(
+    connection: &Connection,
+) -> StoreResult<AstMicroNodeCapHitVisibilityAggregate> {
+    if !exists_in_sqlite_master(connection, "table", "extraction_warnings")? {
+        return Ok(AstMicroNodeCapHitVisibilityAggregate::default());
+    }
+
+    let sql = "
+        SELECT ew.repo_relative_path, ew.metadata_json
+        FROM (SELECT DISTINCT file_id FROM ast_micro_nodes) AS node_files
+        JOIN extraction_warnings AS ew
+          ON ew.repo_relative_path = node_files.file_id
+        WHERE ew.warning LIKE ?1
+        ORDER BY ew.repo_relative_path, ew.warning
+    ";
+    let query_plan = explain_query_plan_details(
+        connection,
+        "
+        SELECT ew.repo_relative_path, ew.metadata_json
+        FROM (SELECT DISTINCT file_id FROM ast_micro_nodes) AS node_files
+        JOIN extraction_warnings AS ew
+          ON ew.repo_relative_path = node_files.file_id
+        WHERE ew.warning LIKE 'mvp4_1_micro_node_cap_hit:%'
+        ORDER BY ew.repo_relative_path, ew.warning
+        ",
+    )?;
+    let mut statement = connection.prepare_cached(sql)?;
+    let rows = statement.query_map(
+        [format!("{MVP4_1_MICRO_NODE_CAP_HIT_WARNING_PREFIX}%")],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                json_column_by_name::<Value>(row, "metadata_json")?,
+            ))
+        },
+    )?;
+
+    let mut files = BTreeSet::new();
+    let mut functions = BTreeSet::new();
+    let mut cap_hit_count = 0u64;
+    let mut omitted_count = 0u64;
+    let mut details = Vec::new();
+
+    for (file, metadata) in collect_rows(rows)? {
+        if metadata.get("warning_kind").and_then(Value::as_str)
+            != Some(MVP4_1_MICRO_NODE_CAP_HIT_WARNING_KIND)
+        {
+            continue;
+        }
+        files.insert(file.clone());
+        cap_hit_count += metadata
+            .get("cap_hit_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        omitted_count += metadata
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+
+        let function_count_before = functions.len();
+        if let Some(array) = metadata.get("cap_hits").and_then(Value::as_array) {
+            for hit in array {
+                let function_identity = hit
+                    .get("function_identity")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if let Some(function_identity) = &function_identity {
+                    functions.insert(format!("{file}:{function_identity}"));
+                }
+                if details.len() < MVP4_1_MICRO_NODE_CAP_HIT_DETAIL_LIMIT {
+                    details.push(AstMicroNodeCapHitVisibility {
+                        file: file.clone(),
+                        cap_kind: hit
+                            .get("cap_kind")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        function_identity,
+                        node_kind: hit
+                            .get("node_kind")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        retained_count: hit
+                            .get("retained_count")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                        omitted_count: hit
+                            .get("omitted_count")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                        reason: hit
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or("cap hit")
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        if functions.len() == function_count_before {
+            if let Some(count) = metadata
+                .get("truncated_function_count")
+                .and_then(Value::as_u64)
+            {
+                for index in 0..count {
+                    functions.insert(format!("{file}:metadata-only:{index}"));
+                }
+            }
+        }
+    }
+
+    Ok(AstMicroNodeCapHitVisibilityAggregate {
+        truncated_file_count: files.len() as u64,
+        truncated_function_count: functions.len() as u64,
+        cap_hit_count,
+        omitted_count,
+        details,
+        query_plan,
+    })
+}
+
+fn count_ast_micro_nodes_distinct(connection: &Connection, column: &str) -> StoreResult<u64> {
+    let sql = format!("SELECT COUNT(DISTINCT {column}) FROM ast_micro_nodes");
+    let count: i64 = connection.query_row(&sql, [], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
+fn count_ast_micro_nodes_distinct_non_null(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<u64> {
+    let sql =
+        format!("SELECT COUNT(DISTINCT {column}) FROM ast_micro_nodes WHERE {column} IS NOT NULL");
+    let count: i64 = connection.query_row(&sql, [], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
+fn distinct_ast_micro_node_u32_values(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<Vec<u32>> {
+    let sql = format!("SELECT DISTINCT {column} FROM ast_micro_nodes ORDER BY {column}");
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, u32>(0))?;
+    collect_rows(rows)
+}
+
+fn distinct_ast_micro_node_text_values(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<Vec<String>> {
+    let sql = format!("SELECT DISTINCT {column} FROM ast_micro_nodes ORDER BY {column}");
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    collect_rows(rows)
+}
+
+fn ast_micro_node_estimated_payload_bytes(connection: &Connection) -> StoreResult<u64> {
+    let bytes: i64 = connection.query_row(
+        "SELECT COALESCE(SUM(length(micro_node_id) + length(file_id) + COALESCE(length(function_entity_id), 0) + COALESCE(length(scope_entity_id), 0) + length(micro_kind) + COALESCE(length(symbol), 0) + length(source_span_id) + length(extraction_version) + length(exactness) + length(source_role) + length(language) + length(claimability) + length(lifecycle_binding) + 32), 0) FROM ast_micro_nodes",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(bytes.max(0) as u64)
+}
+
+fn explain_query_plan_details(connection: &Connection, sql: &str) -> StoreResult<Vec<String>> {
+    let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
+    let mut statement = connection.prepare_cached(&explain_sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(3))?;
+    collect_rows(rows)
+}
+
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -7083,7 +7893,18 @@ fn delete_sidecar_facts_for_file(
         "DELETE FROM extraction_warnings WHERE repo_relative_path = ?1",
         [repo_relative_path],
     )?;
-    connection.execute("DELETE FROM evidence_features", [])?;
+    connection.execute(
+        "DELETE FROM entity_features WHERE file_id = ?1",
+        [repo_relative_path],
+    )?;
+    connection.execute(
+        "DELETE FROM edge_features WHERE file_id = ?1",
+        [repo_relative_path],
+    )?;
+    connection.execute(
+        "DELETE FROM evidence_features WHERE file_id = ?1 OR file_id IS NULL",
+        [repo_relative_path],
+    )?;
     connection.execute("DELETE FROM routing_packet_handles", [])?;
     for sql in [
         "DELETE FROM validation_findings WHERE file_id = ?1",
@@ -10934,28 +11755,48 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created ON retrieval_traces(crea
 
 const SPARSE_SIDECAR_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS entity_features (
+    feature_id TEXT NOT NULL DEFAULT '',
+    file_id TEXT,
     entity_id TEXT NOT NULL,
+    function_entity_id TEXT,
     feature_kind TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
     compact_payload TEXT NOT NULL CHECK(length(compact_payload) <= 8192),
     extraction_version TEXT NOT NULL,
+    exactness TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
+    provenance_id TEXT,
     source_span_id TEXT,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport',
+    CHECK(exactness != 'exact' OR source_span_id IS NOT NULL),
     CHECK(claimability NOT IN ('source_spanned', 'exact', 'proof', 'exact_local_flow') OR source_span_id IS NOT NULL),
     PRIMARY KEY(entity_id, feature_kind, payload_version, extraction_version)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS edge_features (
+    feature_id TEXT NOT NULL DEFAULT '',
+    file_id TEXT,
     edge_id TEXT NOT NULL,
+    function_entity_id TEXT,
     feature_kind TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
     compact_payload TEXT NOT NULL CHECK(length(compact_payload) <= 8192),
     extraction_version TEXT NOT NULL,
+    exactness TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
     provenance_id TEXT,
     source_span_id TEXT,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     derived INTEGER NOT NULL DEFAULT 0 CHECK(derived IN (0, 1)),
     claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport',
     CHECK(derived = 0 OR provenance_id IS NOT NULL),
+    CHECK(exactness != 'exact' OR source_span_id IS NOT NULL),
+    CHECK(exactness != 'derived_with_provenance' OR provenance_id IS NOT NULL),
     CHECK(claimability NOT IN ('source_spanned', 'exact', 'proof', 'exact_local_flow') OR source_span_id IS NOT NULL),
     PRIMARY KEY(edge_id, feature_kind, payload_version, extraction_version)
 ) WITHOUT ROWID;
@@ -10969,22 +11810,35 @@ CREATE TABLE IF NOT EXISTS ast_micro_nodes (
     symbol TEXT,
     source_span_id TEXT NOT NULL,
     extraction_version TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
+    exactness TEXT NOT NULL DEFAULT 'exact' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
+    provenance_id TEXT,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
-    claimability TEXT NOT NULL DEFAULT 'source_spanned'
+    claimability TEXT NOT NULL DEFAULT 'source_spanned',
+    lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport'
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS ast_micro_edges (
     micro_edge_id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
+    function_entity_id TEXT,
+    scope_entity_id TEXT,
+    core_edge_id TEXT,
     source_micro_node_id TEXT NOT NULL,
     target_micro_node_id TEXT NOT NULL,
     relation_kind TEXT NOT NULL,
     source_span_id TEXT,
     exactness TEXT NOT NULL CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
     provenance_id TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
     extraction_version TEXT NOT NULL,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
     claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport',
     CHECK(exactness != 'exact' OR source_span_id IS NOT NULL),
     CHECK(exactness != 'derived_with_provenance' OR provenance_id IS NOT NULL)
 ) WITHOUT ROWID;
@@ -10996,10 +11850,17 @@ CREATE TABLE IF NOT EXISTS local_flow_packets (
     packet_kind TEXT NOT NULL,
     compressed_steps TEXT NOT NULL CHECK(length(compressed_steps) <= 8192),
     source_span_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(length(source_span_ids_json) <= 8192),
+    primary_source_span_id TEXT,
     proof_status TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
     extraction_version TEXT NOT NULL,
+    exactness TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
+    provenance_id TEXT,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
     claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport',
     CHECK(proof_status != 'micro_flow_found' OR source_span_ids_json != '[]')
 ) WITHOUT ROWID;
 
@@ -11009,20 +11870,38 @@ CREATE TABLE IF NOT EXISTS routing_packet_handles (
     task_intent_hash TEXT NOT NULL,
     packet_kind TEXT NOT NULL,
     evidence_refs_json TEXT NOT NULL CHECK(length(evidence_refs_json) <= 8192),
+    source_span_id TEXT,
     expires_or_invalidates_on TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
+    exactness TEXT NOT NULL DEFAULT 'unsupported' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
+    provenance_id TEXT,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
-    claimability TEXT NOT NULL DEFAULT 'handle_not_evidence'
+    claimability TEXT NOT NULL DEFAULT 'handle_not_evidence',
+    lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport_hash'
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS evidence_features (
+    feature_id TEXT NOT NULL DEFAULT '',
+    file_id TEXT,
     evidence_ref TEXT NOT NULL,
     evidence_kind TEXT NOT NULL,
+    function_entity_id TEXT,
     feature_kind TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
     compact_payload TEXT NOT NULL CHECK(length(compact_payload) <= 8192),
     extraction_version TEXT NOT NULL,
+    exactness TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
+    provenance_id TEXT,
     source_span_id TEXT,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     claimability TEXT NOT NULL DEFAULT 'candidate_only',
+    lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport',
+    CHECK(exactness != 'exact' OR source_span_id IS NOT NULL),
+    CHECK(exactness != 'derived_with_provenance' OR provenance_id IS NOT NULL),
     CHECK(claimability NOT IN ('source_spanned', 'exact', 'proof', 'exact_local_flow') OR source_span_id IS NOT NULL),
     PRIMARY KEY(evidence_ref, evidence_kind, feature_kind, payload_version)
 ) WITHOUT ROWID;
@@ -11035,22 +11914,56 @@ CREATE TABLE IF NOT EXISTS validation_findings (
     severity TEXT NOT NULL CHECK(severity IN ('blocking', 'warning', 'diagnostic_only', 'unknown', 'ok')),
     finding_kind TEXT NOT NULL,
     source_span_id TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
+    extraction_version TEXT NOT NULL DEFAULT 'validation-finding-v1',
+    exactness TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
+    provenance_id TEXT,
+    source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
+    language TEXT NOT NULL DEFAULT 'unknown',
     claimability TEXT NOT NULL,
     lifecycle_binding TEXT NOT NULL,
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
     CHECK(severity != 'blocking' OR source_span_id IS NOT NULL OR claimability LIKE 'lifecycle_%')
 ) WITHOUT ROWID;
+"#;
 
+const SPARSE_SIDECAR_INDEX_SQL: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_entity_features_file_kind
+    ON entity_features(file_id, feature_kind)
+    WHERE file_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_edge_features_file_kind
+    ON edge_features(file_id, feature_kind)
+    WHERE file_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ast_micro_nodes_file_scope_kind
     ON ast_micro_nodes(file_id, function_entity_id, micro_kind);
+CREATE INDEX IF NOT EXISTS idx_ast_micro_nodes_source_span
+    ON ast_micro_nodes(source_span_id);
+CREATE INDEX IF NOT EXISTS idx_ast_micro_nodes_exact_claim
+    ON ast_micro_nodes(exactness, claimability);
 CREATE INDEX IF NOT EXISTS idx_ast_micro_edges_file_relation
     ON ast_micro_edges(file_id, relation_kind);
+CREATE INDEX IF NOT EXISTS idx_ast_micro_edges_function_relation
+    ON ast_micro_edges(function_entity_id, relation_kind)
+    WHERE function_entity_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ast_micro_edges_source_span
+    ON ast_micro_edges(source_span_id)
+    WHERE source_span_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ast_micro_edges_exact_claim
+    ON ast_micro_edges(exactness, claimability);
 CREATE INDEX IF NOT EXISTS idx_local_flow_packets_function
     ON local_flow_packets(file_id, function_entity_id, packet_kind);
+CREATE INDEX IF NOT EXISTS idx_local_flow_packets_source_span
+    ON local_flow_packets(primary_source_span_id)
+    WHERE primary_source_span_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_local_flow_packets_exact_claim
+    ON local_flow_packets(exactness, claimability);
 CREATE INDEX IF NOT EXISTS idx_routing_packet_handles_lifecycle
     ON routing_packet_handles(db_passport_hash, task_intent_hash);
 CREATE INDEX IF NOT EXISTS idx_validation_findings_file_severity
     ON validation_findings(file_id, severity);
+CREATE INDEX IF NOT EXISTS idx_validation_findings_source_span
+    ON validation_findings(source_span_id)
+    WHERE source_span_id IS NOT NULL;
 "#;
 
 const BULK_INDEX_DROP_SQL: &str = r#"
@@ -11453,11 +12366,21 @@ mod tests {
             "idx_file_source_spans_span",
             "idx_file_path_evidence_path",
             "idx_file_fts_rows_object",
+            "idx_entity_features_file_kind",
+            "idx_edge_features_file_kind",
             "idx_ast_micro_nodes_file_scope_kind",
+            "idx_ast_micro_nodes_source_span",
+            "idx_ast_micro_nodes_exact_claim",
             "idx_ast_micro_edges_file_relation",
+            "idx_ast_micro_edges_function_relation",
+            "idx_ast_micro_edges_source_span",
+            "idx_ast_micro_edges_exact_claim",
             "idx_local_flow_packets_function",
+            "idx_local_flow_packets_source_span",
+            "idx_local_flow_packets_exact_claim",
             "idx_routing_packet_handles_lifecycle",
             "idx_validation_findings_file_severity",
+            "idx_validation_findings_source_span",
         ] {
             assert!(ok(store.index_exists(index)), "missing index {index}");
         }
@@ -11489,6 +12412,12 @@ mod tests {
         }
 
         assert_eq!(ok(store.schema_version()), SCHEMA_VERSION);
+        for (table, column, _) in super::SPARSE_SIDECAR_CONTRACT_COLUMNS {
+            assert!(
+                ok(table_has_column(&store.connection, table, column)),
+                "missing sparse sidecar contract column {table}.{column}"
+            );
+        }
     }
 
     #[test]
@@ -11526,28 +12455,109 @@ mod tests {
     }
 
     #[test]
+    fn ast_micro_node_visibility_reports_persisted_cap_hits() {
+        let store = store();
+        let span = SourceSpan::new("src/high_density.ts", 1, 10);
+        ok(store.insert_source_span_after_file_delete("micro-node-a", &span));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "micro-node-a".to_string(),
+            file_id: "src/high_density.ts".to_string(),
+            function_entity_id: Some("function-frame-a".to_string()),
+            scope_entity_id: None,
+            micro_kind: "local_binding".to_string(),
+            symbol: Some("kept".to_string()),
+            source_span_id: "micro-node-a".to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some("micro-node-a".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_local_fact".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+        ok(store.insert_extraction_warning_after_file_delete(
+            "src/high_density.ts",
+            Some("sha256:file"),
+            "mvp4_1_micro_node_cap_hit: omitted 3 TypeScript micro-node candidates",
+            &serde_json::json!({
+                "fact_class": "extraction_warning",
+                "warning_kind": "mvp4_1_micro_node_cap_hit",
+                "repo_relative_path": "src/high_density.ts",
+                "omitted_count": 3,
+                "cap_hit_count": 1,
+                "truncated_function_count": 1,
+                "completeness_label": "truncated_unknown_completeness",
+                "cap_hits": [
+                    {
+                        "cap_kind": "per_kind_nodes_per_function",
+                        "function_identity": "function-frame-a",
+                        "node_kind": "LocalBinding",
+                        "retained_count": 362,
+                        "omitted_count": 3,
+                        "reason": "per_kind_nodes_per_function[local_binding]=362"
+                    }
+                ],
+                "not_micro_edge_or_flow_proof": true,
+                "mutation_proof_activated": false,
+                "flow_proof_activated": false
+            }),
+        ));
+
+        let summary = ok(store.ast_micro_node_visibility_summary(0));
+        assert_eq!(summary.total_rows, 1);
+        assert_eq!(summary.truncated_file_count, 1);
+        assert_eq!(summary.truncated_function_count, 1);
+        assert_eq!(summary.cap_hit_count, 1);
+        assert_eq!(summary.omitted_count, 3);
+        assert_eq!(summary.cap_hit_details.len(), 1);
+        assert_eq!(summary.cap_hit_details[0].file, "src/high_density.ts");
+        assert_eq!(summary.cap_hit_details[0].omitted_count, 3);
+        assert!(!summary.default_full_table_scan);
+        assert!(!summary.full_source_body_output);
+    }
+
+    #[test]
     fn sparse_sidecar_rows_insert_and_preserve_claim_constraints() {
         let store = store();
 
         ok(store.insert_entity_feature(&EntityFeatureRow {
+            feature_id: "feature-auth-login-shape".to_string(),
+            file_id: Some("src/auth.ts".to_string()),
             entity_id: "repo://e/auth-login".to_string(),
+            function_entity_id: Some("repo://e/auth-login".to_string()),
             feature_kind: "ast_shape".to_string(),
+            schema_version: 1,
             payload_version: 1,
             compact_payload: "{\"shape\":\"small\"}".to_string(),
             extraction_version: "sidecar-test-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: None,
             source_span_id: Some("span-auth-login".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             claimability: "source_spanned".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_edge_feature(&EdgeFeatureRow {
+            feature_id: "feature-edge-auth-login-derived".to_string(),
+            file_id: Some("src/auth.ts".to_string()),
             edge_id: "edge-auth-login".to_string(),
+            function_entity_id: Some("repo://e/auth-login".to_string()),
             feature_kind: "derived_reason".to_string(),
+            schema_version: 1,
             payload_version: 1,
             compact_payload: "{\"kind\":\"CALLS->WRITES\"}".to_string(),
             extraction_version: "sidecar-test-v1".to_string(),
+            exactness: "derived_with_provenance".to_string(),
             provenance_id: Some("edge-base".to_string()),
             source_span_id: Some("span-auth-login".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             derived: true,
             claimability: "source_spanned".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_ast_micro_node(&AstMicroNodeRow {
             micro_node_id: "micro-node-token".to_string(),
@@ -11557,9 +12567,15 @@ mod tests {
             micro_kind: "LocalBinding".to_string(),
             symbol: Some("token".to_string()),
             source_span_id: "span-auth-login".to_string(),
+            schema_version: 1,
             extraction_version: "sidecar-test-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: None,
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             payload_version: 1,
             claimability: "source_spanned".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_ast_micro_node(&AstMicroNodeRow {
             micro_node_id: "micro-node-return".to_string(),
@@ -11569,22 +12585,35 @@ mod tests {
             micro_kind: "ReturnSite".to_string(),
             symbol: None,
             source_span_id: "span-auth-return".to_string(),
+            schema_version: 1,
             extraction_version: "sidecar-test-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: None,
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             payload_version: 1,
             claimability: "source_spanned".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_ast_micro_edge(&AstMicroEdgeRow {
             micro_edge_id: "micro-edge-token-return".to_string(),
             file_id: "src/auth.ts".to_string(),
+            function_entity_id: Some("repo://e/auth-login".to_string()),
+            scope_entity_id: None,
+            core_edge_id: None,
             source_micro_node_id: "micro-node-token".to_string(),
             target_micro_node_id: "micro-node-return".to_string(),
             relation_kind: "LOCAL_FLOWS_TO".to_string(),
             source_span_id: Some("span-auth-flow".to_string()),
             exactness: "derived_with_provenance".to_string(),
             provenance_id: Some("micro-edge-base".to_string()),
+            schema_version: 1,
             extraction_version: "sidecar-test-v1".to_string(),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             payload_version: 1,
             claimability: "source_spanned".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_local_flow_packet(&LocalFlowPacketRow {
             packet_id: "local-flow-auth-login".to_string(),
@@ -11593,10 +12622,17 @@ mod tests {
             packet_kind: "local_micro_flow".to_string(),
             compressed_steps: "token LOCAL_FLOWS_TO return".to_string(),
             source_span_ids_json: "[\"span-auth-flow\"]".to_string(),
+            primary_source_span_id: Some("span-auth-flow".to_string()),
             proof_status: "micro_flow_found".to_string(),
+            schema_version: 1,
             extraction_version: "sidecar-test-v1".to_string(),
+            exactness: "derived_with_provenance".to_string(),
+            provenance_id: Some("micro-edge-token-return".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             payload_version: 1,
             claimability: "exact_local_flow".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_routing_packet_handle(&RoutingPacketHandleRow {
             handle_id: "handle-auth-login".to_string(),
@@ -11604,19 +12640,35 @@ mod tests {
             task_intent_hash: "intent:test".to_string(),
             packet_kind: "routing_packet".to_string(),
             evidence_refs_json: "[\"span-auth-flow\"]".to_string(),
+            source_span_id: Some("span-auth-flow".to_string()),
             expires_or_invalidates_on: "db_passport_hash_change".to_string(),
+            schema_version: 1,
+            exactness: "unsupported".to_string(),
+            provenance_id: None,
+            source_role: "unknown".to_string(),
+            language: "unknown".to_string(),
             payload_version: 1,
             claimability: "handle_not_evidence".to_string(),
+            lifecycle_binding: "db_passport_hash".to_string(),
         }));
         ok(store.insert_evidence_feature(&EvidenceFeatureRow {
+            feature_id: "feature-evidence-auth-flow-risk".to_string(),
+            file_id: Some("src/auth.ts".to_string()),
             evidence_ref: "span-auth-flow".to_string(),
             evidence_kind: "source_span".to_string(),
+            function_entity_id: Some("repo://e/auth-login".to_string()),
             feature_kind: "risk_label".to_string(),
+            schema_version: 1,
             payload_version: 1,
             compact_payload: "{\"risk\":\"none\"}".to_string(),
             extraction_version: "sidecar-test-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: None,
             source_span_id: Some("span-auth-flow".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             claimability: "source_spanned".to_string(),
+            lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_validation_finding(&ValidationFindingRow {
             finding_id: "finding-auth-login".to_string(),
@@ -11626,6 +12678,12 @@ mod tests {
             severity: "blocking".to_string(),
             finding_kind: "missing_source_span".to_string(),
             source_span_id: Some("span-auth-login".to_string()),
+            schema_version: 1,
+            extraction_version: "sidecar-test-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: None,
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
             claimability: "exact_graph_validation".to_string(),
             lifecycle_binding: "passport:test".to_string(),
             payload_version: 1,
@@ -11643,30 +12701,45 @@ mod tests {
 
         assert!(store
             .insert_edge_feature(&EdgeFeatureRow {
+                feature_id: "feature-edge-bad-derived".to_string(),
+                file_id: Some("src/auth.ts".to_string()),
                 edge_id: "edge-bad-derived".to_string(),
+                function_entity_id: Some("repo://e/auth-login".to_string()),
                 feature_kind: "derived_reason".to_string(),
+                schema_version: 1,
                 payload_version: 1,
                 compact_payload: "{}".to_string(),
                 extraction_version: "sidecar-test-v1".to_string(),
+                exactness: "derived_with_provenance".to_string(),
                 provenance_id: None,
                 source_span_id: Some("span-bad".to_string()),
+                source_role: "production".to_string(),
+                language: "typescript".to_string(),
                 derived: true,
                 claimability: "source_spanned".to_string(),
+                lifecycle_binding: "passport:test".to_string(),
             })
             .is_err());
         assert!(store
             .insert_ast_micro_edge(&AstMicroEdgeRow {
                 micro_edge_id: "micro-edge-bad-exact".to_string(),
                 file_id: "src/auth.ts".to_string(),
+                function_entity_id: Some("repo://e/auth-login".to_string()),
+                scope_entity_id: None,
+                core_edge_id: None,
                 source_micro_node_id: "micro-node-token".to_string(),
                 target_micro_node_id: "micro-node-return".to_string(),
                 relation_kind: "LOCAL_FLOWS_TO".to_string(),
                 source_span_id: None,
                 exactness: "exact".to_string(),
                 provenance_id: None,
+                schema_version: 1,
                 extraction_version: "sidecar-test-v1".to_string(),
+                source_role: "production".to_string(),
+                language: "typescript".to_string(),
                 payload_version: 1,
                 claimability: "source_spanned".to_string(),
+                lifecycle_binding: "passport:test".to_string(),
             })
             .is_err());
         assert!(store
@@ -11677,10 +12750,17 @@ mod tests {
                 packet_kind: "local_micro_flow".to_string(),
                 compressed_steps: "missing spans".to_string(),
                 source_span_ids_json: "[]".to_string(),
+                primary_source_span_id: None,
                 proof_status: "micro_flow_found".to_string(),
+                schema_version: 1,
                 extraction_version: "sidecar-test-v1".to_string(),
+                exactness: "derived_with_provenance".to_string(),
+                provenance_id: Some("micro-edge-token-return".to_string()),
+                source_role: "production".to_string(),
+                language: "typescript".to_string(),
                 payload_version: 1,
                 claimability: "exact_local_flow".to_string(),
+                lifecycle_binding: "passport:test".to_string(),
             })
             .is_err());
         assert!(store
@@ -11692,6 +12772,12 @@ mod tests {
                 severity: "blocking".to_string(),
                 finding_kind: "dangling_exact_call".to_string(),
                 source_span_id: None,
+                schema_version: 1,
+                extraction_version: "sidecar-test-v1".to_string(),
+                exactness: "exact".to_string(),
+                provenance_id: None,
+                source_role: "production".to_string(),
+                language: "typescript".to_string(),
                 claimability: "exact_missing_target".to_string(),
                 lifecycle_binding: "passport:test".to_string(),
                 payload_version: 1,
@@ -11699,13 +12785,22 @@ mod tests {
             .is_err());
         assert!(store
             .insert_entity_feature(&EntityFeatureRow {
+                feature_id: "feature-too-large".to_string(),
+                file_id: Some("src/auth.ts".to_string()),
                 entity_id: "repo://e/too-large".to_string(),
+                function_entity_id: None,
                 feature_kind: "ast_shape".to_string(),
+                schema_version: 1,
                 payload_version: 1,
                 compact_payload: "x".repeat(MAX_SPARSE_SIDECAR_PAYLOAD_BYTES + 1),
                 extraction_version: "sidecar-test-v1".to_string(),
+                exactness: "exact".to_string(),
+                provenance_id: None,
                 source_span_id: Some("span-large".to_string()),
+                source_role: "production".to_string(),
+                language: "typescript".to_string(),
                 claimability: "source_spanned".to_string(),
+                lifecycle_binding: "passport:test".to_string(),
             })
             .is_err());
     }

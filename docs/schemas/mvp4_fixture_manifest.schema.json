@@ -1,0 +1,444 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/mvp4_fixture_manifest.schema.json",
+  "title": "CodeGraph MVP4 fixture oracle manifest",
+  "description": "Dormant manifest contract for MVP4 AST Quantization and micro-flow oracle fixtures. Current tests validate manifests and oracle consistency only; production extraction is not required.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "fixture_root",
+    "selected_slice_id",
+    "production_extraction_required_by_current_tests",
+    "release_runner_plan",
+    "fixtures"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "fixture_root": {
+      "type": "string"
+    },
+    "selected_slice_id": {
+      "type": "string"
+    },
+    "production_extraction_required_by_current_tests": {
+      "type": "boolean",
+      "const": false
+    },
+    "release_runner_plan": {
+      "type": "object"
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/fixture"
+      }
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "title",
+        "description",
+        "language",
+        "feature_tier",
+        "source_role",
+        "required_support_status",
+        "tags",
+        "schema_version",
+        "extraction_version_expectation",
+        "initial_source",
+        "expected_micro_nodes",
+        "expected_micro_edges",
+        "expected_packets",
+        "mutation_update",
+        "storage",
+        "negative_oracles"
+      ],
+      "properties": {
+        "fixture_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "feature_tier": {
+          "type": "string"
+        },
+        "source_role": {
+          "type": "string"
+        },
+        "required_support_status": {
+          "enum": [
+            "first_slice_required",
+            "future_required",
+            "negative_boundary",
+            "unsupported_boundary",
+            "release_runner_plan_only"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "extraction_version_expectation": {
+          "type": "string"
+        },
+        "initial_source": {
+          "$ref": "#/$defs/initial_source"
+        },
+        "expected_micro_nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/micro_node"
+          }
+        },
+        "expected_micro_edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/micro_edge"
+          }
+        },
+        "expected_packets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/packet"
+          }
+        },
+        "mutation_update": {
+          "$ref": "#/$defs/mutation_update"
+        },
+        "storage": {
+          "$ref": "#/$defs/storage"
+        },
+        "negative_oracles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/negative_oracle"
+          }
+        }
+      }
+    },
+    "initial_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files",
+        "function_scope_anchors",
+        "expected_parser_state",
+        "expected_unsupported_regions"
+      ],
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_file"
+          }
+        },
+        "function_scope_anchors": {
+          "type": "array"
+        },
+        "expected_parser_state": {
+          "type": "string"
+        },
+        "expected_unsupported_regions": {
+          "type": "array"
+        }
+      }
+    },
+    "source_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "contents",
+        "source_role"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "contents": {
+          "type": "string"
+        },
+        "source_role": {
+          "type": "string"
+        }
+      }
+    },
+    "micro_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_kind",
+        "semantic_name_or_literal",
+        "scope_function",
+        "source_span",
+        "binding_status",
+        "exactness",
+        "source_role",
+        "forbidden_duplicate_count"
+      ],
+      "properties": {
+        "node_kind": {
+          "type": "string"
+        },
+        "semantic_name_or_literal": {
+          "type": "string"
+        },
+        "scope_function": {
+          "type": "string"
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span"
+        },
+        "binding_status": {
+          "type": "string"
+        },
+        "exactness": {
+          "$ref": "#/$defs/exactness"
+        },
+        "source_role": {
+          "type": "string"
+        },
+        "forbidden_duplicate_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "micro_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relation_kind",
+        "head_selector",
+        "tail_selector",
+        "source_span",
+        "provenance",
+        "exactness",
+        "claimability",
+        "forbidden_edges"
+      ],
+      "properties": {
+        "relation_kind": {
+          "type": "string"
+        },
+        "head_selector": {
+          "type": "object"
+        },
+        "tail_selector": {
+          "type": "object"
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span"
+        },
+        "provenance": {
+          "type": "object"
+        },
+        "exactness": {
+          "$ref": "#/$defs/exactness"
+        },
+        "claimability": {
+          "type": "string"
+        },
+        "forbidden_edges": {
+          "type": "array"
+        }
+      }
+    },
+    "packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_kind",
+        "ordered_steps",
+        "step_spans",
+        "proof_strength",
+        "unknown_gaps",
+        "omitted_truncation_expectation",
+        "forbidden_global_interprocedural_claim"
+      ],
+      "properties": {
+        "packet_kind": {
+          "type": "string"
+        },
+        "ordered_steps": {
+          "type": "array"
+        },
+        "step_spans": {
+          "type": "array"
+        },
+        "proof_strength": {
+          "type": "string"
+        },
+        "unknown_gaps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "omitted_truncation_expectation": {
+          "type": "object"
+        },
+        "forbidden_global_interprocedural_claim": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "mutation_update": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "changed_source",
+        "expected_removed_facts",
+        "expected_added_facts",
+        "expected_packet_invalidation",
+        "expected_stable_identities",
+        "expected_rekeys",
+        "post_fix_expectations"
+      ],
+      "properties": {
+        "changed_source": {
+          "type": "array"
+        },
+        "expected_removed_facts": {
+          "type": "array"
+        },
+        "expected_added_facts": {
+          "type": "array"
+        },
+        "expected_packet_invalidation": {
+          "type": "array"
+        },
+        "expected_stable_identities": {
+          "type": "array"
+        },
+        "expected_rekeys": {
+          "type": "array"
+        },
+        "post_fix_expectations": {
+          "type": "object"
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_expected_rows",
+        "no_full_source_storage",
+        "no_duplicate_payload",
+        "projected_bytes_if_relevant"
+      ],
+      "properties": {
+        "max_expected_rows": {
+          "type": "object"
+        },
+        "no_full_source_storage": {
+          "type": "boolean",
+          "const": true
+        },
+        "no_duplicate_payload": {
+          "type": "boolean",
+          "const": true
+        },
+        "projected_bytes_if_relevant": {
+          "type": "object"
+        }
+      }
+    },
+    "negative_oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "oracle_id",
+        "description",
+        "forbidden_claim",
+        "expected_classification",
+        "why_not_proof"
+      ],
+      "properties": {
+        "oracle_id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "forbidden_claim": {
+          "type": "string"
+        },
+        "expected_classification": {
+          "$ref": "#/$defs/exactness"
+        },
+        "why_not_proof": {
+          "type": "string"
+        }
+      }
+    },
+    "source_span": {
+      "type": "object",
+      "required": [
+        "file",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_column": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_column": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "exactness": {
+      "enum": [
+        "exact",
+        "derived_with_provenance",
+        "heuristic",
+        "unsupported",
+        "unknown"
+      ]
+    }
+  }
+}

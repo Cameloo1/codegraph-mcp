@@ -631,6 +631,7 @@ pub struct GraphTraversalTelemetry {
     pub structural_expansion_limit_hits: usize,
     pub relation_blocked_edges: usize,
     pub source_role_blocked_edges: usize,
+    pub source_role_blocked_edge_ids: BTreeSet<String>,
     pub cycles_cut: usize,
     pub depth_limit_hits: usize,
     pub budget_stop_reason: Option<String>,
@@ -676,6 +677,7 @@ impl GraphTraversalTelemetry {
             structural_expansion_limit_hits: 0,
             relation_blocked_edges: 0,
             source_role_blocked_edges: 0,
+            source_role_blocked_edge_ids: BTreeSet::new(),
             cycles_cut: 0,
             depth_limit_hits: 0,
             budget_stop_reason: None,
@@ -710,6 +712,13 @@ impl GraphTraversalTelemetry {
         }
     }
 
+    fn note_source_role_blocked(&mut self, edge: &Edge) {
+        if self.source_role_blocked_edge_ids.insert(edge.id.clone()) {
+            self.source_role_blocked_edges += 1;
+        }
+        self.source_role_filters_applied = true;
+    }
+
     fn absorb_child_traversal(&mut self, child: &GraphTraversalTelemetry) {
         for label in &child.relation_modes {
             if !self.relation_modes.contains(label) {
@@ -724,7 +733,9 @@ impl GraphTraversalTelemetry {
         self.structural_edges_skipped += child.structural_edges_skipped;
         self.structural_expansion_limit_hits += child.structural_expansion_limit_hits;
         self.relation_blocked_edges += child.relation_blocked_edges;
-        self.source_role_blocked_edges += child.source_role_blocked_edges;
+        self.source_role_blocked_edge_ids
+            .extend(child.source_role_blocked_edge_ids.iter().cloned());
+        self.source_role_blocked_edges = self.source_role_blocked_edge_ids.len();
         self.cycles_cut += child.cycles_cut;
         self.depth_limit_hits += child.depth_limit_hits;
         self.source_role_filters_applied =
@@ -805,6 +816,7 @@ impl GraphTraversalTelemetry {
             "structural_expansion_limit_hits": self.structural_expansion_limit_hits,
             "relation_blocked_edges": self.relation_blocked_edges,
             "source_role_blocked_edges": self.source_role_blocked_edges,
+            "source_role_blocked_unique_edges": self.source_role_blocked_edge_ids.len(),
             "cycles_cut": self.cycles_cut,
             "depth_limit_hits": self.depth_limit_hits,
             "budget_stop_reason": self.budget_stop_reason.as_deref().unwrap_or("completed"),
@@ -983,7 +995,7 @@ fn aggregate_graph_traversal_telemetry_json(runs: &[GraphTraversalTelemetry]) ->
     let mut structural_edges_skipped = 0usize;
     let mut structural_expansion_limit_hits = 0usize;
     let mut relation_blocked_edges = 0usize;
-    let mut source_role_blocked_edges = 0usize;
+    let mut source_role_blocked_edge_ids = BTreeSet::new();
     let mut cycles_cut = 0usize;
     let mut depth_limit_hits = 0usize;
     let mut paths_found = 0usize;
@@ -1027,7 +1039,7 @@ fn aggregate_graph_traversal_telemetry_json(runs: &[GraphTraversalTelemetry]) ->
         structural_edges_skipped += run.structural_edges_skipped;
         structural_expansion_limit_hits += run.structural_expansion_limit_hits;
         relation_blocked_edges += run.relation_blocked_edges;
-        source_role_blocked_edges += run.source_role_blocked_edges;
+        source_role_blocked_edge_ids.extend(run.source_role_blocked_edge_ids.iter().cloned());
         cycles_cut += run.cycles_cut;
         depth_limit_hits += run.depth_limit_hits;
         paths_found += run.paths_found;
@@ -1072,7 +1084,8 @@ fn aggregate_graph_traversal_telemetry_json(runs: &[GraphTraversalTelemetry]) ->
         "structural_edges_skipped": structural_edges_skipped,
         "structural_expansion_limit_hits": structural_expansion_limit_hits,
         "relation_blocked_edges": relation_blocked_edges,
-        "source_role_blocked_edges": source_role_blocked_edges,
+        "source_role_blocked_edges": source_role_blocked_edge_ids.len(),
+        "source_role_blocked_unique_edges": source_role_blocked_edge_ids.len(),
         "cycles_cut": cycles_cut,
         "depth_limit_hits": depth_limit_hits,
         "budget_stop_reasons": budget_stop_reasons,
@@ -3224,14 +3237,16 @@ impl ExactGraphQueryEngine {
             .filter(|path| !path_allowed_for_context_mode(path, &request.mode))
             .count();
         paths.retain(|path| path_allowed_for_context_mode(path, &request.mode));
-        let source_role_blocked_edge_count = traversal_runs
+        let source_role_blocked_edge_ids = traversal_runs
             .iter()
-            .map(|run| run.source_role_blocked_edges)
-            .sum::<usize>();
+            .flat_map(|run| run.source_role_blocked_edge_ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let source_role_blocked_edge_count = source_role_blocked_edge_ids.len();
         let rejected_test_mock_path_count =
             filtered_test_mock_path_count + source_role_blocked_edge_count;
         let candidate_path_count_after_filter = paths.len();
         let path_context_counts_after = path_context_counts(&paths);
+        rank_context_packet_paths(&mut paths);
         paths.truncate(24);
         let candidate_path_count_after_truncate = paths.len();
 
@@ -4272,8 +4287,7 @@ impl ExactGraphQueryEngine {
         if !policy.relation_allowed(edge.relation) {
             telemetry.relation_blocked_edges += 1;
             if test_traversal_relation_allowed(edge.relation) && !policy.mode.allows_test_mock() {
-                telemetry.source_role_blocked_edges += 1;
-                telemetry.source_role_filters_applied = true;
+                telemetry.note_source_role_blocked(edge);
             }
             if is_structural_relation(edge.relation) {
                 telemetry.structural_edges_skipped += 1;
@@ -4315,8 +4329,7 @@ impl ExactGraphQueryEngine {
         }
 
         if !policy.source_role_allowed(edge) {
-            telemetry.source_role_blocked_edges += 1;
-            telemetry.source_role_filters_applied = true;
+            telemetry.note_source_role_blocked(edge);
             return false;
         }
 
@@ -8912,6 +8925,47 @@ fn unique_paths(paths: Vec<GraphPath>) -> Vec<GraphPath> {
     unique
 }
 
+fn rank_context_packet_paths(paths: &mut [GraphPath]) {
+    paths.sort_by(|left, right| {
+        context_packet_path_priority(left)
+            .cmp(&context_packet_path_priority(right))
+            .then_with(|| right.steps.len().cmp(&left.steps.len()))
+            .then_with(|| left.cost.total_cmp(&right.cost))
+            .then_with(|| left.target.cmp(&right.target))
+            .then_with(|| left.edge_ids().cmp(&right.edge_ids()))
+    });
+}
+
+fn context_packet_path_priority(path: &GraphPath) -> u8 {
+    if path.steps.iter().any(|step| {
+        matches!(
+            step.edge.relation,
+            RelationKind::Writes
+                | RelationKind::Mutates
+                | RelationKind::MayMutate
+                | RelationKind::WritesTable
+                | RelationKind::SchemaImpact
+        )
+    }) {
+        0
+    } else if path.steps.iter().any(|step| {
+        matches!(
+            step.edge.relation,
+            RelationKind::Authorizes
+                | RelationKind::ChecksRole
+                | RelationKind::ChecksPermission
+                | RelationKind::Sanitizes
+                | RelationKind::Validates
+        )
+    }) {
+        1
+    } else if path.contains_relation(RelationKind::Calls) {
+        2
+    } else {
+        3
+    }
+}
+
 fn snippets_for_paths(
     paths: &[GraphPath],
     sources: &BTreeMap<String, String>,
@@ -11936,11 +11990,13 @@ mod tests {
         );
 
         assert!(production_packet.verified_paths.is_empty());
-        assert!(production_packet
-            .metadata
-            .get("rejected_test_mock_path_count")
-            .and_then(serde_json::Value::as_u64)
-            .is_some_and(|count| count >= 1));
+        assert_eq!(
+            production_packet
+                .metadata
+                .get("rejected_test_mock_path_count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
 
         let test_packet = engine.context_pack(
             ContextPackRequest::new(
@@ -13396,7 +13452,7 @@ mod tests {
             edge("d", RelationKind::Writes, "sink", 4),
         ]);
         let packet = engine.context_pack(
-            ContextPackRequest::new("Trace mutation", "impact", 12_000, vec!["a".to_string()]),
+            ContextPackRequest::new("Trace mutation", "impact", 4_000, vec!["a".to_string()]),
             &BTreeMap::new(),
         );
 

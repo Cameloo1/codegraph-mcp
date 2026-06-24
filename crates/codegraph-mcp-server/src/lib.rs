@@ -3665,6 +3665,8 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
     let mut escalated_total = 0usize;
     let mut external_or_builtin_count = 0usize;
     let mut dynamic_or_computed_count = 0usize;
+    let mut repo_local_definition_candidate_count = 0usize;
+    let mut repo_local_no_definition_count = 0usize;
 
     for entry in &delta.unresolved_references_added {
         if !changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path)) {
@@ -3686,9 +3688,14 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
             let Some(rule) = rule_by_id.get(rule_id).copied() else {
                 continue;
             };
-            escalated_total += 1;
             let lookup =
                 mcp_validate_edit_unresolved_reference_repo_graph_lookup(store, &entry.name)?;
+            if lookup.definition_count > 0 {
+                repo_local_definition_candidate_count += 1;
+                continue;
+            }
+            repo_local_no_definition_count += 1;
+            escalated_total += 1;
             let finding = mcp_validate_edit_unresolved_reference_warning(
                 rule,
                 lifecycle.clone(),
@@ -3748,11 +3755,19 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
         "by_class": by_class,
         "escalated": escalated_inline,
         "escalated_total": escalated_total,
+        "escalated_no_definition_count": repo_local_no_definition_count,
         "escalated_omitted_count": escalated_total.saturating_sub(
             escalated_inline.len().min(escalated_total)
         ),
+        "repo_local_definition_candidate_count": repo_local_definition_candidate_count,
+        "repo_local_no_definition_count": repo_local_no_definition_count,
         "external_or_builtin_count": external_or_builtin_count,
         "dynamic_or_computed_count": dynamic_or_computed_count,
+        "count_semantics": {
+            "new_count": "parser unresolved references after changed-file and CALLEE de-dup filters",
+            "escalated_total": "repo-local references with no defining entity in the current graph",
+            "repo_local_definition_candidate_count": "repo-local parser-unresolved references suppressed because a definition candidate exists elsewhere in the graph"
+        },
         "block_on_unresolved_local": block_on_unresolved_local,
         "expansion_handle": "validation_packet:unresolved_references",
         "not_graph_proof": true,
@@ -10181,17 +10196,11 @@ mod tests {
             &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
         ));
 
-        let outside = repo
-            .parent()
-            .expect("repo parent")
-            .join("outside-mcp-validate-edit.ts");
-        fs::write(&outside, "export function outside() {}\n").expect("outside file");
-
         let packet = ok(server.call_tool(
             MCP_VALIDATE_EDIT_TOOL_NAME,
             &json!({
                 "repo": path_string(&repo),
-                "changed_files": [path_string(&outside)],
+                "changed_files": ["..\\outside.ts"],
                 "mode": "audit-json"
             }),
         ));
@@ -10203,7 +10212,6 @@ mod tests {
         assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
 
         fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_file(outside).expect("cleanup outside");
         fs::remove_dir_all(profile_root).expect("cleanup profile");
     }
 

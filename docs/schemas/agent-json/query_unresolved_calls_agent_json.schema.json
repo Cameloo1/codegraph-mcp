@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/query_unresolved_calls_agent_json.schema.json",
+  "title": "query_unresolved_calls_agent_json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "repo",
+    "db",
+    "claimable",
+    "diagnostic_only",
+    "graph_proof",
+    "proof_status",
+    "proof_strength",
+    "unresolved_references",
+    "pagination",
+    "warnings",
+    "errors"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "schema_name": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "command": {
+      "type": "string"
+    },
+    "agent_use_command": {
+      "type": "string"
+    },
+    "command_namespace": {
+      "type": "string"
+    },
+    "repo": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "claimable": {
+      "type": "boolean"
+    },
+    "diagnostic_only": {
+      "type": "boolean"
+    },
+    "graph_proof": {
+      "const": false
+    },
+    "proof_status": {
+      "enum": ["not_graph_proof", "diagnostic_only", "unknown"]
+    },
+    "proof_strength": {
+      "enum": ["none", "text_evidence", "symbol_evidence", "unknown"]
+    },
+    "claimability": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "lifecycle": {
+      "$ref": "common.schema.json#/$defs/lifecycle_summary"
+    },
+    "db_lifecycle_read": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "unresolved_references": {
+      "$ref": "common.schema.json#/$defs/unresolved_references_block"
+    },
+    "calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "pagination": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "requested_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "effective_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "truncation": {
+      "$ref": "common.schema.json#/$defs/truncation"
+    },
+    "agent_json_budget": {
+      "$ref": "common.schema.json#/$defs/agent_json_budget"
+    },
+    "recovery": {
+      "$ref": "common.schema.json#/$defs/recovery_pointer"
+    },
+    "recovery_commands": {
+      "$ref": "common.schema.json#/$defs/recovery_commands"
+    },
+    "read_path_metrics": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "warnings": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "errors": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    }
+  }
+}

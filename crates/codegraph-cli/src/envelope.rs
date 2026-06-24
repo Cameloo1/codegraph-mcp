@@ -119,6 +119,11 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
             &mut omitted_count,
         );
         agent_use_compact_rtds_freshness_field(value, &mut truncated_sections, &mut omitted_count);
+        agent_use_compact_stale_candidate_layers_field(
+            value,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
         // Preserve a minimal top-level last_delta_update_summary (status + counts)
         // rather than dropping it entirely; agents and the delta contract need
         // `last_delta_update_summary.status` after a watch/delta update.
@@ -134,22 +139,8 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
         }
         agent_use_compact_publish_state_field(value, &mut truncated_sections, &mut omitted_count);
         agent_use_compact_lock_state_field(value, &mut truncated_sections, &mut omitted_count);
-        agent_use_compact_update_queue_state_field(
-            value,
-            &mut truncated_sections,
-            &mut omitted_count,
-        );
-        agent_use_compact_config_discovery_field(
-            value,
-            &mut truncated_sections,
-            &mut omitted_count,
-        );
+        agent_use_compact_discovery_fields(value, &mut truncated_sections, &mut omitted_count);
         agent_use_compact_read_path_metrics_field(
-            value,
-            &mut truncated_sections,
-            &mut omitted_count,
-        );
-        agent_use_compact_query_instrumentation_field(
             value,
             &mut truncated_sections,
             &mut omitted_count,
@@ -663,7 +654,7 @@ pub(crate) fn agent_use_compact_rtds_freshness_field(
         "dirty_state": rtds.get("dirty_state").cloned().unwrap_or(Value::Null),
         "delta_state": rtds.get("delta_state").cloned().unwrap_or(Value::Null),
         "publish_state": rtds.get("publish_state").map(compact_agent_use_publish_state_summary).unwrap_or(Value::Null),
-        "stale_candidate_layers": rtds.get("stale_candidate_layers").cloned().unwrap_or_else(|| json!([])),
+        "stale_candidate_layers": rtds.get("stale_candidate_layers").map(compact_agent_use_stale_candidate_layers).unwrap_or_else(|| json!([])),
         "candidate_only_available": rtds.get("candidate_only_available").cloned().unwrap_or(Value::Null),
         "graph_proof_available": rtds.get("graph_proof_available").cloned().unwrap_or(Value::Null),
         "candidate_context_available": rtds.get("candidate_context_available").cloned().unwrap_or(Value::Null),
@@ -683,6 +674,60 @@ pub(crate) fn agent_use_compact_rtds_freshness_field(
     }
     truncated_sections.push("rtds_freshness".to_string());
     *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn agent_use_compact_stale_candidate_layers_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(layers) = value.get("stale_candidate_layers").cloned() else {
+        return;
+    };
+    let compact = compact_agent_use_stale_candidate_layers(&layers);
+    if compact == layers {
+        return;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("stale_candidate_layers".to_string(), compact);
+    }
+    truncated_sections.push("stale_candidate_layers".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn compact_agent_use_stale_candidate_layers(layers: &Value) -> Value {
+    let Some(array) = layers.as_array() else {
+        return layers.clone();
+    };
+    let compacted: Vec<Value> = array
+        .iter()
+        .take(8)
+        .map(|layer| {
+            let reason = layer
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let reason_summary = reason
+                .split(':')
+                .next()
+                .unwrap_or(reason)
+                .chars()
+                .take(96)
+                .collect::<String>();
+            json!({
+                "layer": layer.get("layer").cloned().unwrap_or(Value::Null),
+                "status": layer.get("status").cloned().unwrap_or(Value::Null),
+                "graph_proof": layer.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+                "reason_summary": reason_summary,
+                "path_ref": if layer.get("path").is_some() {
+                    json!("profile_sidecar")
+                } else {
+                    Value::Null
+                },
+            })
+        })
+        .collect();
+    json!(compacted)
 }
 
 pub(crate) fn agent_use_compact_publish_state_field(
@@ -727,39 +772,18 @@ pub(crate) fn agent_use_compact_lock_state_field(
         "publish_status": lock_state.get("publish_status").cloned().unwrap_or(Value::Null),
         "db_locked": lock_state.get("db_locked").cloned().unwrap_or(Value::Null),
         "retryable": lock_state.get("retryable").cloned().unwrap_or(Value::Null),
-        "retryable_labels": lock_state
-            .get("retryable_labels")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-        "blocked_label_count": lock_state
-            .get("blocked_labels")
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or_default(),
-        "blocked_labels_ref": "errors",
+        "retryable_labels": lock_state.get("retryable_labels").cloned().unwrap_or_else(|| json!([])),
+        "blocked_label_count": lock_state.get("blocked_labels").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
         "lock_retry_count": lock_state.get("lock_retry_count").cloned().unwrap_or(Value::Null),
+        "max_concurrent_writers": lock_state.get("max_concurrent_writers").cloned().unwrap_or(Value::Null),
+        "writer_queue_serialized": lock_state.get("writer_queue_serialized").cloned().unwrap_or(Value::Null),
         "old_db_preserved": lock_state.get("old_db_preserved").cloned().unwrap_or(Value::Null),
         "temp_db_claimable": lock_state.get("temp_db_claimable").cloned().unwrap_or(Value::Null),
-        "unrelated_repo_blocking": lock_state
-            .get("unrelated_repo_blocking")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "writer_queue_serialized": lock_state
-            .get("writer_queue_serialized")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "no_dot_codegraph_fallback": lock_state
-            .get("no_dot_codegraph_fallback")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "global_lock_scope": lock_state.get("global_lock_scope").cloned().unwrap_or(Value::Null),
+        "unrelated_repo_blocking": lock_state.get("unrelated_repo_blocking").cloned().unwrap_or(Value::Null),
+        "no_dot_codegraph_fallback": lock_state.get("no_dot_codegraph_fallback").cloned().unwrap_or(Value::Null),
         "scope": lock_state.get("scope").cloned().unwrap_or(Value::Null),
-        "profile_name": lock_state.get("profile_name").cloned().unwrap_or(Value::Null),
-        "repo_identity_hash": lock_state.get("repo_identity_hash").cloned().unwrap_or(Value::Null),
         "db_ref": "db",
-        "repo_ref": "repo",
         "profile_root_ref": "profile_root",
-        "publish_state_ref": "publish_state",
         "agent_json_compacted": true,
     });
     if let Some(object) = value.as_object_mut() {
@@ -769,89 +793,59 @@ pub(crate) fn agent_use_compact_lock_state_field(
     *omitted_count = omitted_count.saturating_add(1);
 }
 
-pub(crate) fn agent_use_compact_update_queue_state_field(
+pub(crate) fn agent_use_compact_discovery_fields(
     value: &mut Value,
     truncated_sections: &mut Vec<String>,
     omitted_count: &mut u64,
 ) {
-    let Some(queue_state) = value.get("update_queue_state").cloned() else {
-        return;
-    };
-    let compact = json!({
-        "status": queue_state.get("status").cloned().unwrap_or(Value::Null),
-        "active_update": queue_state.get("active_update").cloned().unwrap_or(Value::Null),
-        "queue_depth": queue_state.get("queue_depth").cloned().unwrap_or(Value::Null),
-        "updates_attempted": queue_state
-            .get("updates_attempted")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "updates_succeeded": queue_state
-            .get("updates_succeeded")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "old_db_preserved": queue_state.get("old_db_preserved").cloned().unwrap_or(Value::Null),
-        "temp_db_claimable": queue_state.get("temp_db_claimable").cloned().unwrap_or(Value::Null),
-        "unrelated_repo_blocking": queue_state
-            .get("unrelated_repo_blocking")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "writer_queue_serialized": queue_state
-            .get("writer_queue_serialized")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "persistent_watch_attached": queue_state
-            .get("persistent_watch_attached")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "auto_index_enabled": queue_state
-            .get("auto_index_enabled")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "max_concurrent_writers": queue_state
-            .get("max_concurrent_writers")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "last_error": queue_state.get("last_error").cloned().unwrap_or(Value::Null),
-        "last_update_summary": queue_state
-            .get("last_update_summary")
-            .map(compact_agent_use_last_delta_update_summary)
-            .unwrap_or(Value::Null),
-        "agent_json_compacted": true,
-    });
-    if let Some(object) = value.as_object_mut() {
-        object.insert("update_queue_state".to_string(), compact);
+    let env_discovery = value.get("env_discovery").cloned();
+    let config_discovery = value.get("config_discovery").cloned();
+
+    if let Some(env) = env_discovery {
+        let compact = json!({
+            "status": env.get("status").cloned().unwrap_or_else(|| json!("ok")),
+            "data_root_source": env.get("data_root_source").cloned().unwrap_or(Value::Null),
+            "explicit_data_root": env.get("explicit_data_root").map(compact_agent_use_path_status).unwrap_or(Value::Null),
+            "platform_data_dir": env.get("platform_data_dir").map(compact_agent_use_path_status).unwrap_or(Value::Null),
+            "db_path_ref": env.get("db_path_ref").cloned().unwrap_or_else(|| json!("db")),
+            "profile_root_ref": env.get("profile_root_ref").cloned().unwrap_or_else(|| json!("profile_root")),
+            "agent_json_compacted": true,
+        });
+        if let Some(object) = value.as_object_mut() {
+            object.insert("env_discovery".to_string(), compact);
+        }
+        truncated_sections.push("env_discovery".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
     }
-    truncated_sections.push("update_queue_state".to_string());
-    *omitted_count = omitted_count.saturating_add(1);
+
+    if let Some(config) = config_discovery {
+        let compact = json!({
+            "status": config.get("status").cloned().unwrap_or(Value::Null),
+            "required": config.get("required").cloned().unwrap_or_else(|| json!(false)),
+            "diagnostic_only": config.get("diagnostic_only").cloned().unwrap_or_else(|| json!(true)),
+            "unknown_field_policy": config.get("unknown_field_policy").cloned().unwrap_or(Value::Null),
+            "error_count": config.get("errors").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+            "unknown_field_count": config.get("unknown_fields").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+            "recovery_ref": "recovery_commands",
+            "agent_json_compacted": true,
+        });
+        if let Some(object) = value.as_object_mut() {
+            object.insert("config_discovery".to_string(), compact);
+        }
+        truncated_sections.push("config_discovery".to_string());
+        *omitted_count = omitted_count.saturating_add(1);
+    }
 }
 
-pub(crate) fn agent_use_compact_config_discovery_field(
-    value: &mut Value,
-    truncated_sections: &mut Vec<String>,
-    omitted_count: &mut u64,
-) {
-    let Some(config) = value.get("config_discovery").cloned() else {
-        return;
-    };
-    if config
-        .get("agent_json_compacted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return;
-    }
-    let compact = json!({
-        "status": config.get("status").cloned().unwrap_or(Value::Null),
-        "required": config.get("required").cloned().unwrap_or(Value::Null),
-        "diagnostic_only": config.get("diagnostic_only").cloned().unwrap_or(Value::Null),
-        "recovery_ref": config.get("recovery_ref").cloned().unwrap_or(Value::Null),
+pub(crate) fn compact_agent_use_path_status(value: &Value) -> Value {
+    json!({
+        "status": value.get("status").cloned().unwrap_or(Value::Null),
+        "exists": value.get("exists").cloned().unwrap_or(Value::Null),
+        "writable": value.get("writable").cloned().unwrap_or(Value::Null),
+        "readable": value.get("readable").cloned().unwrap_or(Value::Null),
+        "path_ref": value.get("path_ref").cloned().unwrap_or(Value::Null),
         "agent_json_compacted": true,
-    });
-    if let Some(object) = value.as_object_mut() {
-        object.insert("config_discovery".to_string(), compact);
-    }
-    truncated_sections.push("config_discovery".to_string());
-    *omitted_count = omitted_count.saturating_add(1);
+    })
 }
 
 pub(crate) fn agent_use_compact_read_path_metrics_field(
@@ -882,27 +876,6 @@ pub(crate) fn agent_use_compact_read_path_metrics_field(
     }
     truncated_sections.push("read_path_metrics".to_string());
     *omitted_count = omitted_count.saturating_add(1);
-}
-
-pub(crate) fn agent_use_compact_query_instrumentation_field(
-    value: &mut Value,
-    truncated_sections: &mut Vec<String>,
-    omitted_count: &mut u64,
-) {
-    let Some(instrumentation) = value
-        .get_mut("instrumentation")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    if instrumentation.remove("explain_query_plan").is_some() {
-        instrumentation.insert("explain_query_plan_omitted".to_string(), json!(true));
-        instrumentation
-            .entry("full_detail_handle".to_string())
-            .or_insert_with(|| json!("query.instrumentation.explain_query_plan"));
-        truncated_sections.push("instrumentation.explain_query_plan".to_string());
-        *omitted_count = omitted_count.saturating_add(1);
-    }
 }
 
 pub(crate) fn agent_use_compact_query_results_field(
@@ -1009,10 +982,7 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
 ) {
     let command = value.get("command").and_then(Value::as_str);
     let preserve_update_safety_state = matches!(command, Some("status" | "watch"));
-    let preserve_lifecycle_safety_state =
-        matches!(command, Some("status" | "watch" | "context-pack"));
     let preserve_rtds_safety_state = matches!(command, Some("status" | "watch" | "context-pack"));
-    let preserve_context_proof_state = matches!(command, Some("context-pack"));
     for key in [
         // Candidate diagnostics are large and not contract-required for compact
         // context-pack/status output, so they go before evidence and safety
@@ -1046,7 +1016,6 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         "omitted_by_dedup",
         "proof_failure_reason",
         "proof_path_available",
-        "proof_path_count",
         "publishing",
         "staged_claimability",
         "task",
@@ -1069,26 +1038,17 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         {
             continue;
         }
-        if preserve_lifecycle_safety_state && key == "db_lifecycle_read" {
-            continue;
-        }
-        if preserve_context_proof_state
-            && matches!(key, "proof_path_available" | "proof_path_count")
-        {
-            continue;
-        }
         if preserve_rtds_safety_state
             && matches!(
                 key,
                 "rtds_freshness"
+                    | "db_lifecycle_read"
                     | "graph_freshness"
                     | "dirty_state"
-                    | "graph_db_status"
                     | "graph_proof_available"
-                    | "candidate_spool_query_index_status"
                     | "candidate_spool_status"
-                    | "vector_audit_status"
                     | "vector_runtime_status"
+                    | "vector_audit_status"
                     | "candidate_only_available"
                     | "active_candidate_sources"
             )

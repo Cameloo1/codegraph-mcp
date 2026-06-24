@@ -44,8 +44,9 @@ CodeGraph is built as four practical layers:
 3. **Graph/source verification.** Candidate lanes are not answers. The graph and
    source spans decide whether a relation is proven, source-text-only, or still
    unknown.
-4. **Agent-use and MCP surfaces.** The CLI and MCP server expose bounded,
-   lifecycle-checked packets for one linear coding-agent workflow.
+4. **Agent-use and MCP surfaces.** The CLI and MCP server expose
+   lifecycle-checked, budget-aware packets for one linear coding-agent
+   workflow.
 
 The short rule:
 

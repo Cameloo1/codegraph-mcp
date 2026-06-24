@@ -37,8 +37,8 @@ before `query`. Use `--` for literal flag-shaped search terms, such as
 
 ## Agent-Friendly Output
 
-Use `--agent-json` for tight coding-agent loops and `--limit <n>` to keep
-results bounded:
+Use `--agent-json` for tight coding-agent loops and `--limit <n>` to request
+compact, budget-aware results:
 
 ```powershell
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
@@ -61,7 +61,7 @@ codegraph-mcp agent-use validate-edit --repo <repo> `
 
 Supported compact modes:
 
-- `--agent-json`: schema-versioned, bounded JSON for agent loops.
+- `--agent-json`: schema-versioned, budget-aware JSON for agent loops.
 - `--concise`: compact output where supported.
 - `--verbose`, `--debug`, `--profile`, and `--audit-json`: explicit rich or
   audit detail.
@@ -70,6 +70,11 @@ Supported compact modes:
 
 `index --json` is concise by default. It excludes full scope examples and audit
 payloads unless one of the explicit audit/scope flags is supplied.
+
+Current release verification found known compact-size exceptions for path and
+unresolved-call query packets and for rich validate-edit `--explain` /
+`--audit-json` packets. Consumers should parse truncation and budget metadata
+instead of treating byte size alone as a safety signal.
 
 ## Production Agent-Use Namespace
 

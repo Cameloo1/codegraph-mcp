@@ -8,7 +8,7 @@ those tools.
 ## Recommended Pattern
 
 Build or install the release binary, keep the DB outside the source tree, and
-ask for bounded agent JSON:
+ask for schema-versioned, budget-aware agent JSON:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
@@ -76,10 +76,11 @@ context-pack` use that same external DB and refuse unsafe DB states instead of
 falling back to `.codegraph`. `agent-use mcp-config` emits config JSON only by
 default; it does not write a config file.
 
-`agent-use query` supports the compact symbol, text, file, caller, callee,
-path, chain, reference, definition, and unresolved-call read surfaces when the
-underlying plain query supports them. Relation/navigation output carries
-relation kind, exactness, source spans, evidence role, `proof_status`, and
+`agent-use query` supports agent JSON output for the symbol, text, file,
+caller, callee, path, chain, reference, definition, and unresolved-call read
+surfaces when the underlying plain query supports them. Relation/navigation
+output carries relation kind, exactness, source spans, evidence role,
+`proof_status`, and
 `proof_strength`. `graph_proof=true` is reserved for verified graph/source
 relations or proof paths; definitions are symbol-location evidence, and
 references distinguish graph references from text references.
@@ -89,7 +90,8 @@ shared usage block instead of separate long help pages for each subcommand. Use
 the command shapes in that shared help block and in this guide as the release
 contract. Richer `--explain` and `--audit-json` modes are verified by the
 release command matrix for `validate-edit` and `context-pack` even though the
-shared help block keeps the quick usage compact.
+shared help block keeps the quick usage compact. Those richer modes are
+diagnostic packets, not the tight-loop compact packet shape.
 
 ## Agent Task Lifecycle
 
@@ -106,7 +108,7 @@ Recommended task loop:
      on graph facts.
    - If only candidate/vector/source-navigation sidecars are stale, graph proof
      can still be claimable, but candidate recall is degraded until reindex.
-2. For non-trivial tasks, ask for a bounded planning packet with
+2. For non-trivial tasks, ask for a compact planning packet with
    `agent-use context-pack --task "<task>" --agent-json`.
    - Use this to identify likely files, symbols, call paths, proof labels,
      unknowns, and follow-up inspection targets.
@@ -278,8 +280,12 @@ The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
 coding-agent context, not public metric verdicts by themselves.
 
-For local diagnostic measurement of the same edit-time guardrail loop, use
-[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md).
+For a local packet gallery and DB-footprint view of the validate-edit loop, see
+[linter-experience-lab.md](linter-experience-lab.md).
+
+For local diagnostic measurement of the same edit-time guardrail loop, use the
+Agent Guard Playground guide in
+[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md#agent-guard-playground).
 It measures bad edits caught, clean edits passed, repairs cleared, proof/trust
 ledger discipline, stale-evidence safety, packet usability, and same-agent A/B
 scaffold invariants. The current verified local gate is
@@ -306,9 +312,13 @@ runtime proof sources.
 
 ## Output Modes
 
-- `--agent-json` emits a bounded, schema-versioned JSON envelope for tight
+- `--agent-json` emits a schema-versioned, budget-aware JSON envelope for
   coding-agent loops. It includes compact lifecycle state, claim flags,
   result counts, truncation fields, warnings/errors, timings, and top results.
+  Current release verification found known over-budget exceptions for some
+  path/unresolved-call query packets and rich validate-edit diagnostic modes,
+  so clients must inspect truncation and budget metadata instead of relying on
+  byte size alone.
 - `--concise` emits compact human/machine output where supported without the
   full audit payload.
 - `--verbose`, `--debug`, `--profile`, and audit/report commands preserve rich

@@ -20,8 +20,10 @@ use std::{
 };
 
 use codegraph_core::{
-    relation_allows, stable_edge_id, stable_entity_id, stable_entity_id_for_kind, Edge, EdgeClass,
-    EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, RelationKind,
+    relation_allows, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
+    stable_fact_identity_key, stable_micro_node_id, Edge, EdgeClass, EdgeContext, Entity,
+    EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, MicroDerivationKind, MicroExactness,
+    MicroFactProvenance, MicroNodeIdentityInput, MicroNodeKind, MicroSourceRole, RelationKind,
     SourceSpan,
 };
 use serde::{Deserialize, Serialize};
@@ -1271,6 +1273,1977 @@ pub fn extract_entities_and_core_relations(parsed: &ParsedFile, source: &str) ->
 
 pub fn extract_basic_entities(parsed: &ParsedFile, source: &str) -> BasicExtraction {
     extract_entities_and_relations(parsed, source)
+}
+
+const MVP4_TS_MICRO_NODE_ROW_SCHEMA_VERSION: u32 = 1;
+const MVP4_TS_MICRO_NODE_PAYLOAD_VERSION: u32 = 1;
+const MVP4_TS_MICRO_NODE_EXTRACTION_VERSION: &str = "mvp4.1-typescript-micro-nodes-v1";
+const MVP4_TS_CORE_DECLARATION_EXTRACTOR: &str = "mvp4.1-typescript-core-declarations-v1";
+const MVP4_TS_OPERATION_SITE_EXTRACTOR: &str = "mvp4.1-typescript-operation-sites-v1";
+const MVP4_TS_PROPERTY_ACCESS_EXTRACTOR: &str = "mvp4.1-typescript-property-access-v1";
+const MVP4_TS_MICRO_NODE_FRONTEND: &str = "tree-sitter-typescript";
+const MVP4_TS_MICRO_NODE_LANGUAGE: &str = "typescript";
+const MVP4_TS_MAX_MICRO_NODES_PER_FUNCTION: usize = 2532;
+const MVP4_TS_MAX_MICRO_NODES_PER_FILE: usize = 2532;
+const MVP4_TS_MAX_FUNCTION_FRAME_PER_FUNCTION: usize = 4;
+const MVP4_TS_MAX_PARAMETER_PER_FUNCTION: usize = 81;
+const MVP4_TS_MAX_LOCAL_BINDING_PER_FUNCTION: usize = 362;
+const MVP4_TS_MAX_ASSIGNMENT_SITE_PER_FUNCTION: usize = 541;
+const MVP4_TS_MAX_RETURN_SITE_PER_FUNCTION: usize = 3;
+const MVP4_TS_MAX_CALL_SITE_PER_FUNCTION: usize = 300;
+const MVP4_TS_MAX_PROPERTY_ACCESS_PER_FUNCTION: usize = 720;
+const MVP4_TS_MAX_NAME_OR_LITERAL_BYTES: usize = 311;
+const MVP4_TS_MAX_PARSER_RECOVERY_DERIVED_NODES: usize = 8;
+const MVP4_TS_MAX_OMISSION_DETAILS_IN_COMPACT_STATUS: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptScopeDiscoveryReport {
+    pub status: String,
+    pub eligible: bool,
+    pub exclusion_reason: Option<String>,
+    pub source_role: MicroSourceRole,
+    pub source_role_reason: String,
+    pub source_role_source: String,
+    pub parser_status: String,
+    pub functions: Vec<Mvp4TypeScriptFunctionScope>,
+    pub production_persistence_enabled: bool,
+    pub production_micro_nodes_emitted: u64,
+    pub micro_edges_emitted: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptFunctionScope {
+    pub function_identity: String,
+    pub function_name: String,
+    pub function_kind: String,
+    pub qualifier_path: Vec<String>,
+    pub source_span: SourceSpan,
+    pub body_span: SourceSpan,
+    pub source_role: MicroSourceRole,
+    pub parse_recovery: bool,
+    pub claimability: String,
+    pub scope_path: Vec<String>,
+    pub structural_ast_path: Vec<String>,
+    pub parameter_scope: Mvp4TypeScriptLexicalScope,
+    pub lexical_scopes: Vec<Mvp4TypeScriptLexicalScope>,
+    pub existing_entity_link: Option<Mvp4TypeScriptEntityLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptLexicalScope {
+    pub scope_kind: String,
+    pub scope_path: Vec<String>,
+    pub source_span: SourceSpan,
+    pub structural_ast_path: Vec<String>,
+    pub parse_recovery: bool,
+    pub bindings: Vec<Mvp4TypeScriptScopeBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptScopeBinding {
+    pub name: String,
+    pub binding_kind: String,
+    pub declaration_kind: Option<String>,
+    pub source_span: SourceSpan,
+    pub scope_path: Vec<String>,
+    pub structural_ast_path: Vec<String>,
+    pub parse_recovery: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptEntityLink {
+    pub entity_id: String,
+    pub entity_kind: EntityKind,
+    pub exactness: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptCoreDeclarationCandidateReport {
+    pub status: String,
+    pub eligible: bool,
+    pub exclusion_reason: Option<String>,
+    pub source_role: MicroSourceRole,
+    pub parser_status: String,
+    pub candidates: Vec<Mvp4TypeScriptMicroNodeCandidate>,
+    pub unsupported_boundaries: Vec<Mvp4TypeScriptUnsupportedDeclarationBoundary>,
+    pub duplicate_candidate_count: u64,
+    pub source_span_failures: u64,
+    pub binding_overclaim_count: u64,
+    pub production_persistence_enabled: bool,
+    pub production_micro_node_rows: u64,
+    pub micro_edge_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptOperationSiteCandidateReport {
+    pub status: String,
+    pub eligible: bool,
+    pub exclusion_reason: Option<String>,
+    pub source_role: MicroSourceRole,
+    pub parser_status: String,
+    pub candidates: Vec<Mvp4TypeScriptMicroNodeCandidate>,
+    pub duplicate_candidate_count: u64,
+    pub source_span_failures: u64,
+    pub callee_target_overclaim_count: u64,
+    pub write_flow_overclaim_count: u64,
+    pub production_persistence_enabled: bool,
+    pub production_micro_node_rows: u64,
+    pub micro_edge_rows: u64,
+    pub flow_proof_activated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptPropertyAccessCandidateReport {
+    pub status: String,
+    pub eligible: bool,
+    pub exclusion_reason: Option<String>,
+    pub source_role: MicroSourceRole,
+    pub parser_status: String,
+    pub candidates: Vec<Mvp4TypeScriptMicroNodeCandidate>,
+    pub duplicate_candidate_count: u64,
+    pub source_span_failures: u64,
+    pub binding_overclaim_count: u64,
+    pub semantic_overclaim_count: u64,
+    pub production_persistence_enabled: bool,
+    pub production_micro_node_rows: u64,
+    pub micro_edge_rows: u64,
+    pub flow_proof_activated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptInMemoryInventoryReport {
+    pub status: String,
+    pub eligible: bool,
+    pub exclusion_reason: Option<String>,
+    pub source_role: MicroSourceRole,
+    pub parser_status: String,
+    pub candidates: Vec<Mvp4TypeScriptMicroNodeCandidate>,
+    pub omitted_count: u64,
+    pub cap_hits: Vec<Mvp4TypeScriptMicroNodeCapHit>,
+    pub completeness_label: String,
+    pub duplicate_candidate_count: u64,
+    pub stable_id_collision_count: u64,
+    pub claimable_node_missing_span_count: u64,
+    pub source_span_failures: u64,
+    pub binding_overclaim_count: u64,
+    pub semantic_overclaim_count: u64,
+    pub production_persistence_enabled: bool,
+    pub production_micro_node_rows: u64,
+    pub micro_edge_rows: u64,
+    pub flow_proof_activated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptMicroNodeCapPolicy {
+    pub max_micro_nodes_per_function: usize,
+    pub max_micro_nodes_per_file: usize,
+    pub per_kind_nodes_per_function: BTreeMap<MicroNodeKind, usize>,
+    pub max_name_or_literal_bytes: usize,
+    pub max_parser_recovery_derived_nodes: usize,
+    pub max_omission_details_in_compact_status: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptMicroNodeCapHit {
+    pub cap_kind: String,
+    pub function_identity: Option<String>,
+    pub node_kind: Option<MicroNodeKind>,
+    pub retained_count: usize,
+    pub omitted_count: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptMicroNodeCandidate {
+    pub micro_node_id: String,
+    pub node_kind: MicroNodeKind,
+    pub repo_relative_path: String,
+    pub language: String,
+    pub frontend: String,
+    pub enclosing_function_identity: String,
+    pub function_entity_id: Option<String>,
+    pub function_kind: Option<String>,
+    pub scope_path: Vec<String>,
+    pub structural_ast_path: Vec<String>,
+    pub occurrence_index: u32,
+    pub source_span: SourceSpan,
+    pub name_or_literal: String,
+    pub symbol_binding_id: Option<String>,
+    pub source_role: MicroSourceRole,
+    pub exactness: MicroExactness,
+    pub claimability: String,
+    pub parse_recovery: bool,
+    pub declaration_kind: Option<String>,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub provenance: MicroFactProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptUnsupportedDeclarationBoundary {
+    pub boundary_kind: String,
+    pub reason: String,
+    pub source_span: SourceSpan,
+    pub scope_path: Vec<String>,
+    pub structural_ast_path: Vec<String>,
+    pub exactness: MicroExactness,
+    pub claimability: String,
+}
+
+pub fn discover_mvp4_typescript_scopes(
+    parsed: &ParsedFile,
+    source: &str,
+) -> Mvp4TypeScriptScopeDiscoveryReport {
+    let source_role = mvp4_typescript_source_role(&parsed.repo_relative_path);
+    let parser_status = if parsed.has_syntax_errors() {
+        "parsed_with_syntax_diagnostics"
+    } else {
+        "parsed"
+    }
+    .to_string();
+
+    let mut report = Mvp4TypeScriptScopeDiscoveryReport {
+        status: "complete".to_string(),
+        eligible: true,
+        exclusion_reason: None,
+        source_role: source_role.role,
+        source_role_reason: source_role.reason.to_string(),
+        source_role_source: source_role.source.to_string(),
+        parser_status,
+        functions: Vec::new(),
+        production_persistence_enabled: false,
+        production_micro_nodes_emitted: 0,
+        micro_edges_emitted: 0,
+    };
+
+    if parsed.language != SourceLanguage::TypeScript {
+        report.status = "excluded".to_string();
+        report.eligible = false;
+        report.exclusion_reason = Some("not_typescript_language".to_string());
+        return report;
+    }
+    if !is_mvp4_exact_typescript_ts_path(&parsed.repo_relative_path) {
+        report.status = "excluded".to_string();
+        report.eligible = false;
+        report.exclusion_reason = Some("not_exact_dot_ts_source_file".to_string());
+        return report;
+    }
+    if source_role.role != MicroSourceRole::Production {
+        report.status = "excluded".to_string();
+        report.eligible = false;
+        report.exclusion_reason = Some(format!("source_role_{}", source_role.role.as_str()));
+        return report;
+    }
+
+    let extraction = extract_entities_and_relations(parsed, source);
+    let mut class_stack = Vec::new();
+    let mut function_stack = Vec::new();
+    collect_mvp4_ts_function_scopes(
+        parsed.tree().root_node(),
+        parsed,
+        source,
+        &extraction.entities,
+        &mut class_stack,
+        &mut function_stack,
+        &mut report.functions,
+    );
+    report.functions.sort_by(|left, right| {
+        left.scope_path
+            .cmp(&right.scope_path)
+            .then_with(|| {
+                left.source_span
+                    .start_line
+                    .cmp(&right.source_span.start_line)
+            })
+            .then_with(|| {
+                left.source_span
+                    .start_column
+                    .cmp(&right.source_span.start_column)
+            })
+    });
+    report
+}
+
+pub fn emit_mvp4_typescript_core_declaration_candidates(
+    parsed: &ParsedFile,
+    source: &str,
+) -> Mvp4TypeScriptCoreDeclarationCandidateReport {
+    let scope_report = discover_mvp4_typescript_scopes(parsed, source);
+    let mut report = Mvp4TypeScriptCoreDeclarationCandidateReport {
+        status: scope_report.status.clone(),
+        eligible: scope_report.eligible,
+        exclusion_reason: scope_report.exclusion_reason.clone(),
+        source_role: scope_report.source_role,
+        parser_status: scope_report.parser_status.clone(),
+        candidates: Vec::new(),
+        unsupported_boundaries: Vec::new(),
+        duplicate_candidate_count: 0,
+        source_span_failures: 0,
+        binding_overclaim_count: 0,
+        production_persistence_enabled: false,
+        production_micro_node_rows: 0,
+        micro_edge_rows: 0,
+    };
+
+    if !scope_report.eligible {
+        return report;
+    }
+
+    let mut occurrence_counts = BTreeMap::<(MicroNodeKind, Vec<String>, String), u32>::new();
+    for function in &scope_report.functions {
+        push_mvp4_ts_candidate(
+            parsed,
+            function,
+            MicroNodeKind::FunctionFrame,
+            MVP4_TS_CORE_DECLARATION_EXTRACTOR,
+            &function.scope_path,
+            &function.structural_ast_path,
+            &function.source_span,
+            &function.function_name,
+            function
+                .existing_entity_link
+                .as_ref()
+                .map(|link| link.entity_id.clone()),
+            Some(function.function_kind.clone()),
+            None,
+            function.parse_recovery,
+            &mut occurrence_counts,
+            &mut report.candidates,
+        );
+
+        for binding in &function.parameter_scope.bindings {
+            push_mvp4_ts_candidate(
+                parsed,
+                function,
+                MicroNodeKind::Parameter,
+                MVP4_TS_CORE_DECLARATION_EXTRACTOR,
+                &binding.scope_path,
+                &binding.structural_ast_path,
+                &binding.source_span,
+                &binding.name,
+                None,
+                Some(function.function_kind.clone()),
+                binding.declaration_kind.clone(),
+                binding.parse_recovery,
+                &mut occurrence_counts,
+                &mut report.candidates,
+            );
+        }
+
+        for scope in &function.lexical_scopes {
+            for binding in &scope.bindings {
+                push_mvp4_ts_candidate(
+                    parsed,
+                    function,
+                    MicroNodeKind::LocalBinding,
+                    MVP4_TS_CORE_DECLARATION_EXTRACTOR,
+                    &binding.scope_path,
+                    &binding.structural_ast_path,
+                    &binding.source_span,
+                    &binding.name,
+                    None,
+                    Some(function.function_kind.clone()),
+                    binding.declaration_kind.clone(),
+                    binding.parse_recovery,
+                    &mut occurrence_counts,
+                    &mut report.candidates,
+                );
+            }
+        }
+    }
+
+    report.unsupported_boundaries =
+        collect_mvp4_ts_unsupported_core_declaration_boundaries(parsed, source);
+    report.candidates.sort_by(|left, right| {
+        left.source_span
+            .start_line
+            .cmp(&right.source_span.start_line)
+            .then_with(|| {
+                left.source_span
+                    .start_column
+                    .cmp(&right.source_span.start_column)
+            })
+            .then_with(|| left.node_kind.cmp(&right.node_kind))
+            .then_with(|| left.name_or_literal.cmp(&right.name_or_literal))
+            .then_with(|| left.micro_node_id.cmp(&right.micro_node_id))
+    });
+
+    let mut ids = BTreeSet::new();
+    for candidate in &report.candidates {
+        if !ids.insert(candidate.micro_node_id.clone()) {
+            report.duplicate_candidate_count += 1;
+        }
+        if !mvp4_source_span_is_bounded(&candidate.source_span) {
+            report.source_span_failures += 1;
+        }
+        if matches!(
+            candidate.node_kind,
+            MicroNodeKind::Parameter | MicroNodeKind::LocalBinding
+        ) && candidate.symbol_binding_id.is_some()
+        {
+            report.binding_overclaim_count += 1;
+        }
+    }
+    report
+}
+
+pub fn emit_mvp4_typescript_operation_site_candidates(
+    parsed: &ParsedFile,
+    source: &str,
+) -> Mvp4TypeScriptOperationSiteCandidateReport {
+    let scope_report = discover_mvp4_typescript_scopes(parsed, source);
+    let mut report = Mvp4TypeScriptOperationSiteCandidateReport {
+        status: scope_report.status.clone(),
+        eligible: scope_report.eligible,
+        exclusion_reason: scope_report.exclusion_reason.clone(),
+        source_role: scope_report.source_role,
+        parser_status: scope_report.parser_status.clone(),
+        candidates: Vec::new(),
+        duplicate_candidate_count: 0,
+        source_span_failures: 0,
+        callee_target_overclaim_count: 0,
+        write_flow_overclaim_count: 0,
+        production_persistence_enabled: false,
+        production_micro_node_rows: 0,
+        micro_edge_rows: 0,
+        flow_proof_activated: false,
+    };
+
+    if !scope_report.eligible {
+        return report;
+    }
+
+    let root = parsed.tree().root_node();
+    let mut occurrence_counts = BTreeMap::<(MicroNodeKind, Vec<String>, String), u32>::new();
+    for function in &scope_report.functions {
+        let Some(function_node) = find_mvp4_ts_function_node_by_span(root, &function.source_span)
+        else {
+            continue;
+        };
+        let Some(body_node) = function_node.child_by_field_name("body") else {
+            continue;
+        };
+        collect_mvp4_ts_operation_site_candidates(
+            body_node,
+            parsed,
+            source,
+            function,
+            &mut occurrence_counts,
+            &mut report.candidates,
+        );
+    }
+
+    report.candidates.sort_by(|left, right| {
+        left.source_span
+            .start_line
+            .cmp(&right.source_span.start_line)
+            .then_with(|| {
+                left.source_span
+                    .start_column
+                    .cmp(&right.source_span.start_column)
+            })
+            .then_with(|| left.node_kind.cmp(&right.node_kind))
+            .then_with(|| left.name_or_literal.cmp(&right.name_or_literal))
+            .then_with(|| left.micro_node_id.cmp(&right.micro_node_id))
+    });
+
+    let mut ids = BTreeSet::new();
+    for candidate in &report.candidates {
+        if !ids.insert(candidate.micro_node_id.clone()) {
+            report.duplicate_candidate_count += 1;
+        }
+        if !mvp4_source_span_is_bounded(&candidate.source_span) {
+            report.source_span_failures += 1;
+        }
+        if candidate.node_kind == MicroNodeKind::CallSite && candidate.symbol_binding_id.is_some() {
+            report.callee_target_overclaim_count += 1;
+        }
+        if candidate.node_kind == MicroNodeKind::AssignmentSite
+            && candidate.symbol_binding_id.is_some()
+        {
+            report.write_flow_overclaim_count += 1;
+        }
+    }
+    report
+}
+
+pub fn emit_mvp4_typescript_property_access_candidates(
+    parsed: &ParsedFile,
+    source: &str,
+) -> Mvp4TypeScriptPropertyAccessCandidateReport {
+    let scope_report = discover_mvp4_typescript_scopes(parsed, source);
+    let mut report = Mvp4TypeScriptPropertyAccessCandidateReport {
+        status: scope_report.status.clone(),
+        eligible: scope_report.eligible,
+        exclusion_reason: scope_report.exclusion_reason.clone(),
+        source_role: scope_report.source_role,
+        parser_status: scope_report.parser_status.clone(),
+        candidates: Vec::new(),
+        duplicate_candidate_count: 0,
+        source_span_failures: 0,
+        binding_overclaim_count: 0,
+        semantic_overclaim_count: 0,
+        production_persistence_enabled: false,
+        production_micro_node_rows: 0,
+        micro_edge_rows: 0,
+        flow_proof_activated: false,
+    };
+
+    if !scope_report.eligible {
+        return report;
+    }
+
+    let root = parsed.tree().root_node();
+    let mut occurrence_counts = BTreeMap::<(MicroNodeKind, Vec<String>, String), u32>::new();
+    for function in &scope_report.functions {
+        let Some(function_node) = find_mvp4_ts_function_node_by_span(root, &function.source_span)
+        else {
+            continue;
+        };
+        let Some(body_node) = function_node.child_by_field_name("body") else {
+            continue;
+        };
+        collect_mvp4_ts_property_access_candidates(
+            body_node,
+            parsed,
+            source,
+            function,
+            &mut occurrence_counts,
+            &mut report.candidates,
+        );
+    }
+
+    report.candidates.sort_by(|left, right| {
+        left.source_span
+            .start_line
+            .cmp(&right.source_span.start_line)
+            .then_with(|| {
+                left.source_span
+                    .start_column
+                    .cmp(&right.source_span.start_column)
+            })
+            .then_with(|| left.node_kind.cmp(&right.node_kind))
+            .then_with(|| left.name_or_literal.cmp(&right.name_or_literal))
+            .then_with(|| left.micro_node_id.cmp(&right.micro_node_id))
+    });
+
+    let mut ids = BTreeSet::new();
+    for candidate in &report.candidates {
+        if !ids.insert(candidate.micro_node_id.clone()) {
+            report.duplicate_candidate_count += 1;
+        }
+        if !mvp4_source_span_is_bounded(&candidate.source_span) {
+            report.source_span_failures += 1;
+        }
+        if candidate.symbol_binding_id.is_some() {
+            report.binding_overclaim_count += 1;
+        }
+        if !candidate
+            .provenance
+            .limitations
+            .contains(&"does_not_claim_route_auth_sanitizer_or_security_semantics".to_string())
+            || !candidate
+                .provenance
+                .limitations
+                .contains(&"does_not_claim_runtime_property".to_string())
+        {
+            report.semantic_overclaim_count += 1;
+        }
+    }
+    report
+}
+
+pub fn mvp4_typescript_first_slice_cap_policy() -> Mvp4TypeScriptMicroNodeCapPolicy {
+    Mvp4TypeScriptMicroNodeCapPolicy {
+        max_micro_nodes_per_function: MVP4_TS_MAX_MICRO_NODES_PER_FUNCTION,
+        max_micro_nodes_per_file: MVP4_TS_MAX_MICRO_NODES_PER_FILE,
+        per_kind_nodes_per_function: BTreeMap::from([
+            (
+                MicroNodeKind::FunctionFrame,
+                MVP4_TS_MAX_FUNCTION_FRAME_PER_FUNCTION,
+            ),
+            (MicroNodeKind::Parameter, MVP4_TS_MAX_PARAMETER_PER_FUNCTION),
+            (
+                MicroNodeKind::LocalBinding,
+                MVP4_TS_MAX_LOCAL_BINDING_PER_FUNCTION,
+            ),
+            (
+                MicroNodeKind::AssignmentSite,
+                MVP4_TS_MAX_ASSIGNMENT_SITE_PER_FUNCTION,
+            ),
+            (
+                MicroNodeKind::ReturnSite,
+                MVP4_TS_MAX_RETURN_SITE_PER_FUNCTION,
+            ),
+            (MicroNodeKind::CallSite, MVP4_TS_MAX_CALL_SITE_PER_FUNCTION),
+            (
+                MicroNodeKind::PropertyAccess,
+                MVP4_TS_MAX_PROPERTY_ACCESS_PER_FUNCTION,
+            ),
+        ]),
+        max_name_or_literal_bytes: MVP4_TS_MAX_NAME_OR_LITERAL_BYTES,
+        max_parser_recovery_derived_nodes: MVP4_TS_MAX_PARSER_RECOVERY_DERIVED_NODES,
+        max_omission_details_in_compact_status: MVP4_TS_MAX_OMISSION_DETAILS_IN_COMPACT_STATUS,
+    }
+}
+
+pub fn emit_mvp4_typescript_in_memory_first_slice_inventory(
+    parsed: &ParsedFile,
+    source: &str,
+) -> Mvp4TypeScriptInMemoryInventoryReport {
+    emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy(
+        parsed,
+        source,
+        &mvp4_typescript_first_slice_cap_policy(),
+    )
+}
+
+fn emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy(
+    parsed: &ParsedFile,
+    source: &str,
+    policy: &Mvp4TypeScriptMicroNodeCapPolicy,
+) -> Mvp4TypeScriptInMemoryInventoryReport {
+    let core = emit_mvp4_typescript_core_declaration_candidates(parsed, source);
+    let operations = emit_mvp4_typescript_operation_site_candidates(parsed, source);
+    let properties = emit_mvp4_typescript_property_access_candidates(parsed, source);
+    let mut report = Mvp4TypeScriptInMemoryInventoryReport {
+        status: core.status.clone(),
+        eligible: core.eligible,
+        exclusion_reason: core.exclusion_reason.clone(),
+        source_role: core.source_role,
+        parser_status: core.parser_status.clone(),
+        candidates: Vec::new(),
+        omitted_count: 0,
+        cap_hits: Vec::new(),
+        completeness_label: "complete".to_string(),
+        duplicate_candidate_count: 0,
+        stable_id_collision_count: 0,
+        claimable_node_missing_span_count: 0,
+        source_span_failures: 0,
+        binding_overclaim_count: 0,
+        semantic_overclaim_count: 0,
+        production_persistence_enabled: false,
+        production_micro_node_rows: 0,
+        micro_edge_rows: 0,
+        flow_proof_activated: false,
+    };
+
+    if !report.eligible {
+        return report;
+    }
+
+    let mut candidates = Vec::new();
+    candidates.extend(core.candidates);
+    candidates.extend(operations.candidates);
+    candidates.extend(properties.candidates);
+    for candidate in &mut candidates {
+        candidate.name_or_literal = mvp4_ts_bound_name_or_literal(
+            &candidate.name_or_literal,
+            policy.max_name_or_literal_bytes,
+        );
+    }
+    sort_mvp4_ts_candidates(&mut candidates);
+
+    apply_mvp4_ts_micro_node_caps(&mut report, candidates, policy);
+    finalize_mvp4_ts_inventory_counts(&mut report);
+    report
+}
+
+fn find_mvp4_ts_function_node_by_span<'tree>(
+    node: Node<'tree>,
+    source_span: &SourceSpan,
+) -> Option<Node<'tree>> {
+    if is_mvp4_ts_function_scope_node(node)
+        && source_span_for_node(&source_span.repo_relative_path, node) == *source_span
+    {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if let Some(found) = find_mvp4_ts_function_node_by_span(child, source_span) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn collect_mvp4_ts_operation_site_candidates(
+    node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    function: &Mvp4TypeScriptFunctionScope,
+    occurrence_counts: &mut BTreeMap<(MicroNodeKind, Vec<String>, String), u32>,
+    candidates: &mut Vec<Mvp4TypeScriptMicroNodeCandidate>,
+) {
+    if node.is_error() || node.is_missing() || is_mvp4_ts_function_scope_node(node) {
+        return;
+    }
+
+    let node_kind = match node.kind() {
+        "assignment_expression" | "augmented_assignment_expression" => {
+            Some(MicroNodeKind::AssignmentSite)
+        }
+        "return_statement" => Some(MicroNodeKind::ReturnSite),
+        "call_expression" => Some(MicroNodeKind::CallSite),
+        _ => None,
+    };
+
+    if let Some(node_kind) = node_kind {
+        let source_span = source_span_for_node(&parsed.repo_relative_path, node);
+        let parse_recovery = function.parse_recovery || node_has_error_or_missing_descendant(node);
+        let mut scope_path = function.scope_path.clone();
+        scope_path.push("operation_sites".to_string());
+        scope_path.push(node_kind.as_str().to_string());
+        let name_or_literal = mvp4_ts_operation_site_label(node, node_kind, source);
+        let structural_ast_path =
+            mvp4_ts_operation_site_structural_path(function, node_kind, &name_or_literal);
+        push_mvp4_ts_candidate(
+            parsed,
+            function,
+            node_kind,
+            MVP4_TS_OPERATION_SITE_EXTRACTOR,
+            &scope_path,
+            &structural_ast_path,
+            &source_span,
+            &name_or_literal,
+            None,
+            Some(function.function_kind.clone()),
+            None,
+            parse_recovery,
+            occurrence_counts,
+            candidates,
+        );
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if is_mvp4_ts_function_scope_node(child) {
+            continue;
+        }
+        collect_mvp4_ts_operation_site_candidates(
+            child,
+            parsed,
+            source,
+            function,
+            occurrence_counts,
+            candidates,
+        );
+    }
+}
+
+fn collect_mvp4_ts_property_access_candidates(
+    node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    function: &Mvp4TypeScriptFunctionScope,
+    occurrence_counts: &mut BTreeMap<(MicroNodeKind, Vec<String>, String), u32>,
+    candidates: &mut Vec<Mvp4TypeScriptMicroNodeCandidate>,
+) {
+    if node.is_error() || node.is_missing() || is_mvp4_ts_function_scope_node(node) {
+        return;
+    }
+
+    if is_mvp4_ts_property_access_node(node) {
+        let source_span = source_span_for_node(&parsed.repo_relative_path, node);
+        let parse_recovery = function.parse_recovery || node_has_error_or_missing_descendant(node);
+        let mut scope_path = function.scope_path.clone();
+        scope_path.push("property_accesses".to_string());
+        let name_or_literal = mvp4_ts_property_access_label(node, source);
+        let structural_ast_path =
+            mvp4_ts_property_access_structural_path(function, &name_or_literal);
+        push_mvp4_ts_candidate(
+            parsed,
+            function,
+            MicroNodeKind::PropertyAccess,
+            MVP4_TS_PROPERTY_ACCESS_EXTRACTOR,
+            &scope_path,
+            &structural_ast_path,
+            &source_span,
+            &name_or_literal,
+            None,
+            Some(function.function_kind.clone()),
+            Some(mvp4_ts_property_access_shape(node, &name_or_literal).to_string()),
+            parse_recovery,
+            occurrence_counts,
+            candidates,
+        );
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if is_mvp4_ts_function_scope_node(child) {
+            continue;
+        }
+        collect_mvp4_ts_property_access_candidates(
+            child,
+            parsed,
+            source,
+            function,
+            occurrence_counts,
+            candidates,
+        );
+    }
+}
+
+fn is_mvp4_ts_property_access_node(node: Node<'_>) -> bool {
+    matches!(node.kind(), "member_expression" | "subscript_expression")
+}
+
+fn mvp4_ts_property_access_structural_path(
+    function: &Mvp4TypeScriptFunctionScope,
+    name_or_literal: &str,
+) -> Vec<String> {
+    function
+        .structural_ast_path
+        .iter()
+        .cloned()
+        .chain([
+            "property_access".to_string(),
+            format!("syntax:{}", compact_identity_hash(name_or_literal)),
+        ])
+        .collect()
+}
+
+fn mvp4_ts_property_access_label(node: Node<'_>, source: &str) -> String {
+    node_text(node, source)
+        .map(|text| compact_extracted_label(&text, node))
+        .unwrap_or_else(|| format!("property_access@{}", node.start_byte()))
+}
+
+fn mvp4_ts_property_access_shape(node: Node<'_>, name_or_literal: &str) -> &'static str {
+    if node.kind() == "subscript_expression" || name_or_literal.contains('[') {
+        "computed_member"
+    } else if name_or_literal.contains("?.") {
+        "optional_static_member"
+    } else {
+        "static_member"
+    }
+}
+
+fn mvp4_ts_operation_site_structural_path(
+    function: &Mvp4TypeScriptFunctionScope,
+    node_kind: MicroNodeKind,
+    name_or_literal: &str,
+) -> Vec<String> {
+    function
+        .structural_ast_path
+        .iter()
+        .cloned()
+        .chain([
+            "operation_site".to_string(),
+            node_kind.as_str().to_string(),
+            format!("syntax:{}", compact_identity_hash(name_or_literal)),
+        ])
+        .collect()
+}
+
+fn mvp4_ts_operation_site_label(node: Node<'_>, node_kind: MicroNodeKind, source: &str) -> String {
+    match node_kind {
+        MicroNodeKind::AssignmentSite => node_text(node, source)
+            .map(|text| format!("assignment:{}", compact_extracted_label(&text, node)))
+            .unwrap_or_else(|| format!("assignment@{}", node.start_byte())),
+        MicroNodeKind::ReturnSite => node_text(node, source)
+            .map(|text| format!("return:{}", compact_extracted_label(&text, node)))
+            .unwrap_or_else(|| format!("return@{}", node.start_byte())),
+        MicroNodeKind::CallSite => {
+            let label = node
+                .child_by_field_name("function")
+                .and_then(|callee| node_text(callee, source))
+                .or_else(|| {
+                    node_text(node, source).map(|text| {
+                        text.split_once('(')
+                            .map(|(callee, _)| callee.trim().to_string())
+                            .unwrap_or(text)
+                    })
+                })
+                .map(|text| compact_extracted_label(&text, node))
+                .unwrap_or_else(|| format!("call@{}", node.start_byte()));
+            format!("call:{label}")
+        }
+        _ => compact_extracted_label(node.kind(), node),
+    }
+}
+
+fn push_mvp4_ts_candidate(
+    parsed: &ParsedFile,
+    function: &Mvp4TypeScriptFunctionScope,
+    node_kind: MicroNodeKind,
+    extractor_version: &str,
+    scope_path: &[String],
+    structural_ast_path: &[String],
+    source_span: &SourceSpan,
+    name_or_literal: &str,
+    symbol_binding_id: Option<String>,
+    function_kind: Option<String>,
+    declaration_kind: Option<String>,
+    parse_recovery: bool,
+    occurrence_counts: &mut BTreeMap<(MicroNodeKind, Vec<String>, String), u32>,
+    candidates: &mut Vec<Mvp4TypeScriptMicroNodeCandidate>,
+) {
+    let occurrence_key = (
+        node_kind,
+        scope_path.to_vec(),
+        name_or_literal.trim().to_string(),
+    );
+    let occurrence_index = occurrence_counts.entry(occurrence_key).or_insert(0);
+    let current_occurrence = *occurrence_index;
+    *occurrence_index += 1;
+
+    let graph_function_entity_id = function
+        .existing_entity_link
+        .as_ref()
+        .map(|link| link.entity_id.clone());
+    let identity_binding_id = if node_kind == MicroNodeKind::FunctionFrame {
+        None
+    } else {
+        symbol_binding_id.clone()
+    };
+    let exactness = if parse_recovery {
+        MicroExactness::Unknown
+    } else {
+        MicroExactness::Exact
+    };
+    let identity = MicroNodeIdentityInput {
+        repo_relative_path: normalize_repo_relative_path(&parsed.repo_relative_path),
+        language: MVP4_TS_MICRO_NODE_LANGUAGE.to_string(),
+        kind: node_kind,
+        function_entity_id: Some(function.function_identity.clone()),
+        scope_path: scope_path.to_vec(),
+        binding_id: identity_binding_id,
+        symbol: Some(name_or_literal.trim().to_string()),
+        structural_path: structural_ast_path.to_vec(),
+        occurrence_index: current_occurrence,
+        source_span: Some(source_span.clone()),
+        parse_recovery,
+    };
+    let micro_node_id = stable_micro_node_id(&identity);
+    let provenance = MicroFactProvenance {
+        derivation_kind: MicroDerivationKind::DirectAstExtraction,
+        source_fact_ids: Vec::new(),
+        source_spans: vec![source_span.clone()],
+        extractor_or_adapter_version: extractor_version.to_string(),
+        exactness,
+        limitations: mvp4_ts_candidate_limitations(node_kind),
+    };
+
+    candidates.push(Mvp4TypeScriptMicroNodeCandidate {
+        micro_node_id,
+        node_kind,
+        repo_relative_path: normalize_repo_relative_path(&parsed.repo_relative_path),
+        language: MVP4_TS_MICRO_NODE_LANGUAGE.to_string(),
+        frontend: MVP4_TS_MICRO_NODE_FRONTEND.to_string(),
+        enclosing_function_identity: function.function_identity.clone(),
+        function_entity_id: graph_function_entity_id,
+        function_kind,
+        scope_path: scope_path.to_vec(),
+        structural_ast_path: structural_ast_path.to_vec(),
+        occurrence_index: current_occurrence,
+        source_span: source_span.clone(),
+        name_or_literal: name_or_literal.trim().to_string(),
+        symbol_binding_id,
+        source_role: function.source_role,
+        exactness,
+        claimability: mvp4_ts_candidate_claimability(node_kind, name_or_literal, parse_recovery),
+        parse_recovery,
+        declaration_kind,
+        row_schema_version: MVP4_TS_MICRO_NODE_ROW_SCHEMA_VERSION,
+        payload_version: MVP4_TS_MICRO_NODE_PAYLOAD_VERSION,
+        extraction_version: MVP4_TS_MICRO_NODE_EXTRACTION_VERSION.to_string(),
+        provenance,
+    });
+}
+
+fn mvp4_ts_candidate_claimability(
+    node_kind: MicroNodeKind,
+    name_or_literal: &str,
+    parse_recovery: bool,
+) -> String {
+    if parse_recovery {
+        return "non_claimable_recovery_candidate".to_string();
+    }
+    match node_kind {
+        MicroNodeKind::FunctionFrame => "claimable_source_spanned_function_body_existence",
+        MicroNodeKind::Parameter => "claimable_source_spanned_parameter_existence",
+        MicroNodeKind::LocalBinding => "claimable_source_spanned_local_binding_existence",
+        MicroNodeKind::AssignmentSite => "claimable_source_spanned_assignment_expression_existence",
+        MicroNodeKind::ReturnSite => "claimable_source_spanned_return_statement_existence",
+        MicroNodeKind::CallSite => "claimable_source_spanned_call_expression_existence",
+        MicroNodeKind::PropertyAccess if name_or_literal.contains('[') => {
+            "claimable_source_spanned_property_access_existence"
+        }
+        MicroNodeKind::PropertyAccess => {
+            "claimable_source_spanned_property_access_and_static_property_token_existence"
+        }
+        _ => "non_claimable_out_of_slice",
+    }
+    .to_string()
+}
+
+fn mvp4_ts_candidate_limitations(node_kind: MicroNodeKind) -> Vec<String> {
+    match node_kind {
+        MicroNodeKind::FunctionFrame => vec![
+            "does_not_claim_call_behavior".to_string(),
+            "does_not_claim_dataflow".to_string(),
+            "does_not_claim_runtime_invocation".to_string(),
+            "does_not_claim_route_auth_or_security_semantics".to_string(),
+        ],
+        MicroNodeKind::Parameter => vec![
+            "does_not_claim_resolver_binding_identity_without_symbol_binding_id".to_string(),
+            "does_not_claim_reads_writes_or_flow".to_string(),
+        ],
+        MicroNodeKind::LocalBinding => vec![
+            "does_not_claim_resolver_binding_identity_without_symbol_binding_id".to_string(),
+            "does_not_claim_reads_writes_or_flow".to_string(),
+            "assignment_targets_without_declaration_are_not_local_bindings".to_string(),
+        ],
+        MicroNodeKind::AssignmentSite => vec![
+            "does_not_claim_local_writes".to_string(),
+            "does_not_claim_target_binding".to_string(),
+            "does_not_claim_value_flow".to_string(),
+            "does_not_claim_mutation_semantics".to_string(),
+        ],
+        MicroNodeKind::ReturnSite => vec![
+            "does_not_claim_returned_value_binding".to_string(),
+            "does_not_claim_returns_to_edge".to_string(),
+            "does_not_claim_complete_control_flow".to_string(),
+            "does_not_claim_runtime_result".to_string(),
+        ],
+        MicroNodeKind::CallSite => vec![
+            "does_not_claim_exact_callee_target".to_string(),
+            "does_not_claim_local_calls_edge".to_string(),
+            "does_not_claim_runtime_dispatch".to_string(),
+            "does_not_claim_function_existence".to_string(),
+        ],
+        MicroNodeKind::PropertyAccess => vec![
+            "does_not_claim_object_type".to_string(),
+            "does_not_claim_target_entity".to_string(),
+            "does_not_claim_field_declaration".to_string(),
+            "does_not_claim_runtime_property".to_string(),
+            "does_not_claim_route_auth_sanitizer_or_security_semantics".to_string(),
+            "does_not_claim_exact_member_binding_without_symbol_binding_id".to_string(),
+            "computed_property_name_is_unknown_unless_literal_contract_supports_it".to_string(),
+            "optional_chain_does_not_imply_non_null_behavior".to_string(),
+        ],
+        _ => vec!["outside_mvp4_1_core_declaration_candidate_slice".to_string()],
+    }
+}
+
+fn sort_mvp4_ts_candidates(candidates: &mut [Mvp4TypeScriptMicroNodeCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.repo_relative_path
+            .cmp(&right.repo_relative_path)
+            .then_with(|| {
+                left.enclosing_function_identity
+                    .cmp(&right.enclosing_function_identity)
+            })
+            .then_with(|| left.scope_path.cmp(&right.scope_path))
+            .then_with(|| {
+                left.source_span
+                    .start_line
+                    .cmp(&right.source_span.start_line)
+            })
+            .then_with(|| {
+                left.source_span
+                    .start_column
+                    .cmp(&right.source_span.start_column)
+            })
+            .then_with(|| left.node_kind.cmp(&right.node_kind))
+            .then_with(|| left.structural_ast_path.cmp(&right.structural_ast_path))
+            .then_with(|| left.occurrence_index.cmp(&right.occurrence_index))
+            .then_with(|| left.name_or_literal.cmp(&right.name_or_literal))
+            .then_with(|| left.micro_node_id.cmp(&right.micro_node_id))
+    });
+}
+
+fn apply_mvp4_ts_micro_node_caps(
+    report: &mut Mvp4TypeScriptInMemoryInventoryReport,
+    candidates: Vec<Mvp4TypeScriptMicroNodeCandidate>,
+    policy: &Mvp4TypeScriptMicroNodeCapPolicy,
+) {
+    let mut file_count = 0usize;
+    let mut function_counts = BTreeMap::<String, usize>::new();
+    let mut per_kind_counts = BTreeMap::<(String, MicroNodeKind), usize>::new();
+    let mut recovery_count = 0usize;
+
+    for candidate in candidates {
+        let function_count = *function_counts
+            .get(&candidate.enclosing_function_identity)
+            .unwrap_or(&0);
+        let kind_key = (
+            candidate.enclosing_function_identity.clone(),
+            candidate.node_kind,
+        );
+        let per_kind_count = *per_kind_counts.get(&kind_key).unwrap_or(&0);
+        let per_kind_cap = policy
+            .per_kind_nodes_per_function
+            .get(&candidate.node_kind)
+            .copied()
+            .unwrap_or(usize::MAX);
+
+        let cap_hit = if file_count >= policy.max_micro_nodes_per_file {
+            Some((
+                "file_total".to_string(),
+                None,
+                None,
+                file_count,
+                format!(
+                    "max_micro_nodes_per_file={}",
+                    policy.max_micro_nodes_per_file
+                ),
+            ))
+        } else if function_count >= policy.max_micro_nodes_per_function {
+            Some((
+                "function_total".to_string(),
+                Some(candidate.enclosing_function_identity.clone()),
+                None,
+                function_count,
+                format!(
+                    "max_micro_nodes_per_function={}",
+                    policy.max_micro_nodes_per_function
+                ),
+            ))
+        } else if per_kind_count >= per_kind_cap {
+            Some((
+                "per_kind_per_function".to_string(),
+                Some(candidate.enclosing_function_identity.clone()),
+                Some(candidate.node_kind),
+                per_kind_count,
+                format!(
+                    "max_{}_per_function={per_kind_cap}",
+                    candidate.node_kind.as_str()
+                ),
+            ))
+        } else if candidate.parse_recovery
+            && recovery_count >= policy.max_parser_recovery_derived_nodes
+        {
+            Some((
+                "parser_recovery".to_string(),
+                Some(candidate.enclosing_function_identity.clone()),
+                Some(candidate.node_kind),
+                recovery_count,
+                format!(
+                    "max_parser_recovery_derived_nodes={}",
+                    policy.max_parser_recovery_derived_nodes
+                ),
+            ))
+        } else {
+            None
+        };
+
+        if let Some((cap_kind, function_identity, node_kind, retained_count, reason)) = cap_hit {
+            report.omitted_count += 1;
+            record_mvp4_ts_cap_hit(
+                report,
+                &cap_kind,
+                function_identity,
+                node_kind,
+                retained_count,
+                &reason,
+                policy.max_omission_details_in_compact_status,
+            );
+            continue;
+        }
+
+        file_count += 1;
+        *function_counts
+            .entry(candidate.enclosing_function_identity.clone())
+            .or_insert(0) += 1;
+        *per_kind_counts
+            .entry((
+                candidate.enclosing_function_identity.clone(),
+                candidate.node_kind,
+            ))
+            .or_insert(0) += 1;
+        if candidate.parse_recovery {
+            recovery_count += 1;
+        }
+        report.candidates.push(candidate);
+    }
+
+    if report.omitted_count > 0 {
+        report.completeness_label = "truncated_unknown_completeness".to_string();
+    }
+}
+
+fn record_mvp4_ts_cap_hit(
+    report: &mut Mvp4TypeScriptInMemoryInventoryReport,
+    cap_kind: &str,
+    function_identity: Option<String>,
+    node_kind: Option<MicroNodeKind>,
+    retained_count: usize,
+    reason: &str,
+    max_details: usize,
+) {
+    if let Some(existing) = report.cap_hits.iter_mut().find(|hit| {
+        hit.cap_kind == cap_kind
+            && hit.function_identity == function_identity
+            && hit.node_kind == node_kind
+            && hit.reason == reason
+    }) {
+        existing.omitted_count += 1;
+        return;
+    }
+    if report.cap_hits.len() >= max_details {
+        return;
+    }
+    report.cap_hits.push(Mvp4TypeScriptMicroNodeCapHit {
+        cap_kind: cap_kind.to_string(),
+        function_identity,
+        node_kind,
+        retained_count,
+        omitted_count: 1,
+        reason: reason.to_string(),
+    });
+}
+
+fn finalize_mvp4_ts_inventory_counts(report: &mut Mvp4TypeScriptInMemoryInventoryReport) {
+    let mut ids = BTreeMap::<String, String>::new();
+    for candidate in &report.candidates {
+        let fingerprint = mvp4_ts_candidate_fingerprint(candidate);
+        if let Some(existing) = ids.insert(candidate.micro_node_id.clone(), fingerprint.clone()) {
+            report.duplicate_candidate_count += 1;
+            if existing != fingerprint {
+                report.stable_id_collision_count += 1;
+            }
+        }
+        if !mvp4_source_span_is_bounded(&candidate.source_span) {
+            report.source_span_failures += 1;
+            if candidate.claimability.starts_with("claimable_") {
+                report.claimable_node_missing_span_count += 1;
+            }
+        }
+        if mvp4_ts_candidate_overclaims_binding(candidate) {
+            report.binding_overclaim_count += 1;
+        }
+        if mvp4_ts_candidate_overclaims_semantics(candidate) {
+            report.semantic_overclaim_count += 1;
+        }
+    }
+}
+
+fn mvp4_ts_candidate_fingerprint(candidate: &Mvp4TypeScriptMicroNodeCandidate) -> String {
+    format!(
+        "{:?}|{}|{:?}|{}|{:?}|{:?}|{}",
+        candidate.node_kind,
+        candidate.repo_relative_path,
+        candidate.source_span,
+        candidate.name_or_literal,
+        candidate.scope_path,
+        candidate.structural_ast_path,
+        candidate.occurrence_index
+    )
+}
+
+fn mvp4_ts_candidate_overclaims_binding(candidate: &Mvp4TypeScriptMicroNodeCandidate) -> bool {
+    matches!(
+        candidate.node_kind,
+        MicroNodeKind::Parameter
+            | MicroNodeKind::LocalBinding
+            | MicroNodeKind::AssignmentSite
+            | MicroNodeKind::ReturnSite
+            | MicroNodeKind::CallSite
+            | MicroNodeKind::PropertyAccess
+    ) && candidate.symbol_binding_id.is_some()
+}
+
+fn mvp4_ts_candidate_overclaims_semantics(candidate: &Mvp4TypeScriptMicroNodeCandidate) -> bool {
+    if candidate.node_kind != MicroNodeKind::PropertyAccess {
+        return false;
+    }
+    !candidate
+        .provenance
+        .limitations
+        .contains(&"does_not_claim_route_auth_sanitizer_or_security_semantics".to_string())
+        || !candidate
+            .provenance
+            .limitations
+            .contains(&"does_not_claim_runtime_property".to_string())
+}
+
+fn mvp4_ts_bound_name_or_literal(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+    let suffix = format!("...#{}", compact_identity_hash(value));
+    if suffix.len() >= max_bytes {
+        return suffix.chars().take(max_bytes).collect();
+    }
+    let mut prefix_budget = max_bytes - suffix.len();
+    while !value.is_char_boundary(prefix_budget) {
+        prefix_budget -= 1;
+    }
+    format!("{}{}", &value[..prefix_budget], suffix)
+}
+
+fn collect_mvp4_ts_unsupported_core_declaration_boundaries(
+    parsed: &ParsedFile,
+    source: &str,
+) -> Vec<Mvp4TypeScriptUnsupportedDeclarationBoundary> {
+    if parsed.language != SourceLanguage::TypeScript
+        || !is_mvp4_exact_typescript_ts_path(&parsed.repo_relative_path)
+        || mvp4_typescript_source_role(&parsed.repo_relative_path).role
+            != MicroSourceRole::Production
+    {
+        return Vec::new();
+    }
+
+    let mut boundaries = Vec::new();
+    let mut scope_path = vec![
+        normalize_repo_relative_path(&parsed.repo_relative_path),
+        MVP4_TS_MICRO_NODE_LANGUAGE.to_string(),
+        "unsupported_core_declaration".to_string(),
+    ];
+    collect_mvp4_ts_unsupported_core_declaration_boundaries_inner(
+        parsed.tree().root_node(),
+        parsed,
+        source,
+        &mut scope_path,
+        &mut boundaries,
+    );
+    boundaries.sort_by(|left, right| {
+        left.source_span
+            .start_line
+            .cmp(&right.source_span.start_line)
+            .then_with(|| {
+                left.source_span
+                    .start_column
+                    .cmp(&right.source_span.start_column)
+            })
+            .then_with(|| left.boundary_kind.cmp(&right.boundary_kind))
+    });
+    boundaries
+}
+
+fn collect_mvp4_ts_unsupported_core_declaration_boundaries_inner(
+    node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    scope_path: &mut Vec<String>,
+    boundaries: &mut Vec<Mvp4TypeScriptUnsupportedDeclarationBoundary>,
+) {
+    if node.is_error() || node.is_missing() {
+        return;
+    }
+
+    match node.kind() {
+        "formal_parameters" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if mvp4_ts_parameter_binding_node(child).is_none() {
+                    if let Some(pattern) = mvp4_ts_parameter_pattern_node(child) {
+                        if mvp4_ts_unsupported_binding_pattern(pattern) {
+                            boundaries.push(mvp4_ts_unsupported_boundary(
+                                parsed,
+                                "unsupported_parameter_binding",
+                                "parameter pattern is not a simple supported identifier",
+                                pattern,
+                                scope_path,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        "variable_declarator" => {
+            if let Some(pattern) = node.child_by_field_name("name") {
+                if pattern.kind() != "identifier" {
+                    boundaries.push(mvp4_ts_unsupported_boundary(
+                        parsed,
+                        "unsupported_local_binding",
+                        "local declaration pattern is not a simple supported identifier",
+                        pattern,
+                        scope_path,
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for (index, child) in node.named_children(&mut cursor).enumerate() {
+        scope_path.push(format!("{}#{index}", child.kind()));
+        collect_mvp4_ts_unsupported_core_declaration_boundaries_inner(
+            child, parsed, source, scope_path, boundaries,
+        );
+        scope_path.pop();
+    }
+}
+
+fn mvp4_ts_unsupported_boundary(
+    parsed: &ParsedFile,
+    boundary_kind: &str,
+    reason: &str,
+    node: Node<'_>,
+    scope_path: &[String],
+) -> Mvp4TypeScriptUnsupportedDeclarationBoundary {
+    Mvp4TypeScriptUnsupportedDeclarationBoundary {
+        boundary_kind: boundary_kind.to_string(),
+        reason: reason.to_string(),
+        source_span: source_span_for_node(&parsed.repo_relative_path, node),
+        scope_path: scope_path.to_vec(),
+        structural_ast_path: structural_path_to_node(parsed.tree().root_node(), node),
+        exactness: MicroExactness::Unsupported,
+        claimability: "non_claimable_unsupported_binding_pattern".to_string(),
+    }
+}
+
+fn mvp4_ts_parameter_pattern_node(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "required_parameter" | "optional_parameter" => node
+            .child_by_field_name("pattern")
+            .or_else(|| node.child_by_field_name("name")),
+        "rest_pattern" | "object_pattern" | "array_pattern" => Some(node),
+        _ => None,
+    }
+}
+
+fn mvp4_ts_unsupported_binding_pattern(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "object_pattern" | "array_pattern" | "rest_pattern" | "assignment_pattern"
+    )
+}
+
+fn mvp4_source_span_is_bounded(span: &SourceSpan) -> bool {
+    span.start_line > 0
+        && span.end_line >= span.start_line
+        && span
+            .start_column
+            .zip(span.end_column)
+            .is_none_or(|(start, end)| span.end_line > span.start_line || end >= start)
+        && !span.repo_relative_path.trim().is_empty()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Mvp4SourceRoleDecision {
+    role: MicroSourceRole,
+    reason: &'static str,
+    source: &'static str,
+}
+
+fn is_mvp4_exact_typescript_ts_path(path: &str) -> bool {
+    let normalized = normalize_repo_relative_path(path).to_ascii_lowercase();
+    normalized.ends_with(".ts") && !normalized.ends_with(".d.ts")
+}
+
+fn mvp4_typescript_source_role(path: &str) -> Mvp4SourceRoleDecision {
+    let normalized = normalize_repo_relative_path(path).to_ascii_lowercase();
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    if normalized.contains("/generated/")
+        || normalized.contains("/gen/")
+        || file_name.contains(".generated.")
+        || file_name.ends_with(".generated.ts")
+        || file_name.ends_with(".gen.ts")
+    {
+        return Mvp4SourceRoleDecision {
+            role: MicroSourceRole::Generated,
+            reason: "file path is generated source",
+            source: "file_path",
+        };
+    }
+    if is_test_file_path(path) {
+        return Mvp4SourceRoleDecision {
+            role: MicroSourceRole::Test,
+            reason: "file path is a test/spec path",
+            source: "file_path",
+        };
+    }
+    if normalized.contains("/__mocks__/")
+        || normalized.contains("/mocks/")
+        || normalized.contains("/mock/")
+        || normalized.contains("/stubs/")
+        || normalized.contains("/stub/")
+        || file_name.contains(".mock.")
+        || file_name.contains(".stub.")
+        || looks_like_mock_or_stub(file_name)
+    {
+        return Mvp4SourceRoleDecision {
+            role: MicroSourceRole::Mock,
+            reason: "file path or file name looks like mock/stub source",
+            source: "file_path",
+        };
+    }
+    Mvp4SourceRoleDecision {
+        role: MicroSourceRole::Production,
+        reason: "default production source for exact .ts file",
+        source: "mvp4_first_slice_path_filter",
+    }
+}
+
+fn collect_mvp4_ts_function_scopes(
+    node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    entities: &[Entity],
+    class_stack: &mut Vec<String>,
+    function_stack: &mut Vec<String>,
+    functions: &mut Vec<Mvp4TypeScriptFunctionScope>,
+) {
+    if node.is_error() || node.is_missing() {
+        return;
+    }
+
+    if node.kind() == "class_declaration" {
+        if let Some(name) = name_from_field_or_child(node, source) {
+            class_stack.push(name);
+            visit_mvp4_ts_children(
+                node,
+                parsed,
+                source,
+                entities,
+                class_stack,
+                function_stack,
+                functions,
+            );
+            class_stack.pop();
+            return;
+        }
+    }
+
+    if let Some(function) =
+        build_mvp4_ts_function_scope(node, parsed, source, entities, class_stack, function_stack)
+    {
+        let next_name = function.function_name.clone();
+        functions.push(function);
+        function_stack.push(next_name);
+        visit_mvp4_ts_children(
+            node,
+            parsed,
+            source,
+            entities,
+            class_stack,
+            function_stack,
+            functions,
+        );
+        function_stack.pop();
+        return;
+    }
+
+    visit_mvp4_ts_children(
+        node,
+        parsed,
+        source,
+        entities,
+        class_stack,
+        function_stack,
+        functions,
+    );
+}
+
+fn visit_mvp4_ts_children(
+    node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    entities: &[Entity],
+    class_stack: &mut Vec<String>,
+    function_stack: &mut Vec<String>,
+    functions: &mut Vec<Mvp4TypeScriptFunctionScope>,
+) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_mvp4_ts_function_scopes(
+            child,
+            parsed,
+            source,
+            entities,
+            class_stack,
+            function_stack,
+            functions,
+        );
+    }
+}
+
+fn build_mvp4_ts_function_scope(
+    node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    entities: &[Entity],
+    class_stack: &[String],
+    function_stack: &[String],
+) -> Option<Mvp4TypeScriptFunctionScope> {
+    let function_kind = match node.kind() {
+        "function_declaration" => "function_declaration",
+        "generator_function_declaration" => "generator_function_declaration",
+        "method_definition" if !class_stack.is_empty() => "method_definition",
+        _ => return None,
+    };
+    let body = node.child_by_field_name("body")?;
+    if body.is_error() || body.is_missing() {
+        return None;
+    }
+    let function_name = name_from_field_or_child(node, source)?;
+    if function_kind == "method_definition" && function_name == "constructor" {
+        return None;
+    }
+
+    let source_span = source_span_for_node(&parsed.repo_relative_path, node);
+    let body_span = source_span_for_node(&parsed.repo_relative_path, body);
+    let structural_ast_path = structural_path_to_node(parsed.tree().root_node(), node);
+    let qualifier_path = class_stack
+        .iter()
+        .chain(function_stack.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut scope_path = vec![
+        normalize_repo_relative_path(&parsed.repo_relative_path),
+        "typescript".to_string(),
+    ];
+    scope_path.extend(qualifier_path.iter().map(|value| format!("scope:{value}")));
+    scope_path.push(format!("{function_kind}:{function_name}"));
+    scope_path.push(format!("ast:{}", structural_ast_path.join("/")));
+
+    let parse_recovery = parsed.has_syntax_errors() || node_has_error_or_missing_descendant(node);
+    let parameter_scope = collect_mvp4_ts_parameter_scope(
+        node,
+        parsed,
+        source,
+        &scope_path,
+        parse_recovery,
+        &structural_ast_path,
+    );
+    let lexical_scopes = collect_mvp4_ts_lexical_scopes(
+        body,
+        parsed,
+        source,
+        &scope_path,
+        parse_recovery,
+        &structural_ast_path,
+    );
+    let existing_entity_link =
+        exact_mvp4_ts_function_entity_link(entities, &function_name, function_kind, &source_span);
+    let qualifier_identity = qualifier_path.join("::");
+    let structural_identity = structural_ast_path.join("/");
+    let function_identity = stable_fact_identity_key(
+        "mvp4_ts_function_scope",
+        [
+            parsed.repo_relative_path.as_str(),
+            function_kind,
+            function_name.as_str(),
+            qualifier_identity.as_str(),
+            structural_identity.as_str(),
+            MicroSourceRole::Production.as_str(),
+        ],
+    );
+
+    Some(Mvp4TypeScriptFunctionScope {
+        function_identity,
+        function_name,
+        function_kind: function_kind.to_string(),
+        qualifier_path,
+        source_span,
+        body_span,
+        source_role: MicroSourceRole::Production,
+        parse_recovery,
+        claimability: if parse_recovery {
+            "non_claimable_recovery_scope".to_string()
+        } else {
+            "claimable_source_spanned_scope_existence".to_string()
+        },
+        scope_path,
+        structural_ast_path,
+        parameter_scope,
+        lexical_scopes,
+        existing_entity_link,
+    })
+}
+
+fn collect_mvp4_ts_parameter_scope(
+    function_node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    function_scope_path: &[String],
+    function_recovery: bool,
+    function_structural_path: &[String],
+) -> Mvp4TypeScriptLexicalScope {
+    let parameter_node = function_node.child_by_field_name("parameters");
+    let source_span = parameter_node
+        .map(|node| source_span_for_node(&parsed.repo_relative_path, node))
+        .unwrap_or_else(|| source_span_for_node(&parsed.repo_relative_path, function_node));
+    let mut scope_path = function_scope_path.to_vec();
+    scope_path.push("parameters".to_string());
+    let mut bindings = Vec::new();
+    if let Some(parameters) = parameter_node {
+        let mut cursor = parameters.walk();
+        for child in parameters.named_children(&mut cursor) {
+            if let Some(binding_node) = mvp4_ts_parameter_binding_node(child) {
+                if let Some(name) = node_text(binding_node, source) {
+                    bindings.push(Mvp4TypeScriptScopeBinding {
+                        name,
+                        binding_kind: "parameter".to_string(),
+                        declaration_kind: Some("formal_parameter".to_string()),
+                        source_span: source_span_for_node(&parsed.repo_relative_path, binding_node),
+                        scope_path: scope_path.clone(),
+                        structural_ast_path: function_structural_path
+                            .iter()
+                            .cloned()
+                            .chain([
+                                "parameters".to_string(),
+                                format!(
+                                    "parameter:{}",
+                                    node_text(binding_node, source).unwrap_or_default()
+                                ),
+                            ])
+                            .collect(),
+                        parse_recovery: function_recovery
+                            || node_has_error_or_missing_descendant(binding_node),
+                    });
+                }
+            }
+        }
+    }
+    Mvp4TypeScriptLexicalScope {
+        scope_kind: "parameter_scope".to_string(),
+        scope_path,
+        source_span,
+        structural_ast_path: function_structural_path
+            .iter()
+            .cloned()
+            .chain(["parameters".to_string()])
+            .collect(),
+        parse_recovery: function_recovery,
+        bindings,
+    }
+}
+
+fn mvp4_ts_parameter_binding_node(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "required_parameter" | "optional_parameter" => node
+            .child_by_field_name("pattern")
+            .or_else(|| node.child_by_field_name("name"))
+            .filter(|child| child.kind() == "identifier"),
+        _ => None,
+    }
+}
+
+fn mvp4_ts_variable_declaration_kind(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "lexical_declaration" => {
+            let text = node_text(node, source)?;
+            let trimmed = text.trim_start();
+            if trimmed.starts_with("const") {
+                Some("const".to_string())
+            } else if trimmed.starts_with("let") {
+                Some("let".to_string())
+            } else {
+                Some("lexical".to_string())
+            }
+        }
+        "variable_declaration" => Some("var".to_string()),
+        _ => None,
+    }
+}
+
+fn collect_mvp4_ts_lexical_scopes(
+    body: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    function_scope_path: &[String],
+    function_recovery: bool,
+    function_structural_path: &[String],
+) -> Vec<Mvp4TypeScriptLexicalScope> {
+    let mut scopes = Vec::new();
+    let mut body_scope_path = function_scope_path.to_vec();
+    body_scope_path.push("body".to_string());
+    collect_mvp4_ts_block_scope(
+        body,
+        parsed,
+        source,
+        body_scope_path,
+        function_recovery,
+        function_structural_path
+            .iter()
+            .cloned()
+            .chain(["body".to_string()])
+            .collect(),
+        "function_body",
+        &mut scopes,
+    );
+    scopes
+}
+
+fn collect_mvp4_ts_block_scope(
+    scope_node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    scope_path: Vec<String>,
+    inherited_recovery: bool,
+    structural_ast_path: Vec<String>,
+    scope_kind: &str,
+    scopes: &mut Vec<Mvp4TypeScriptLexicalScope>,
+) {
+    let parse_recovery = inherited_recovery || node_has_error_or_missing_descendant(scope_node);
+    let mut scope = Mvp4TypeScriptLexicalScope {
+        scope_kind: scope_kind.to_string(),
+        scope_path: scope_path.clone(),
+        source_span: source_span_for_node(&parsed.repo_relative_path, scope_node),
+        structural_ast_path: structural_ast_path.clone(),
+        parse_recovery,
+        bindings: Vec::new(),
+    };
+    let mut nested_scopes = Vec::new();
+    collect_mvp4_ts_scope_contents(
+        scope_node,
+        parsed,
+        source,
+        &scope_path,
+        &structural_ast_path,
+        parse_recovery,
+        &mut scope.bindings,
+        &mut nested_scopes,
+    );
+    scopes.push(scope);
+    scopes.extend(nested_scopes);
+}
+
+fn collect_mvp4_ts_scope_contents(
+    node: Node<'_>,
+    parsed: &ParsedFile,
+    source: &str,
+    scope_path: &[String],
+    structural_ast_path: &[String],
+    parse_recovery: bool,
+    bindings: &mut Vec<Mvp4TypeScriptScopeBinding>,
+    nested_scopes: &mut Vec<Mvp4TypeScriptLexicalScope>,
+) {
+    if node.is_error() || node.is_missing() || is_mvp4_ts_function_scope_node(node) {
+        return;
+    }
+    let mut cursor = node.walk();
+    for (index, child) in node.named_children(&mut cursor).enumerate() {
+        if is_mvp4_ts_function_scope_node(child) {
+            continue;
+        }
+        if child.kind() == "statement_block" && child.id() != node.id() {
+            let mut nested_path = scope_path.to_vec();
+            nested_path.push(format!("block:{index}"));
+            let nested_structural_path = structural_ast_path
+                .iter()
+                .cloned()
+                .chain([format!("{}#{index}", child.kind())])
+                .collect::<Vec<_>>();
+            collect_mvp4_ts_block_scope(
+                child,
+                parsed,
+                source,
+                nested_path,
+                parse_recovery,
+                nested_structural_path,
+                "block",
+                nested_scopes,
+            );
+            continue;
+        }
+        if child.kind() == "variable_declarator" {
+            if let Some(binding_node) = child.child_by_field_name("name") {
+                if binding_node.kind() == "identifier" {
+                    if let Some(name) = node_text(binding_node, source) {
+                        let declaration_kind = mvp4_ts_variable_declaration_kind(node, source);
+                        bindings.push(Mvp4TypeScriptScopeBinding {
+                            name,
+                            binding_kind: "local".to_string(),
+                            declaration_kind,
+                            source_span: source_span_for_node(
+                                &parsed.repo_relative_path,
+                                binding_node,
+                            ),
+                            scope_path: scope_path.to_vec(),
+                            structural_ast_path: structural_ast_path
+                                .iter()
+                                .cloned()
+                                .chain([
+                                    "local_declaration".to_string(),
+                                    format!(
+                                        "binding:{}",
+                                        node_text(binding_node, source).unwrap_or_default()
+                                    ),
+                                ])
+                                .collect(),
+                            parse_recovery: parse_recovery
+                                || node_has_error_or_missing_descendant(binding_node),
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+        collect_mvp4_ts_scope_contents(
+            child,
+            parsed,
+            source,
+            scope_path,
+            structural_ast_path,
+            parse_recovery || node_has_error_or_missing_descendant(child),
+            bindings,
+            nested_scopes,
+        );
+    }
+}
+
+fn is_mvp4_ts_function_scope_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "function_declaration"
+            | "generator_function_declaration"
+            | "method_definition"
+            | "function"
+            | "function_expression"
+            | "arrow_function"
+    )
+}
+
+fn exact_mvp4_ts_function_entity_link(
+    entities: &[Entity],
+    function_name: &str,
+    function_kind: &str,
+    source_span: &SourceSpan,
+) -> Option<Mvp4TypeScriptEntityLink> {
+    let expected_kind = match function_kind {
+        "method_definition" => EntityKind::Method,
+        _ => EntityKind::Function,
+    };
+    entities
+        .iter()
+        .find(|entity| {
+            entity.kind == expected_kind
+                && entity.name == function_name
+                && entity.source_span.as_ref() == Some(source_span)
+        })
+        .map(|entity| Mvp4TypeScriptEntityLink {
+            entity_id: entity.id.clone(),
+            entity_kind: entity.kind,
+            exactness: "exact_existing_parser_entity_source_span_match".to_string(),
+        })
+}
+
+fn structural_path_to_node(root: Node<'_>, target: Node<'_>) -> Vec<String> {
+    let mut path = vec![format!("{}#0", root.kind())];
+    if structural_path_to_node_inner(root, target.id(), &mut path) {
+        path
+    } else {
+        vec![format!("{}#unresolved", target.kind())]
+    }
+}
+
+fn structural_path_to_node_inner(node: Node<'_>, target_id: usize, path: &mut Vec<String>) -> bool {
+    if node.id() == target_id {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for (index, child) in node.named_children(&mut cursor).enumerate() {
+        path.push(format!("{}#{index}", child.kind()));
+        if structural_path_to_node_inner(child, target_id, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
 }
 
 fn parser_file_metadata(parsed: &ParsedFile) -> Metadata {
@@ -8704,17 +10677,26 @@ pub fn content_hash(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeSet,
+        collections::{BTreeMap, BTreeSet},
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use codegraph_core::{Entity, EntityKind, Exactness, RelationKind, SourceSpan};
+    use codegraph_core::{
+        Entity, EntityKind, Exactness, MicroDerivationKind, MicroExactness, MicroNodeKind,
+        MicroSourceRole, RelationKind, SourceSpan,
+    };
     use codegraph_store::{GraphStore, SqliteGraphStore};
 
     use super::{
-        detect_language, extract_basic_entities, normalize_repo_relative_path, LanguageFrontend,
-        LanguageParser, SourceLanguage, TreeSitterParser,
+        detect_language, discover_mvp4_typescript_scopes,
+        emit_mvp4_typescript_core_declaration_candidates,
+        emit_mvp4_typescript_in_memory_first_slice_inventory,
+        emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy,
+        emit_mvp4_typescript_operation_site_candidates,
+        emit_mvp4_typescript_property_access_candidates, extract_basic_entities,
+        mvp4_typescript_first_slice_cap_policy, normalize_repo_relative_path, LanguageFrontend,
+        LanguageParser, Mvp4TypeScriptMicroNodeCapPolicy, SourceLanguage, TreeSitterParser,
     };
 
     const JS_FIXTURE: &str = include_str!("../fixtures/basic.js");
@@ -8861,6 +10843,1597 @@ mod tests {
 
     fn metadata_str<'a>(entity: &'a Entity, key: &str) -> Option<&'a str> {
         entity.metadata.get(key).and_then(serde_json::Value::as_str)
+    }
+
+    fn mvp4_scope_report(path: &str, source: &str) -> super::Mvp4TypeScriptScopeDiscoveryReport {
+        let parsed = parsed(path, source);
+        discover_mvp4_typescript_scopes(&parsed, source)
+    }
+
+    fn mvp4_core_declaration_report(
+        path: &str,
+        source: &str,
+    ) -> super::Mvp4TypeScriptCoreDeclarationCandidateReport {
+        let parsed = parsed(path, source);
+        emit_mvp4_typescript_core_declaration_candidates(&parsed, source)
+    }
+
+    fn mvp4_operation_site_report(
+        path: &str,
+        source: &str,
+    ) -> super::Mvp4TypeScriptOperationSiteCandidateReport {
+        let parsed = parsed(path, source);
+        emit_mvp4_typescript_operation_site_candidates(&parsed, source)
+    }
+
+    fn mvp4_property_access_report(
+        path: &str,
+        source: &str,
+    ) -> super::Mvp4TypeScriptPropertyAccessCandidateReport {
+        let parsed = parsed(path, source);
+        emit_mvp4_typescript_property_access_candidates(&parsed, source)
+    }
+
+    fn mvp4_in_memory_inventory_report(
+        path: &str,
+        source: &str,
+    ) -> super::Mvp4TypeScriptInMemoryInventoryReport {
+        let parsed = parsed(path, source);
+        emit_mvp4_typescript_in_memory_first_slice_inventory(&parsed, source)
+    }
+
+    fn mvp4_in_memory_inventory_report_with_policy(
+        path: &str,
+        source: &str,
+        policy: &Mvp4TypeScriptMicroNodeCapPolicy,
+    ) -> super::Mvp4TypeScriptInMemoryInventoryReport {
+        let parsed = parsed(path, source);
+        emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy(&parsed, source, policy)
+    }
+
+    fn mvp4_candidate_names(
+        report: &super::Mvp4TypeScriptCoreDeclarationCandidateReport,
+        kind: MicroNodeKind,
+    ) -> BTreeSet<String> {
+        report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == kind)
+            .map(|candidate| candidate.name_or_literal.clone())
+            .collect()
+    }
+
+    fn lexical_binding_names(scope: &super::Mvp4TypeScriptLexicalScope) -> BTreeSet<String> {
+        scope
+            .bindings
+            .iter()
+            .map(|binding| binding.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn mvp4_ts_scope_discovers_function_and_generator_declarations() {
+        let source = "\
+export function buildTotal(price: number, tax: number) {
+  const subtotal = price;
+  return subtotal + tax;
+}
+
+export function* ids(seed: number) {
+  yield seed;
+}
+";
+        let report = mvp4_scope_report("src/order.ts", source);
+
+        assert!(report.eligible);
+        assert_eq!(report.source_role, MicroSourceRole::Production);
+        assert_eq!(report.production_micro_nodes_emitted, 0);
+        assert_eq!(report.micro_edges_emitted, 0);
+        assert_eq!(report.functions.len(), 2);
+
+        let build_total = report
+            .functions
+            .iter()
+            .find(|function| function.function_name == "buildTotal")
+            .expect("buildTotal scope");
+        assert_eq!(build_total.function_kind, "function_declaration");
+        assert_eq!(
+            lexical_binding_names(&build_total.parameter_scope),
+            BTreeSet::from(["price".to_string(), "tax".to_string()])
+        );
+        assert!(build_total.existing_entity_link.is_some());
+        assert_eq!(build_total.source_span.repo_relative_path, "src/order.ts");
+        assert!(!build_total.parse_recovery);
+
+        let ids = report
+            .functions
+            .iter()
+            .find(|function| function.function_name == "ids")
+            .expect("ids generator scope");
+        assert_eq!(ids.function_kind, "generator_function_declaration");
+        assert!(ids.existing_entity_link.is_some());
+    }
+
+    #[test]
+    fn mvp4_ts_scope_discovers_class_methods_and_separates_same_names() {
+        let source = "\
+class Alpha {
+  save(value: number) {
+    const local = value;
+    return local;
+  }
+}
+class Beta {
+  save(value: number) {
+    const local = value;
+    return local;
+  }
+}
+";
+        let report = mvp4_scope_report("src/services.ts", source);
+
+        assert!(report.eligible);
+        assert_eq!(report.functions.len(), 2);
+        let identities = report
+            .functions
+            .iter()
+            .map(|function| function.function_identity.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(identities.len(), 2);
+        assert!(report
+            .functions
+            .iter()
+            .any(|function| function.qualifier_path.contains(&"Alpha".to_string())));
+        assert!(report
+            .functions
+            .iter()
+            .any(|function| function.qualifier_path.contains(&"Beta".to_string())));
+        assert!(report
+            .functions
+            .iter()
+            .all(|function| function.function_kind == "method_definition"));
+        assert!(report
+            .functions
+            .iter()
+            .all(|function| function.existing_entity_link.is_some()));
+    }
+
+    #[test]
+    fn mvp4_ts_scope_preserves_nested_scope_and_shadowing_identity() {
+        let source = "\
+export function shadow(value: number) {
+  let item = value;
+  if (value > 0) {
+    let item = value + 1;
+    {
+      let item = value + 2;
+    }
+  }
+  return item;
+}
+";
+        let report = mvp4_scope_report("src/shadow.ts", source);
+        let function = report
+            .functions
+            .iter()
+            .find(|function| function.function_name == "shadow")
+            .expect("shadow function");
+
+        let item_scopes = function
+            .lexical_scopes
+            .iter()
+            .filter(|scope| lexical_binding_names(scope).contains("item"))
+            .map(|scope| scope.scope_path.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(item_scopes.len(), 3, "{item_scopes:?}");
+        assert!(function.lexical_scopes.len() >= 3);
+        assert!(function
+            .lexical_scopes
+            .iter()
+            .all(|scope| !scope.scope_path.is_empty()));
+    }
+
+    #[test]
+    fn mvp4_ts_scope_excludes_declarations_arrows_and_non_ts_surfaces() {
+        let source = "\
+declare function ambientOnly(value: number): void;
+export function declaredOnly(value: number): number;
+export function real(value: number) {
+  const arrow = () => value;
+  return arrow();
+}
+";
+        let report = mvp4_scope_report("src/declarations.ts", source);
+        assert!(report.eligible);
+        assert_eq!(report.functions.len(), 1);
+        assert_eq!(report.functions[0].function_name, "real");
+
+        for (path, source) in [
+            (
+                "src/component.tsx",
+                "export function Component() { return <div />; }\n",
+            ),
+            ("src/file.js", "export function jsOnly() { return 1; }\n"),
+            (
+                "src/file.jsx",
+                "export function JsxOnly() { return <div />; }\n",
+            ),
+            ("src/types.d.ts", "export function typedOnly(): void;\n"),
+        ] {
+            let parsed = parsed(path, source);
+            let report = discover_mvp4_typescript_scopes(&parsed, source);
+            assert!(!report.eligible, "{path}");
+            assert!(report.functions.is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn mvp4_ts_scope_filters_non_production_source_roles() {
+        let source = "export function helper(value: number) { return value; }\n";
+        for (path, role) in [
+            ("tests/helper.test.ts", MicroSourceRole::Test),
+            ("src/generated/client.ts", MicroSourceRole::Generated),
+            ("src/__mocks__/service.ts", MicroSourceRole::Mock),
+            ("src/service.stub.ts", MicroSourceRole::Mock),
+        ] {
+            let report = mvp4_scope_report(path, source);
+            assert!(!report.eligible, "{path}");
+            assert_eq!(report.source_role, role, "{path}");
+            assert!(report.functions.is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn mvp4_ts_scope_partial_parse_is_safe_and_non_claimable() {
+        let source = "\
+export function broken(input: number) {
+  const value = ;
+  return input;
+}
+";
+        let report = mvp4_scope_report("src/broken.ts", source);
+
+        assert!(report.eligible);
+        assert_eq!(report.parser_status, "parsed_with_syntax_diagnostics");
+        assert_eq!(report.functions.len(), 1);
+        assert!(report.functions[0].parse_recovery);
+        assert_eq!(
+            report.functions[0].claimability,
+            "non_claimable_recovery_scope"
+        );
+    }
+
+    #[test]
+    fn mvp4_ts_scope_identity_is_deterministic_and_file_distinct() {
+        let source = "\
+export function same(value: number) {
+  const local = value;
+  return local;
+}
+";
+        let first = mvp4_scope_report("src/a.ts", source);
+        let second = mvp4_scope_report("src/a.ts", source);
+        let other_file = mvp4_scope_report("src/b.ts", source);
+
+        assert_eq!(
+            first.functions[0].function_identity,
+            second.functions[0].function_identity
+        );
+        assert_eq!(
+            first.functions[0].scope_path,
+            second.functions[0].scope_path
+        );
+        assert_ne!(
+            first.functions[0].function_identity,
+            other_file.functions[0].function_identity
+        );
+    }
+
+    #[test]
+    fn mvp4_ts_scope_discovery_does_not_write_sidecar_rows() {
+        let store = SqliteGraphStore::open_in_memory().expect("in-memory store");
+        let source = "export function local(value: number) { return value; }\n";
+        let report = mvp4_scope_report("src/local.ts", source);
+        assert!(report.eligible);
+        assert_eq!(report.production_micro_nodes_emitted, 0);
+        assert_eq!(report.micro_edges_emitted, 0);
+
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_nodes").copied(), Some(0));
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+    }
+
+    #[test]
+    fn mvp4_core_declaration_candidates_emit_function_parameters_and_locals() {
+        let path = "src/order.ts";
+        let source = "\
+export function buildTotal(price: number, tax: number) {
+  const subtotal = price;
+  let total = subtotal + tax;
+  var legacy = total;
+  return total;
+}
+";
+        let report = mvp4_core_declaration_report(path, source);
+
+        assert!(report.eligible);
+        assert_eq!(report.production_micro_node_rows, 0);
+        assert_eq!(report.micro_edge_rows, 0);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.source_span_failures, 0);
+        assert_eq!(report.binding_overclaim_count, 0);
+        assert_eq!(
+            mvp4_candidate_names(&report, MicroNodeKind::FunctionFrame),
+            BTreeSet::from(["buildTotal".to_string()])
+        );
+        assert_eq!(
+            mvp4_candidate_names(&report, MicroNodeKind::Parameter),
+            BTreeSet::from(["price".to_string(), "tax".to_string()])
+        );
+        assert_eq!(
+            mvp4_candidate_names(&report, MicroNodeKind::LocalBinding),
+            BTreeSet::from([
+                "legacy".to_string(),
+                "subtotal".to_string(),
+                "total".to_string(),
+            ])
+        );
+
+        for candidate in &report.candidates {
+            assert_span_inside_source(path, source, &candidate.source_span);
+            assert_eq!(candidate.repo_relative_path, path);
+            assert_eq!(candidate.language, "typescript");
+            assert_eq!(candidate.frontend, "tree-sitter-typescript");
+            assert_eq!(candidate.source_role, MicroSourceRole::Production);
+            assert_eq!(candidate.exactness, MicroExactness::Exact);
+            assert_eq!(
+                candidate.provenance.derivation_kind,
+                MicroDerivationKind::DirectAstExtraction
+            );
+            assert_eq!(candidate.provenance.source_spans.len(), 1);
+            assert_eq!(
+                candidate.extraction_version,
+                "mvp4.1-typescript-micro-nodes-v1"
+            );
+            assert_eq!(candidate.row_schema_version, 1);
+            assert_eq!(candidate.payload_version, 1);
+            assert!(!candidate.name_or_literal.is_empty());
+            assert!(
+                candidate.symbol_binding_id.is_none()
+                    || candidate.node_kind == MicroNodeKind::FunctionFrame
+            );
+        }
+
+        let subtotal = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name_or_literal == "subtotal")
+            .expect("subtotal local binding");
+        assert_eq!(subtotal.declaration_kind.as_deref(), Some("const"));
+        let total = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name_or_literal == "total")
+            .expect("total local binding");
+        assert_eq!(total.declaration_kind.as_deref(), Some("let"));
+        let legacy = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name_or_literal == "legacy")
+            .expect("legacy local binding");
+        assert_eq!(legacy.declaration_kind.as_deref(), Some("var"));
+    }
+
+    #[test]
+    fn mvp4_core_declaration_candidates_prevent_duplicates_and_separate_shadowing() {
+        let source = "\
+export function shadow(value: number) {
+  let item = value;
+  if (value > 0) {
+    let item = value + 1;
+    {
+      let item = value + 2;
+    }
+  }
+  return item;
+}
+";
+        let report = mvp4_core_declaration_report("src/shadow.ts", source);
+        let item_candidates = report
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.node_kind == MicroNodeKind::LocalBinding
+                    && candidate.name_or_literal == "item"
+            })
+            .collect::<Vec<_>>();
+        let item_ids = item_candidates
+            .iter()
+            .map(|candidate| candidate.micro_node_id.clone())
+            .collect::<BTreeSet<_>>();
+        let item_scopes = item_candidates
+            .iter()
+            .map(|candidate| candidate.scope_path.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(item_candidates.len(), 3);
+        assert_eq!(item_ids.len(), 3);
+        assert_eq!(item_scopes.len(), 3);
+        assert_eq!(report.binding_overclaim_count, 0);
+    }
+
+    #[test]
+    fn mvp4_core_declaration_candidates_have_stable_and_intentional_rekey_ids() {
+        let base = "\
+export function same(value: number) {
+  const local = value;
+  return local;
+}
+";
+        let whitespace = "\
+export function same(value: number) {
+
+  const local = value;
+  return local;
+}
+";
+        let comment = "\
+export function same(value: number) {
+  const local = value;
+  // stable comment
+  return local;
+}
+";
+        let neighbor_after = "\
+export function same(value: number) {
+  const local = value;
+  const other = value;
+  return local;
+}
+";
+        let renamed_param = "\
+export function same(input: number) {
+  const local = input;
+  return local;
+}
+";
+        let renamed_function = "\
+export function changed(value: number) {
+  const local = value;
+  return local;
+}
+";
+
+        let base_report = mvp4_core_declaration_report("src/a.ts", base);
+        let local_id = |report: &super::Mvp4TypeScriptCoreDeclarationCandidateReport| {
+            report
+                .candidates
+                .iter()
+                .find(|candidate| {
+                    candidate.node_kind == MicroNodeKind::LocalBinding
+                        && candidate.name_or_literal == "local"
+                })
+                .expect("local candidate")
+                .micro_node_id
+                .clone()
+        };
+        let parameter_id = |report: &super::Mvp4TypeScriptCoreDeclarationCandidateReport| {
+            report
+                .candidates
+                .iter()
+                .find(|candidate| candidate.node_kind == MicroNodeKind::Parameter)
+                .expect("parameter candidate")
+                .micro_node_id
+                .clone()
+        };
+        let function_id = |report: &super::Mvp4TypeScriptCoreDeclarationCandidateReport| {
+            report
+                .candidates
+                .iter()
+                .find(|candidate| candidate.node_kind == MicroNodeKind::FunctionFrame)
+                .expect("function candidate")
+                .micro_node_id
+                .clone()
+        };
+
+        assert_eq!(
+            local_id(&base_report),
+            local_id(&mvp4_core_declaration_report("src/a.ts", base))
+        );
+        assert_eq!(
+            local_id(&base_report),
+            local_id(&mvp4_core_declaration_report("src/a.ts", whitespace))
+        );
+        assert_eq!(
+            local_id(&base_report),
+            local_id(&mvp4_core_declaration_report("src/a.ts", comment))
+        );
+        assert_eq!(
+            local_id(&base_report),
+            local_id(&mvp4_core_declaration_report("src/a.ts", neighbor_after))
+        );
+        assert_ne!(
+            local_id(&base_report),
+            local_id(&mvp4_core_declaration_report("src/b.ts", base))
+        );
+        assert_ne!(
+            parameter_id(&base_report),
+            parameter_id(&mvp4_core_declaration_report("src/a.ts", renamed_param))
+        );
+        assert_ne!(
+            function_id(&base_report),
+            function_id(&mvp4_core_declaration_report("src/a.ts", renamed_function))
+        );
+    }
+
+    #[test]
+    fn mvp4_core_declaration_candidates_mark_destructuring_unsupported_without_flattening() {
+        let source = "\
+export function shape({ id }: { id: number }, value: number) {
+  const { local } = value as any;
+  const exact = value;
+  return exact;
+}
+";
+        let report = mvp4_core_declaration_report("src/destructure.ts", source);
+
+        assert_eq!(
+            mvp4_candidate_names(&report, MicroNodeKind::Parameter),
+            BTreeSet::from(["value".to_string()])
+        );
+        assert_eq!(
+            mvp4_candidate_names(&report, MicroNodeKind::LocalBinding),
+            BTreeSet::from(["exact".to_string()])
+        );
+        assert!(report
+            .unsupported_boundaries
+            .iter()
+            .any(|boundary| boundary.boundary_kind == "unsupported_parameter_binding"));
+        assert!(report
+            .unsupported_boundaries
+            .iter()
+            .any(|boundary| boundary.boundary_kind == "unsupported_local_binding"));
+        assert!(report
+            .unsupported_boundaries
+            .iter()
+            .all(|boundary| boundary.exactness == MicroExactness::Unsupported));
+    }
+
+    #[test]
+    fn mvp4_core_declaration_candidates_exclude_non_production_and_do_not_write_rows() {
+        let source =
+            "export function helper(value: number) { const local = value; return local; }\n";
+        for path in [
+            "tests/helper.test.ts",
+            "src/generated/client.ts",
+            "src/__mocks__/service.ts",
+            "src/service.stub.ts",
+            "src/component.tsx",
+            "src/file.js",
+            "src/types.d.ts",
+        ] {
+            let report = mvp4_core_declaration_report(path, source);
+            assert!(!report.eligible, "{path}");
+            assert!(report.candidates.is_empty(), "{path}");
+            assert_eq!(report.production_micro_node_rows, 0, "{path}");
+            assert_eq!(report.micro_edge_rows, 0, "{path}");
+        }
+
+        let store = SqliteGraphStore::open_in_memory().expect("in-memory store");
+        let report = mvp4_core_declaration_report("src/local.ts", source);
+        assert!(report.eligible);
+        assert!(!report.candidates.is_empty());
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_nodes").copied(), Some(0));
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+    }
+
+    #[test]
+    fn mvp4_operation_site_candidates_emit_assignment_sites_without_write_flow() {
+        let path = "src/assignments.ts";
+        let source = "\
+export function update(value: number) {
+  let target = value;
+  target = value;
+  target += 1;
+  first = second = value;
+  return target;
+}
+";
+        let report = mvp4_operation_site_report(path, source);
+        let assignments = report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == MicroNodeKind::AssignmentSite)
+            .collect::<Vec<_>>();
+
+        assert!(report.eligible);
+        assert_eq!(report.production_micro_node_rows, 0);
+        assert_eq!(report.micro_edge_rows, 0);
+        assert!(!report.flow_proof_activated);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.source_span_failures, 0);
+        assert_eq!(report.write_flow_overclaim_count, 0);
+        assert!(
+            assignments.len() >= 4,
+            "expected simple, compound, and chained assignment sites: {assignments:?}"
+        );
+        assert!(assignments.iter().all(|candidate| {
+            candidate.symbol_binding_id.is_none()
+                && candidate.claimability
+                    == "claimable_source_spanned_assignment_expression_existence"
+                && candidate
+                    .provenance
+                    .limitations
+                    .contains(&"does_not_claim_local_writes".to_string())
+                && candidate
+                    .provenance
+                    .limitations
+                    .contains(&"does_not_claim_value_flow".to_string())
+        }));
+        for candidate in assignments {
+            assert_span_inside_source(path, source, &candidate.source_span);
+            assert_eq!(candidate.exactness, MicroExactness::Exact);
+            assert_eq!(
+                candidate.provenance.derivation_kind,
+                MicroDerivationKind::DirectAstExtraction
+            );
+            assert_eq!(
+                candidate.provenance.extractor_or_adapter_version,
+                "mvp4.1-typescript-operation-sites-v1"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp4_operation_site_candidates_emit_return_sites_with_nested_function_isolation() {
+        let path = "src/returns.ts";
+        let source = "\
+export function choose(value: number) {
+  if (value > 0) {
+    return value;
+  }
+  function inner() {
+    return 0;
+  }
+  return inner();
+}
+";
+        let report = mvp4_operation_site_report(path, source);
+        let returns = report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == MicroNodeKind::ReturnSite)
+            .collect::<Vec<_>>();
+
+        assert!(report.eligible);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(returns.len(), 3, "{returns:?}");
+        let outer = returns
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .scope_path
+                    .iter()
+                    .any(|segment| segment == "function_declaration:choose")
+            })
+            .count();
+        let inner = returns
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .scope_path
+                    .iter()
+                    .any(|segment| segment == "scope:choose")
+                    && candidate
+                        .scope_path
+                        .iter()
+                        .any(|segment| segment == "function_declaration:inner")
+            })
+            .count();
+        assert_eq!(outer, 2, "{returns:?}");
+        assert_eq!(inner, 1, "{returns:?}");
+        assert!(returns.iter().all(|candidate| {
+            candidate.symbol_binding_id.is_none()
+                && candidate.claimability == "claimable_source_spanned_return_statement_existence"
+                && candidate
+                    .provenance
+                    .limitations
+                    .contains(&"does_not_claim_returns_to_edge".to_string())
+                && candidate
+                    .provenance
+                    .limitations
+                    .contains(&"does_not_claim_complete_control_flow".to_string())
+        }));
+    }
+
+    #[test]
+    fn mvp4_operation_site_candidates_emit_call_sites_without_callee_targets() {
+        let path = "src/calls.ts";
+        let source = "\
+export function invoke(value: number, service: any, registry: any, key: string, maybe: any) {
+  load(value);
+  service.client.send(value);
+  wrap(load(value));
+  registry[key](value);
+  maybe?.(value);
+  return service.client.send(value);
+}
+";
+        let report = mvp4_operation_site_report(path, source);
+        let calls = report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == MicroNodeKind::CallSite)
+            .collect::<Vec<_>>();
+        let call_labels = calls
+            .iter()
+            .map(|candidate| candidate.name_or_literal.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert!(report.eligible);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.callee_target_overclaim_count, 0);
+        assert!(
+            calls.len() >= 7,
+            "direct, member, nested, computed, optional, and return member calls: {calls:?}"
+        );
+        assert!(
+            call_labels.iter().any(|label| label.contains("load")),
+            "{call_labels:?}"
+        );
+        assert!(
+            call_labels
+                .iter()
+                .any(|label| label.contains("service.client.send")),
+            "{call_labels:?}"
+        );
+        assert!(
+            call_labels
+                .iter()
+                .any(|label| label.contains("registry[key]")),
+            "{call_labels:?}"
+        );
+        assert!(calls.iter().all(|candidate| {
+            candidate.symbol_binding_id.is_none()
+                && candidate.claimability == "claimable_source_spanned_call_expression_existence"
+                && candidate
+                    .provenance
+                    .limitations
+                    .contains(&"does_not_claim_exact_callee_target".to_string())
+                && candidate
+                    .provenance
+                    .limitations
+                    .contains(&"does_not_claim_local_calls_edge".to_string())
+        }));
+        for candidate in calls {
+            assert_span_inside_source(path, source, &candidate.source_span);
+            assert_eq!(candidate.exactness, MicroExactness::Exact);
+        }
+    }
+
+    #[test]
+    fn mvp4_operation_site_candidates_are_deterministic_and_do_not_persist() {
+        let path = "src/stable.ts";
+        let base = "\
+export function stable(value: number, service: any) {
+  let target = value;
+  target = value;
+  service.send(value);
+  return target;
+}
+";
+        let whitespace = "\
+export function stable(value: number, service: any) {
+
+  let target = value;
+  target = value;
+  service.send(value);
+  return target;
+}
+";
+        let comment = "\
+export function stable(value: number, service: any) {
+  let target = value;
+  // comment-only edit
+  target = value;
+  service.send(value);
+  return target;
+}
+";
+        let neighbor_after = "\
+export function stable(value: number, service: any) {
+  let target = value;
+  target = value;
+  service.send(value);
+  const other = value;
+  return target;
+}
+";
+        let base_report = mvp4_operation_site_report(path, base);
+        let ids_for = |report: &super::Mvp4TypeScriptOperationSiteCandidateReport| {
+            report
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.node_kind,
+                        candidate.name_or_literal.clone(),
+                        candidate.micro_node_id.clone(),
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+        };
+
+        assert_eq!(base_report.duplicate_candidate_count, 0);
+        assert_eq!(base_report.source_span_failures, 0);
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_operation_site_report(path, base))
+        );
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_operation_site_report(path, whitespace))
+        );
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_operation_site_report(path, comment))
+        );
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_operation_site_report(path, neighbor_after))
+        );
+        assert_ne!(
+            ids_for(&base_report),
+            ids_for(&mvp4_operation_site_report("src/other.ts", base))
+        );
+
+        let store = SqliteGraphStore::open_in_memory().expect("in-memory store");
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_nodes").copied(), Some(0));
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+    }
+
+    #[test]
+    fn mvp4_operation_site_candidates_filter_surfaces_and_mark_recovery() {
+        let source = "\
+export function broken(value: number, service: any) {
+  service.send(value);
+  value =
+  return value;
+}
+";
+        let report = mvp4_operation_site_report("src/broken.ts", source);
+        assert!(report.eligible);
+        assert_eq!(report.parser_status, "parsed_with_syntax_diagnostics");
+        assert!(report
+            .candidates
+            .iter()
+            .any(|candidate| candidate.parse_recovery
+                && candidate.exactness == MicroExactness::Unknown
+                && candidate.claimability == "non_claimable_recovery_candidate"));
+
+        for path in [
+            "tests/helper.test.ts",
+            "src/generated/client.ts",
+            "src/__mocks__/service.ts",
+            "src/service.stub.ts",
+            "src/component.tsx",
+            "src/file.js",
+            "src/types.d.ts",
+        ] {
+            let filtered = mvp4_operation_site_report(
+                path,
+                "export function helper(value: number) { helper(value); return value; }\n",
+            );
+            assert!(!filtered.eligible, "{path}");
+            assert!(filtered.candidates.is_empty(), "{path}");
+            assert_eq!(filtered.production_micro_node_rows, 0, "{path}");
+            assert_eq!(filtered.micro_edge_rows, 0, "{path}");
+            assert!(!filtered.flow_proof_activated, "{path}");
+        }
+    }
+
+    #[test]
+    fn mvp4_property_access_fixture_oracle_is_real_and_supported() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/mvp4_micro_flow_oracles/manifest.json"
+        ))
+        .expect("fixture manifest parses");
+        let fixture = manifest["fixtures"]
+            .as_array()
+            .expect("fixtures array")
+            .iter()
+            .find(|fixture| {
+                fixture["fixture_id"].as_str() == Some("ts_first_slice_function_local_micro_nodes")
+            })
+            .expect("first slice fixture");
+        let file = &fixture["initial_source"]["files"][0];
+        let path = file["path"].as_str().expect("fixture path");
+        let source = file["contents"].as_str().expect("fixture source");
+        assert!(source.contains("subtotal.member"));
+        assert!(!source.contains("object.member"));
+
+        let expected_property = fixture["expected_micro_nodes"]
+            .as_array()
+            .expect("expected micro nodes")
+            .iter()
+            .find(|node| node["node_kind"].as_str() == Some("PropertyAccess"))
+            .expect("PropertyAccess oracle");
+        assert_eq!(
+            expected_property["semantic_name_or_literal"].as_str(),
+            Some("subtotal.member")
+        );
+
+        let report = mvp4_property_access_report(path, source);
+        let property = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name_or_literal == "subtotal.member")
+            .expect("subtotal.member candidate");
+
+        assert!(report.eligible);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.source_span_failures, 0);
+        assert_eq!(report.binding_overclaim_count, 0);
+        assert_eq!(report.semantic_overclaim_count, 0);
+        assert_eq!(property.node_kind, MicroNodeKind::PropertyAccess);
+        assert_eq!(
+            property.claimability,
+            "claimable_source_spanned_property_access_and_static_property_token_existence"
+        );
+        assert_eq!(
+            property.provenance.extractor_or_adapter_version,
+            "mvp4.1-typescript-property-access-v1"
+        );
+        assert_eq!(property.symbol_binding_id, None);
+        assert_eq!(property.declaration_kind.as_deref(), Some("static_member"));
+        assert_eq!(property.source_span.start_line, 3);
+        assert_eq!(property.source_span.start_column, Some(17));
+        assert_eq!(property.source_span.end_line, 3);
+        assert_eq!(property.source_span.end_column, Some(32));
+    }
+
+    #[test]
+    fn mvp4_property_access_candidates_cover_direct_nested_computed_and_optional() {
+        let path = "src/properties.ts";
+        let source = "\
+export function access(user: any, service: any, obj: any, key: string, maybe: any) {
+  const direct = user.name;
+  const nested = service.client.request;
+  const computed = obj[key];
+  const optional = maybe?.profile;
+  return service.client.request;
+}
+";
+        let report = mvp4_property_access_report(path, source);
+        let labels = report
+            .candidates
+            .iter()
+            .map(|candidate| candidate.name_or_literal.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert!(report.eligible);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.source_span_failures, 0);
+        assert_eq!(report.binding_overclaim_count, 0);
+        assert_eq!(report.semantic_overclaim_count, 0);
+        assert!(labels.contains("user.name"), "{labels:?}");
+        assert!(labels.contains("service.client.request"), "{labels:?}");
+        assert!(labels.contains("obj[key]"), "{labels:?}");
+        assert!(
+            labels.iter().any(|label| label.contains("maybe?.profile")),
+            "{labels:?}"
+        );
+
+        let computed = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name_or_literal == "obj[key]")
+            .expect("computed member");
+        assert_eq!(
+            computed.claimability,
+            "claimable_source_spanned_property_access_existence"
+        );
+        assert_eq!(
+            computed.declaration_kind.as_deref(),
+            Some("computed_member")
+        );
+        assert!(computed.provenance.limitations.contains(
+            &"computed_property_name_is_unknown_unless_literal_contract_supports_it".to_string()
+        ));
+
+        let optional = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name_or_literal.contains("maybe?.profile"))
+            .expect("optional member");
+        assert_eq!(
+            optional.declaration_kind.as_deref(),
+            Some("optional_static_member")
+        );
+        assert!(optional
+            .provenance
+            .limitations
+            .contains(&"optional_chain_does_not_imply_non_null_behavior".to_string()));
+
+        for candidate in &report.candidates {
+            assert_span_inside_source(path, source, &candidate.source_span);
+            assert_eq!(candidate.node_kind, MicroNodeKind::PropertyAccess);
+            assert_eq!(candidate.exactness, MicroExactness::Exact);
+            assert_eq!(candidate.symbol_binding_id, None);
+            assert!(candidate
+                .provenance
+                .limitations
+                .contains(&"does_not_claim_object_type".to_string()));
+            assert!(candidate.provenance.limitations.contains(
+                &"does_not_claim_route_auth_sanitizer_or_security_semantics".to_string()
+            ));
+        }
+    }
+
+    #[test]
+    fn mvp4_property_access_member_call_has_distinct_callsite_and_property_nodes() {
+        let path = "src/member_call.ts";
+        let source = "\
+export function send(client: any, value: string) {
+  client.send(value);
+}
+";
+        let property_report = mvp4_property_access_report(path, source);
+        let call_report = mvp4_operation_site_report(path, source);
+        let property = property_report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name_or_literal == "client.send")
+            .expect("client.send property access");
+        let call = call_report
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate.node_kind == MicroNodeKind::CallSite
+                    && candidate.name_or_literal == "call:client.send"
+            })
+            .expect("client.send call site");
+
+        assert_eq!(property_report.duplicate_candidate_count, 0);
+        assert_ne!(property.micro_node_id, call.micro_node_id);
+        assert_ne!(property.source_span, call.source_span);
+        assert_eq!(property.symbol_binding_id, None);
+        assert_eq!(call.symbol_binding_id, None);
+        assert_eq!(property_report.micro_edge_rows, 0);
+        assert_eq!(call_report.micro_edge_rows, 0);
+        assert!(!property_report.flow_proof_activated);
+        assert!(!call_report.flow_proof_activated);
+    }
+
+    #[test]
+    fn mvp4_property_access_candidates_are_deterministic_and_do_not_persist() {
+        let path = "src/stable_property.ts";
+        let base = "\
+export function stable(user: any) {
+  const name = user.name;
+  return name;
+}
+";
+        let whitespace = "\
+export function stable(user: any) {
+
+  const name = user.name;
+  return name;
+}
+";
+        let comment = "\
+export function stable(user: any) {
+  // comment-only edit
+  const name = user.name;
+  return name;
+}
+";
+        let neighbor_after = "\
+export function stable(user: any) {
+  const name = user.name;
+  const other = user.age;
+  return name;
+}
+";
+        let ids_for = |report: &super::Mvp4TypeScriptPropertyAccessCandidateReport| {
+            report
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.name_or_literal == "user.name")
+                .map(|candidate| candidate.micro_node_id.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        let base_report = mvp4_property_access_report(path, base);
+
+        assert_eq!(base_report.duplicate_candidate_count, 0);
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_property_access_report(path, base))
+        );
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_property_access_report(path, whitespace))
+        );
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_property_access_report(path, comment))
+        );
+        assert_eq!(
+            ids_for(&base_report),
+            ids_for(&mvp4_property_access_report(path, neighbor_after))
+        );
+        assert_ne!(
+            ids_for(&base_report),
+            ids_for(&mvp4_property_access_report("src/other.ts", base))
+        );
+
+        let store = SqliteGraphStore::open_in_memory().expect("in-memory store");
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_nodes").copied(), Some(0));
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+    }
+
+    #[test]
+    fn mvp4_property_access_candidates_filter_surfaces_without_semantic_overclaim() {
+        let source = "export function helper(user: any) { return user.name; }\n";
+        for path in [
+            "tests/helper.test.ts",
+            "src/generated/client.ts",
+            "src/__mocks__/service.ts",
+            "src/service.stub.ts",
+            "src/component.tsx",
+            "src/file.js",
+            "src/types.d.ts",
+        ] {
+            let report = mvp4_property_access_report(path, source);
+            assert!(!report.eligible, "{path}");
+            assert!(report.candidates.is_empty(), "{path}");
+            assert_eq!(report.production_micro_node_rows, 0, "{path}");
+            assert_eq!(report.micro_edge_rows, 0, "{path}");
+            assert!(!report.flow_proof_activated, "{path}");
+        }
+
+        let report = mvp4_property_access_report("src/secure.ts", source);
+        assert_eq!(report.binding_overclaim_count, 0);
+        assert_eq!(report.semantic_overclaim_count, 0);
+        assert!(report.candidates.iter().all(|candidate| {
+            candidate
+                .provenance
+                .limitations
+                .contains(&"does_not_claim_route_auth_sanitizer_or_security_semantics".to_string())
+                && candidate
+                    .provenance
+                    .limitations
+                    .contains(&"does_not_claim_runtime_property".to_string())
+        }));
+    }
+
+    #[test]
+    fn mvp4_in_memory_inventory_covers_all_included_node_kinds_without_persistence() {
+        let path = "src/inventory.ts";
+        let source = "\
+export function inventory(value: number, service: any, user: any) {
+  const local = value;
+  let next = local;
+  next = service.compute(local);
+  service.client.send(next);
+  const label = user.name;
+  return label;
+}
+";
+        let report = mvp4_in_memory_inventory_report(path, source);
+        let kinds = report
+            .candidates
+            .iter()
+            .map(|candidate| candidate.node_kind)
+            .collect::<BTreeSet<_>>();
+
+        assert!(report.eligible);
+        assert_eq!(report.status, "complete");
+        assert_eq!(report.completeness_label, "complete");
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.stable_id_collision_count, 0);
+        assert_eq!(report.claimable_node_missing_span_count, 0);
+        assert_eq!(report.source_span_failures, 0);
+        assert_eq!(report.binding_overclaim_count, 0);
+        assert_eq!(report.semantic_overclaim_count, 0);
+        assert!(kinds.contains(&MicroNodeKind::FunctionFrame), "{kinds:?}");
+        assert!(kinds.contains(&MicroNodeKind::Parameter), "{kinds:?}");
+        assert!(kinds.contains(&MicroNodeKind::LocalBinding), "{kinds:?}");
+        assert!(kinds.contains(&MicroNodeKind::AssignmentSite), "{kinds:?}");
+        assert!(kinds.contains(&MicroNodeKind::ReturnSite), "{kinds:?}");
+        assert!(kinds.contains(&MicroNodeKind::CallSite), "{kinds:?}");
+        assert!(kinds.contains(&MicroNodeKind::PropertyAccess), "{kinds:?}");
+        assert!(report.candidates.iter().all(|candidate| {
+            candidate.extraction_version == "mvp4.1-typescript-micro-nodes-v1"
+                && candidate.row_schema_version == 1
+                && candidate.payload_version == 1
+                && candidate.language == "typescript"
+                && candidate.frontend == "tree-sitter-typescript"
+                && candidate.name_or_literal.len()
+                    <= mvp4_typescript_first_slice_cap_policy().max_name_or_literal_bytes
+        }));
+        for candidate in &report.candidates {
+            assert_span_inside_source(path, source, &candidate.source_span);
+            assert!(!candidate.claimability.contains("flow"));
+            assert!(!candidate.claimability.contains("route"));
+            assert!(!candidate.claimability.contains("auth"));
+        }
+
+        let store = SqliteGraphStore::open_in_memory().expect("in-memory store");
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_nodes").copied(), Some(0));
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+        assert!(!report.production_persistence_enabled);
+        assert_eq!(report.production_micro_node_rows, 0);
+        assert_eq!(report.micro_edge_rows, 0);
+        assert!(!report.flow_proof_activated);
+    }
+
+    #[test]
+    fn mvp4_in_memory_determinism_matrix_matches_identity_contract() {
+        let path = "src/determinism.ts";
+        let base = "\
+export function stable(value: number, service: any, user: any) {
+  const local = value;
+  local = service.compute(value);
+  service.client.send(local);
+  const label = user.name;
+  return label;
+}
+";
+        let whitespace = "\
+export function stable(value: number, service: any, user: any) {
+
+  const local = value;
+  local = service.compute(value);
+  service.client.send(local);
+  const label = user.name;
+  return label;
+}
+";
+        let comment = "\
+export function stable(value: number, service: any, user: any) {
+  // comment-only edit
+  const local = value;
+  local = service.compute(value);
+  service.client.send(local);
+  const label = user.name;
+  return label;
+}
+";
+        let neighbor_before = "\
+export function stable(value: number, service: any, user: any) {
+  const prior = value;
+  const local = value;
+  local = service.compute(value);
+  service.client.send(local);
+  const label = user.name;
+  return label;
+}
+";
+        let neighbor_after = "\
+export function stable(value: number, service: any, user: any) {
+  const local = value;
+  local = service.compute(value);
+  service.client.send(local);
+  const label = user.name;
+  const after = label;
+  return label;
+}
+";
+        let unrelated_function = format!(
+            "{}\n{}",
+            base, "export function unrelated(input: number) { return input; }\n"
+        );
+        let reordered = "\
+export function stable(value: number, service: any, user: any) {
+  const label = user.name;
+  service.client.send(label);
+  const local = value;
+  local = service.compute(value);
+  return local;
+}
+";
+        let parameter_renamed = base.replace("value: number", "renamed: number");
+        let function_renamed = base.replace("function stable", "function renamed");
+
+        let ids_for = |source: &str| {
+            mvp4_in_memory_inventory_report(path, source)
+                .candidates
+                .into_iter()
+                .map(|candidate| {
+                    (
+                        candidate.node_kind,
+                        candidate.name_or_literal,
+                        candidate.micro_node_id,
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let base_ids = ids_for(base);
+
+        assert_eq!(base_ids, ids_for(base));
+        assert_eq!(base_ids, ids_for(whitespace));
+        assert_eq!(base_ids, ids_for(comment));
+        assert!(base_ids.is_subset(&ids_for(neighbor_before)));
+        assert!(base_ids.is_subset(&ids_for(neighbor_after)));
+        assert!(base_ids.is_subset(&ids_for(&unrelated_function)));
+        assert_ne!(base_ids, ids_for(reordered));
+        assert_ne!(base_ids, ids_for(&parameter_renamed));
+        assert_ne!(base_ids, ids_for(&function_renamed));
+        assert_ne!(
+            base_ids,
+            mvp4_in_memory_inventory_report("src/renamed.ts", base)
+                .candidates
+                .into_iter()
+                .map(|candidate| {
+                    (
+                        candidate.node_kind,
+                        candidate.name_or_literal,
+                        candidate.micro_node_id,
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn mvp4_in_memory_scope_shadowing_complexity_and_source_role_stress() {
+        let path = "src/shadowing.ts";
+        let source = "\
+export async function same(value: number, service: any, obj: any, key: string) {
+  const shared = value;
+  let duplicated = shared;
+  duplicated = service.compute(shared);
+  if (duplicated) {
+    const shared = obj[key];
+    service.client.send(shared);
+    function nested(value: number) {
+      const shared = value;
+      return shared;
+    }
+    nested(shared);
+  }
+  return duplicated;
+}
+
+export function* sameName(value: number) {
+  const shared = value;
+  yield shared;
+  return shared;
+}
+
+export class Box {
+  same(value: number) {
+    const shared = value;
+    return shared;
+  }
+}
+
+export function unsupported({ destructured }: any, ...rest: any[]) {
+  const { local } = destructured;
+  return rest.length + local;
+}
+";
+        let report = mvp4_in_memory_inventory_report(path, source);
+        let core = mvp4_core_declaration_report(path, source);
+        let shared_locals = report
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.node_kind == MicroNodeKind::LocalBinding
+                    && candidate.name_or_literal == "shared"
+            })
+            .collect::<Vec<_>>();
+        let value_parameters = report
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.node_kind == MicroNodeKind::Parameter
+                    && candidate.name_or_literal == "value"
+            })
+            .collect::<Vec<_>>();
+
+        assert!(report.eligible);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.stable_id_collision_count, 0);
+        assert_eq!(report.binding_overclaim_count, 0);
+        assert!(shared_locals.len() >= 4, "{shared_locals:?}");
+        assert!(value_parameters.len() >= 3, "{value_parameters:?}");
+        assert_eq!(
+            shared_locals
+                .iter()
+                .map(|candidate| candidate.micro_node_id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            shared_locals.len()
+        );
+        assert_eq!(
+            value_parameters
+                .iter()
+                .map(|candidate| candidate.micro_node_id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            value_parameters.len()
+        );
+        assert!(core.unsupported_boundaries.iter().any(|boundary| {
+            boundary.boundary_kind == "unsupported_parameter_binding"
+                && boundary.claimability == "non_claimable_unsupported_binding_pattern"
+                && boundary.exactness == MicroExactness::Unsupported
+        }));
+        assert!(core.unsupported_boundaries.iter().any(|boundary| {
+            boundary.boundary_kind == "unsupported_local_binding"
+                && boundary.claimability == "non_claimable_unsupported_binding_pattern"
+                && boundary.exactness == MicroExactness::Unsupported
+        }));
+        assert!(report.candidates.iter().all(|candidate| {
+            candidate.symbol_binding_id.is_none()
+                || candidate.node_kind == MicroNodeKind::FunctionFrame
+        }));
+        assert_eq!(report.micro_edge_rows, 0);
+        assert!(!report.flow_proof_activated);
+
+        for path in [
+            "tests/shadowing.test.ts",
+            "src/generated/shadowing.ts",
+            "src/__mocks__/shadowing.ts",
+            "src/shadowing.stub.ts",
+            "src/shadowing.d.ts",
+            "src/shadowing.tsx",
+            "src/shadowing.js",
+            "src/shadowing.jsx",
+        ] {
+            let filtered = mvp4_in_memory_inventory_report(path, source);
+            assert!(!filtered.eligible, "{path}");
+            assert!(filtered.candidates.is_empty(), "{path}");
+            assert_eq!(filtered.production_micro_node_rows, 0, "{path}");
+            assert_eq!(filtered.micro_edge_rows, 0, "{path}");
+        }
+    }
+
+    #[test]
+    fn mvp4_in_memory_cap_behavior_is_explicit_and_deterministic() {
+        let source = "\
+export function capped(value: number, service: any, user: any) {
+  const a = value;
+  const b = value;
+  service.one(a);
+  service.two(b);
+  service.three(a);
+  const direct = user.name;
+  return direct;
+}
+";
+        let mut per_kind = BTreeMap::new();
+        per_kind.insert(MicroNodeKind::FunctionFrame, 1);
+        per_kind.insert(MicroNodeKind::Parameter, 3);
+        per_kind.insert(MicroNodeKind::LocalBinding, 3);
+        per_kind.insert(MicroNodeKind::AssignmentSite, 1);
+        per_kind.insert(MicroNodeKind::ReturnSite, 1);
+        per_kind.insert(MicroNodeKind::CallSite, 2);
+        per_kind.insert(MicroNodeKind::PropertyAccess, 2);
+        let below_policy = Mvp4TypeScriptMicroNodeCapPolicy {
+            max_micro_nodes_per_function: 64,
+            max_micro_nodes_per_file: 64,
+            per_kind_nodes_per_function: per_kind.clone(),
+            max_name_or_literal_bytes: 311,
+            max_parser_recovery_derived_nodes: 8,
+            max_omission_details_in_compact_status: 8,
+        };
+        let below = mvp4_in_memory_inventory_report_with_policy(
+            "src/capped.ts",
+            "export function below(value: number) { const a = value; return a; }\n",
+            &below_policy,
+        );
+        assert_eq!(below.omitted_count, 0);
+        assert_eq!(below.completeness_label, "complete");
+
+        let mut exact_per_kind = per_kind.clone();
+        exact_per_kind.insert(MicroNodeKind::CallSite, 3);
+        exact_per_kind.insert(MicroNodeKind::PropertyAccess, 4);
+        let exact_policy = Mvp4TypeScriptMicroNodeCapPolicy {
+            max_micro_nodes_per_function: 17,
+            max_micro_nodes_per_file: 17,
+            per_kind_nodes_per_function: exact_per_kind,
+            max_name_or_literal_bytes: 311,
+            max_parser_recovery_derived_nodes: 8,
+            max_omission_details_in_compact_status: 8,
+        };
+        let exact =
+            mvp4_in_memory_inventory_report_with_policy("src/capped.ts", source, &exact_policy);
+        assert_eq!(exact.omitted_count, 0, "{exact:?}");
+
+        let over =
+            mvp4_in_memory_inventory_report_with_policy("src/capped.ts", source, &below_policy);
+        let repeat =
+            mvp4_in_memory_inventory_report_with_policy("src/capped.ts", source, &below_policy);
+        assert!(over.omitted_count > 0, "{over:?}");
+        assert!(!over.cap_hits.is_empty(), "{over:?}");
+        assert!(over
+            .cap_hits
+            .iter()
+            .any(|hit| hit.cap_kind == "per_kind_per_function"));
+        assert_eq!(over.completeness_label, "truncated_unknown_completeness");
+        assert_eq!(
+            over.candidates
+                .iter()
+                .map(|candidate| candidate.micro_node_id.clone())
+                .collect::<Vec<_>>(),
+            repeat
+                .candidates
+                .iter()
+                .map(|candidate| candidate.micro_node_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(over.omitted_count, repeat.omitted_count);
+        assert_eq!(over.cap_hits, repeat.cap_hits);
+
+        let file_policy = Mvp4TypeScriptMicroNodeCapPolicy {
+            max_micro_nodes_per_function: 64,
+            max_micro_nodes_per_file: 4,
+            per_kind_nodes_per_function: per_kind,
+            max_name_or_literal_bytes: 20,
+            max_parser_recovery_derived_nodes: 8,
+            max_omission_details_in_compact_status: 8,
+        };
+        let file_over =
+            mvp4_in_memory_inventory_report_with_policy("src/capped.ts", source, &file_policy);
+        assert!(file_over
+            .cap_hits
+            .iter()
+            .any(|hit| hit.cap_kind == "file_total"));
+        assert!(file_over
+            .candidates
+            .iter()
+            .all(|candidate| candidate.name_or_literal.len() <= 20));
+        assert_eq!(file_over.duplicate_candidate_count, 0);
+        assert_eq!(file_over.stable_id_collision_count, 0);
+    }
+
+    #[test]
+    fn mvp4_in_memory_recovery_candidates_are_downgraded_and_bounded() {
+        let source = "\
+export function broken(value: number, service: any) {
+  const very_long_identifier_name_that_exceeds_the_test_bound_because_it_keeps_going = value;
+  service.send(value);
+  value =
+  return value;
+}
+";
+        let mut policy = mvp4_typescript_first_slice_cap_policy();
+        policy.max_name_or_literal_bytes = 32;
+        policy.max_parser_recovery_derived_nodes = 1;
+        let report = mvp4_in_memory_inventory_report_with_policy("src/broken.ts", source, &policy);
+
+        assert!(report.eligible);
+        assert_eq!(report.parser_status, "parsed_with_syntax_diagnostics");
+        assert!(report.candidates.iter().any(|candidate| {
+            candidate.parse_recovery
+                && candidate.exactness == MicroExactness::Unknown
+                && candidate.claimability == "non_claimable_recovery_candidate"
+        }));
+        assert!(report
+            .candidates
+            .iter()
+            .all(|candidate| candidate.name_or_literal.len() <= 32));
+        assert!(report.omitted_count > 0, "{report:?}");
+        assert!(report
+            .cap_hits
+            .iter()
+            .any(|hit| hit.cap_kind == "parser_recovery"));
+        assert_eq!(report.claimable_node_missing_span_count, 0);
+        assert_eq!(report.binding_overclaim_count, 0);
+        assert_eq!(report.micro_edge_rows, 0);
+        assert!(!report.flow_proof_activated);
     }
 
     fn import_entity<'a>(

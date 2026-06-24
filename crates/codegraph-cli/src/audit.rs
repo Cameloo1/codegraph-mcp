@@ -12,11 +12,12 @@ use codegraph_index::{
     IndexBuildMode, IndexOptions, IndexScopeOptions, StorageMode,
 };
 use codegraph_parser::{content_hash, detect_language};
+use codegraph_store::{GraphStore, SqliteGraphStore};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::storage_budget;
+use crate::{mvp4_micro_node_proof_boundary_json, storage_budget};
 
 const AUDIT_SCHEMA_VERSION: u32 = 1;
 const LABEL_SCHEMA_VERSION: u32 = 1;
@@ -106,7 +107,7 @@ const MOCK_RELATIONS: &[&str] = &["MOCKS", "STUBS"];
 pub fn run_audit_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(
-            "Usage: codegraph-mcp audit <index-scope|vector-chunks|storage|storage-micro|schema-check|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
+            "Usage: codegraph-mcp audit <index-scope|vector-chunks|storage|storage-micro|schema-check|micro-nodes|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
         );
     };
 
@@ -118,6 +119,9 @@ pub fn run_audit_command(args: &[String]) -> Result<Value, String> {
         "storage" | "storage-forensics" => run_storage_command(&args[1..]),
         "storage-micro" | "storage_micro" => run_storage_micro_command(&args[1..]),
         "schema-check" | "schema" | "validate-schema" => run_schema_check_command(&args[1..]),
+        "micro-nodes" | "micro_nodes" | "mvp4-micro-nodes" | "mvp4_micro_nodes" => {
+            run_micro_nodes_command(&args[1..])
+        }
         "storage-experiments" | "storage-experiment" => run_storage_experiments_command(&args[1..]),
         "sample-edges" | "edge-sample" => run_sample_edges_command(&args[1..]),
         "sample-paths" | "path-sample" => run_sample_paths_command(&args[1..]),
@@ -133,6 +137,14 @@ struct StorageOptions {
     db_path: PathBuf,
     json_path: Option<PathBuf>,
     markdown_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct MicroNodesOptions {
+    db_path: PathBuf,
+    json_path: Option<PathBuf>,
+    markdown_path: Option<PathBuf>,
+    sample_limit: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -3594,6 +3606,143 @@ fn run_schema_check_command(args: &[String]) -> Result<Value, String> {
     }))
 }
 
+fn run_micro_nodes_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_micro_nodes_options(args)?;
+    let before = db_file_snapshot(&options.db_path);
+    let store = SqliteGraphStore::open_read_only(&options.db_path).map_err(|error| {
+        format!(
+            "failed to open {} read-only: {error}",
+            options.db_path.display()
+        )
+    })?;
+    let schema_version = store.schema_version().map_err(|error| error.to_string())?;
+    let report = if !store
+        .table_exists("ast_micro_nodes")
+        .map_err(|error| error.to_string())?
+    {
+        json!({
+            "status": "unavailable",
+            "audit": "micro_nodes",
+            "db_path": path_string(&options.db_path),
+            "schema_version": schema_version,
+            "feature_status": "unavailable",
+            "reason": "ast_micro_nodes table missing",
+            "total_rows": 0,
+            "sample_count": 0,
+            "sample_limit": options.sample_limit,
+            "default_full_table_scan": false,
+            "full_source_body_output": false,
+            "graph_claimability_micro_node_availability_separate": true,
+            "proof_boundary": mvp4_micro_node_proof_boundary_json(),
+        })
+    } else if !store
+        .sparse_sidecar_schema_ready()
+        .map_err(|error| error.to_string())?
+    {
+        json!({
+            "status": "unavailable",
+            "audit": "micro_nodes",
+            "db_path": path_string(&options.db_path),
+            "schema_version": schema_version,
+            "feature_status": "unavailable",
+            "reason": "sparse sidecar schema incomplete",
+            "total_rows": 0,
+            "sample_count": 0,
+            "sample_limit": options.sample_limit,
+            "default_full_table_scan": false,
+            "full_source_body_output": false,
+            "graph_claimability_micro_node_availability_separate": true,
+            "proof_boundary": mvp4_micro_node_proof_boundary_json(),
+        })
+    } else {
+        let summary = store
+            .ast_micro_node_visibility_summary(options.sample_limit)
+            .map_err(|error| error.to_string())?;
+        let status = if summary.total_rows == 0 {
+            "not_applicable"
+        } else if summary.cap_hit_count > 0 {
+            "truncated"
+        } else {
+            "ready"
+        };
+        json!({
+            "status": status,
+            "audit": "micro_nodes",
+            "db_path": path_string(&options.db_path),
+            "schema_version": schema_version,
+            "feature_status": status,
+            "supported_language_slice": "typescript_ts_production_function_local_micro_nodes_v1",
+            "total_rows": summary.total_rows,
+            "rows_by_node_kind": summary.rows_by_node_kind,
+            "rows_by_language": summary.rows_by_language,
+            "rows_by_source_role": summary.rows_by_source_role,
+            "files_represented": summary.files_represented,
+            "functions_represented": summary.functions_represented,
+            "row_schema_versions": summary.row_schema_versions,
+            "payload_versions": summary.payload_versions,
+            "extraction_versions": summary.extraction_versions,
+            "exactness_counts": summary.exactness_counts,
+            "claimability_counts": summary.claimability_counts,
+            "truncated_file_count": summary.truncated_file_count,
+            "truncated_function_count": summary.truncated_function_count,
+            "cap_hit_count": summary.cap_hit_count,
+            "omitted_count": summary.omitted_count,
+            "cap_hit_details": summary.cap_hit_details,
+            "sidecar_table_bytes": summary.estimated_payload_bytes,
+            "sidecar_table_bytes_measurement": "estimated_row_payload_bytes",
+            "sample_limit": summary.sample_limit,
+            "sample_count": summary.sample.len(),
+            "sample": summary.sample,
+            "query_plan": summary.query_plan,
+            "default_full_table_scan": summary.default_full_table_scan,
+            "full_source_body_output": summary.full_source_body_output,
+            "graph_claimability_micro_node_availability_separate": true,
+            "proof_boundary": mvp4_micro_node_proof_boundary_json(),
+        })
+    };
+    drop(store);
+    let after = db_file_snapshot(&options.db_path);
+    let inspection = read_only_inspection_audit(
+        before,
+        after,
+        "sqlite_store_open_read_only_query_only".to_string(),
+        false,
+        "SqliteGraphStore::open_read_only used for bounded MVP4.1 micro-node inspection"
+            .to_string(),
+    );
+    let mut value = report;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "read_only_inspection".to_string(),
+            serde_json::to_value(&inspection).map_err(|error| error.to_string())?,
+        );
+        object.insert(
+            "artifact_mutated_during_inspection".to_string(),
+            json!(inspection.artifact_mutated_during_inspection),
+        );
+        object.insert(
+            "sidecar_only_change".to_string(),
+            json!(inspection.sidecar_only_change),
+        );
+        object.insert(
+            "json_output".to_string(),
+            json!(options.json_path.as_ref().map(path_string)),
+        );
+        object.insert(
+            "markdown_output".to_string(),
+            json!(options.markdown_path.as_ref().map(path_string)),
+        );
+    }
+    let markdown = render_micro_nodes_markdown(&value);
+    write_optional_outputs(
+        &value,
+        &markdown,
+        &options.json_path,
+        &options.markdown_path,
+    )?;
+    Ok(value)
+}
+
 fn run_storage_experiments_command(args: &[String]) -> Result<Value, String> {
     let options = parse_storage_experiment_options(args)?;
     let report = run_storage_experiments(&options)?;
@@ -3932,6 +4081,34 @@ fn parse_storage_options(args: &[String]) -> Result<StorageOptions, String> {
         db_path,
         json_path,
         markdown_path,
+    })
+}
+
+fn parse_micro_nodes_options(args: &[String]) -> Result<MicroNodesOptions, String> {
+    let mut db_path = default_audit_db_path();
+    let mut json_path = None;
+    let mut markdown_path = None;
+    let mut sample_limit = 20usize;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--db" => db_path = take_path(args, &mut index, "--db")?,
+            "--json" => json_path = Some(take_path(args, &mut index, "--json")?),
+            "--markdown" | "--md" => {
+                markdown_path = Some(take_path(args, &mut index, "--markdown")?)
+            }
+            "--sample" | "--limit" => {
+                sample_limit = take_usize(args, &mut index, "--sample")?.min(100)
+            }
+            value => return Err(format!("unknown audit micro-nodes option: {value}")),
+        }
+        index += 1;
+    }
+    Ok(MicroNodesOptions {
+        db_path,
+        json_path,
+        markdown_path,
+        sample_limit,
     })
 }
 
@@ -10091,6 +10268,38 @@ fn render_schema_validation_markdown(report: &SchemaValidationReport) -> String 
     output
 }
 
+fn render_micro_nodes_markdown(report: &Value) -> String {
+    let mut output = String::new();
+    output.push_str("# MVP4.1 Micro-Node Visibility\n\n");
+    output.push_str(&format!(
+        "- Status: `{}`\n",
+        report["status"].as_str().unwrap_or("unknown")
+    ));
+    output.push_str(&format!(
+        "- Database: `{}`\n",
+        report["db_path"].as_str().unwrap_or("")
+    ));
+    output.push_str(&format!(
+        "- Total rows: `{}`\n",
+        report["total_rows"].as_u64().unwrap_or(0)
+    ));
+    output.push_str(&format!(
+        "- Sample count: `{}`\n",
+        report["sample_count"].as_u64().unwrap_or(0)
+    ));
+    output.push_str(&format!(
+        "- Full source body output: `{}`\n",
+        report["full_source_body_output"].as_bool().unwrap_or(false)
+    ));
+    output.push_str("\n## Boundary\n\n");
+    output.push_str("- Micro-node existence is not micro-edge or flow proof.\n");
+    output.push_str("- This audit does not activate mutation_proof or flow_proof.\n");
+    output.push_str(
+        "- This audit does not prove route, auth, security, runtime, or complete function behavior.\n",
+    );
+    output
+}
+
 fn render_storage_experiments_markdown(report: &StorageExperimentReport) -> String {
     let mut output = String::new();
     output.push_str("# Storage Experiments\n\n");
@@ -11901,6 +12110,12 @@ fn default_audit_db_path() -> PathBuf {
 
 fn take_path(args: &[String], index: &mut usize, flag: &str) -> Result<PathBuf, String> {
     take_value(args, index, flag).map(PathBuf::from)
+}
+
+fn take_usize(args: &[String], index: &mut usize, flag: &str) -> Result<usize, String> {
+    let raw = take_value(args, index, flag)?;
+    raw.parse::<usize>()
+        .map_err(|error| format!("invalid {flag} value {raw}: {error}"))
 }
 
 fn take_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, String> {

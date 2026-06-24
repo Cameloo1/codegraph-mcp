@@ -3,8 +3,8 @@
 This document defines the compact agent JSON contract for stable
 `--agent-json` and compact lifecycle output modes. The schemas are public,
 machine-readable contracts, and Rust regression tests assert that emitted agent
-JSON includes the required top-level fields and stays under documented size
-targets.
+JSON includes the required top-level fields. Size targets are compact-output
+goals with known current exceptions called out below.
 
 Schema files live in `docs/schemas/agent-json/`:
 
@@ -121,7 +121,8 @@ from compact agent JSON by default.
 
 ## Size Guards
 
-Regression tests enforce these default size targets:
+Compact modes target these default sizes where the current implementation has
+size guards:
 
 - `index_agent_json`: 4 KiB
 - query agent JSON surfaces: 12 KiB
@@ -131,6 +132,15 @@ Regression tests enforce these default size targets:
   `agent-use` namespace): 12 KiB by default. Compaction preserves the
   schema-required fields and trims optional diagnostic sections first; the
   `--explain` and audit modes raise this bound for richer output.
+
+Current release verification found known over-budget exceptions: plain
+`query path --agent-json` can exceed compact targets without byte-budget
+metadata, `agent-use query path` and `agent-use query unresolved-calls` can
+exceed the 12 KiB default target while preserving required safety fields, and
+`agent-use validate-edit --explain` / `--audit-json` are large diagnostic
+packets rather than tight-loop compact packets. Consumers must parse
+`truncation`, budget, warning, lifecycle, and claimability fields instead of
+assuming byte size alone proves whether output is safe or complete.
 
 Agent JSON must not include non-empty `scope.included_examples` or
 `scope.excluded_examples` arrays. Scope examples and full audit payloads remain
@@ -142,14 +152,14 @@ available through explicit audit/verbose flags.
 truncation metadata without audit-grade scope examples by default.
 
 `query_symbols_agent_json`, `query_text_agent_json`, and
-`query_files_agent_json` return bounded result arrays with source spans where
+`query_files_agent_json` return result-limited arrays with source spans where
 available and compact lifecycle/truncation metadata.
 
 `callers_callees_agent_json` returns bounded call edges, resolved-entity
 metadata when available, source spans, exactness/confidence labels, and evidence
 roles.
 
-`query_unresolved_calls_agent_json` returns bounded unresolved-reference lane
+`query_unresolved_calls_agent_json` returns limited unresolved-reference lane
 rows plus lifecycle, claimability, and pagination state. It may include a
 legacy `calls` array, but the stable MVP3 release contract is the
 `unresolved_references` block with `filters`, `items`, `rows`,

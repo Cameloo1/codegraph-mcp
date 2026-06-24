@@ -23,8 +23,22 @@ pub use dirty_evidence::{
     DIRTY_EVIDENCE_REGISTRY_SCHEMA_VERSION, PROOF_LADDER_INVALIDATION_CONTRACT_SCHEMA_VERSION,
 };
 pub use ids::{
+    classify_micro_identity_change, decide_local_returns_to_exactness,
+    local_returns_to_identity_input, micro_source_roles_allow_local_production_proof,
     normalize_repo_relative_path, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
-    stable_fact_hash, stable_fact_identity_key,
+    stable_fact_hash, stable_fact_identity_key, stable_micro_edge_id, stable_micro_node_id,
+    stable_micro_packet_id, stable_route_bridge_identity_id, validate_micro_fact_provenance,
+    LocalReturnsToCapContract, LocalReturnsToContract, LocalReturnsToExactnessDecision,
+    LocalReturnsToExactnessInput, LocalReturnsToExactnessRequirement,
+    LocalReturnsToIdentityContractInput, LocalReturnsToIntegrityFindingKind,
+    LocalReturnsToLinterClass, LocalReturnsToSourceDeltaKind,
+    LocalReturnsToUnsupportedConditionKind, MicroDerivationKind, MicroEdgeIdentityInput,
+    MicroEdgeKind, MicroEdgeLayerState, MicroExactness, MicroFactProvenance,
+    MicroIdentityChangeKind, MicroIdentityStability, MicroNodeIdentityInput, MicroNodeKind,
+    MicroPacketIdentityInput, MicroProvenanceError, MicroSourceRole, RouteBridgeIdentityInput,
+    RouteBridgeIdentityKind, LOCAL_RETURNS_TO_CAP_CONTRACT, LOCAL_RETURNS_TO_CONTRACT,
+    LOCAL_RETURNS_TO_FORBIDDEN_INTERPRETATIONS, MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+    MVP4_2_MICRO_EDGE_PAYLOAD_VERSION, MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
 };
 pub use kinds::{
     EdgeClass, EdgeContext, EntityKind, EvidenceRole, Exactness, ParseEnumError, RelationKind,
@@ -32,11 +46,11 @@ pub use kinds::{
 pub use model::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
     entity_kind_defines_symbol, infer_edge_class, infer_edge_context,
-    normalize_edge_classification, ContextPacket,
-    ContextSnippet, DerivedClosureEdge, Edge, Entity, EvidenceRoleDecision, FileRecord, Metadata,
-    PathEvidence, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
-    RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
-    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
+    normalize_edge_classification, ContextPacket, ContextSnippet, DerivedClosureEdge, Edge, Entity,
+    EvidenceRoleDecision, FileRecord, Metadata, PathEvidence, RepoIndexState, RetrievalCandidate,
+    RetrievalCandidateLifecycleBinding, RetrievalCandidateLifecycleStatus,
+    RetrievalCandidateSource, RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
+    VectorEmbeddingSource,
 };
 pub use normalized::{
     classify_normalized_fact_changes, NormalizedClaimabilityMetadata, NormalizedEdgeFact,

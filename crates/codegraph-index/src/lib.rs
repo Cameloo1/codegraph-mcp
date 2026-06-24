@@ -26,26 +26,27 @@ use std::{
 use codegraph_core::{
     classify_entity_source_role, normalize_repo_relative_path as normalize_graph_path,
     stable_edge_id, stable_entity_id_for_kind, Edge, EdgeClass, EdgeContext, Entity, EntityKind,
-    EvidenceRole, Exactness, FileRecord, Metadata, NormalizedClaimabilityMetadata,
+    EvidenceRole, Exactness, FileRecord, Metadata, MicroNodeKind, NormalizedClaimabilityMetadata,
     NormalizedEdgeFact, NormalizedEntityFact, NormalizedFactEnvelope, NormalizedFactOmission,
     NormalizedFileFact, NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact,
     NormalizedSourceRoleFact, NormalizedSourceSpanFact, NormalizedTextEvidenceFact,
-    NormalizedUnresolvedReferenceFact, PathEvidence,
-    RelationKind, RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
-    RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
-    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
+    NormalizedUnresolvedReferenceFact, PathEvidence, RelationKind, RepoIndexState,
+    RetrievalCandidate, RetrievalCandidateLifecycleBinding, RetrievalCandidateLifecycleStatus,
+    RetrievalCandidateSource, RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
+    VectorEmbeddingSource,
 };
 use codegraph_parser::{
-    content_hash, detect_language, extract_entities_and_relations, BasicExtraction, LanguageParser,
-    TreeSitterParser,
+    content_hash, detect_language, emit_mvp4_typescript_in_memory_first_slice_inventory,
+    extract_entities_and_relations, BasicExtraction, LanguageParser,
+    Mvp4TypeScriptMicroNodeCandidate, Mvp4TypeScriptMicroNodeCapHit, TreeSitterParser,
 };
 use codegraph_query::{
     is_proof_path_relation, ExactGraphQueryEngine, GraphPath, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
-    classify_sqlite_access_problem, inspect_db_preflight, DbPassport, DbPreflightReport,
-    ExpectedDbPassport, GraphStore, SqliteGraphStore, StoreError, DB_PASSPORT_VERSION,
-    SCHEMA_VERSION,
+    classify_sqlite_access_problem, inspect_db_preflight, AstMicroNodeRow, DbPassport,
+    DbPreflightReport, ExpectedDbPassport, GraphStore, SqliteGraphStore, StoreError,
+    DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
 use codegraph_vector::{
@@ -71,6 +72,11 @@ const DERIVED_DATAFLOW_CLOSURE_MAX_OUTPUT_EDGES: usize = 100_000;
 const DERIVED_DATAFLOW_CLOSURE_MAX_HOPS_PER_NODE: usize = 64;
 pub const DEFAULT_INDEX_BATCH_MAX_FILES: usize = 128;
 pub const DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+const MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION: u32 = 1;
+const MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION: u32 = 1;
+const MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION: &str = "mvp4.1-typescript-micro-nodes-v1";
+const MVP4_1_MICRO_NODE_CAP_HIT_WARNING_KIND: &str = "mvp4_1_micro_node_cap_hit";
+const MVP4_1_MICRO_NODE_CAP_HIT_WARNING_PREFIX: &str = "mvp4_1_micro_node_cap_hit:";
 pub const DEFAULT_GRAPH_OUTPUT_MAX_ENTITIES_PER_FILE: usize = 10_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_EDGES_PER_FILE: usize = 20_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE: usize = 20_000;
@@ -96,8 +102,7 @@ pub const DEFAULT_GRAPH_OUTPUT_MAX_GENERATED_TEST_SOURCE_BYTES_PER_FILE: usize =
 pub const DEFAULT_GRAPH_OUTPUT_MAX_SOURCE_BYTES_PER_FILE_BEFORE_DEGRADE: usize = 2 * 1024 * 1024;
 const GRAPH_OUTPUT_BUDGET_REPORTED_HIT_LIMIT: usize = 16;
 pub const UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE: usize = 256;
-pub const UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING: &str =
-    "unresolved_reference_lane_truncated";
+pub const UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING: &str = "unresolved_reference_lane_truncated";
 pub const DEFAULT_STORAGE_POLICY: &str = "proof:compact-proof-graph";
 pub const FILE_LIFECYCLE_STATE_KEY: &str = "file_lifecycle_state";
 pub const FILE_LIFECYCLE_STATE_CURRENT: &str = "current";
@@ -5057,16 +5062,6 @@ fn collect_normalized_facts_for_path(
     }
 
     if options.include_unresolved_references {
-        // Forward-hallucination detection reads NEW unresolved references from
-        // this snapshot's delta. The lane is already capped per file
-        // (UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE), so give it a DEDICATED
-        // budget: the shared per-path fact budget is spent on entities and the
-        // (bulk) edge facts read earlier, which on fact-dense files starves the
-        // unresolved lane out of the snapshot and makes the forward check go
-        // SILENTLY blind (validate-edit `new_count=0`, `status=ok` on a file
-        // with a genuinely new hallucinated call) — 2026-06-18 stress test, Q8 1d.
-        let mut unresolved_budget =
-            SnapshotPathBudget::new(UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE.max(1));
         for record in store.list_unresolved_references_by_file(repo_relative_path)? {
             let reference_class = record
                 .metadata
@@ -5075,7 +5070,7 @@ fn collect_normalized_facts_for_path(
                 .unwrap_or(REFERENCE_CLASS_DYNAMIC_OR_COMPUTED)
                 .to_string();
             push_fact(
-                &mut unresolved_budget,
+                budget,
                 facts,
                 NormalizedUnresolvedReferenceFact::new(
                     record.reference_id,
@@ -6272,6 +6267,14 @@ pub struct LocalFactBundle {
     pub unresolved_references: Vec<LocalFactReference>,
     pub source_spans: Vec<SourceSpan>,
     pub extraction_warnings: Vec<String>,
+    #[serde(default)]
+    pub mvp4_micro_nodes: Vec<Mvp4TypeScriptMicroNodeCandidate>,
+    #[serde(default)]
+    pub mvp4_micro_node_omitted_count: u64,
+    #[serde(default)]
+    pub mvp4_micro_node_cap_hits: Vec<Mvp4TypeScriptMicroNodeCapHit>,
+    #[serde(default)]
+    pub mvp4_micro_node_completeness_label: String,
     pub extraction: BasicExtraction,
 }
 
@@ -6285,6 +6288,10 @@ impl LocalFactBundle {
         duplicate_of: Option<String>,
         template_required: bool,
         extraction: BasicExtraction,
+        mvp4_micro_nodes: Vec<Mvp4TypeScriptMicroNodeCandidate>,
+        mvp4_micro_node_omitted_count: u64,
+        mvp4_micro_node_cap_hits: Vec<Mvp4TypeScriptMicroNodeCapHit>,
+        mvp4_micro_node_completeness_label: String,
     ) -> Self {
         let mut declarations = extraction
             .entities
@@ -6389,6 +6396,10 @@ impl LocalFactBundle {
             unresolved_references,
             source_spans,
             extraction_warnings,
+            mvp4_micro_nodes,
+            mvp4_micro_node_omitted_count,
+            mvp4_micro_node_cap_hits,
+            mvp4_micro_node_completeness_label,
             extraction,
         }
     }
@@ -11752,8 +11763,14 @@ fn process_index_batch(
     for failed in &failed_paths {
         store.delete_facts_for_file(failed)?;
     }
-    let persisted =
-        persist_reduced_index_plan(store, reduced_plan, indexed_at, options, classifier, profile)?;
+    let persisted = persist_reduced_index_plan(
+        store,
+        reduced_plan,
+        indexed_at,
+        options,
+        classifier,
+        profile,
+    )?;
     let db_write_ms = db_start.elapsed().as_millis();
 
     summary.files_indexed += persisted.files;
@@ -11850,8 +11867,14 @@ fn persist_reduced_index_plan(
     classifier: &UnresolvedReferenceClassifier,
     profile: &mut IndexPhaseRecorder,
 ) -> Result<PersistedBatchSummary, StoreError> {
-    let mut summary =
-        persist_local_fact_bundles(store, plan.bundles, indexed_at, options, classifier, profile)?;
+    let mut summary = persist_local_fact_bundles(
+        store,
+        plan.bundles,
+        indexed_at,
+        options,
+        classifier,
+        profile,
+    )?;
     let global_summary =
         persist_global_fact_reduction_plan(store, plan.global_facts, options, profile)?;
     summary.entities += global_summary.entities_inserted;
@@ -11959,6 +11982,188 @@ fn validate_derived_edge_provenance(edge: &Edge) -> Result<(), StoreError> {
             edge.id
         )));
     }
+    Ok(())
+}
+
+fn is_mvp4_1_authorized_micro_node_kind(kind: MicroNodeKind) -> bool {
+    matches!(
+        kind,
+        MicroNodeKind::FunctionFrame
+            | MicroNodeKind::Parameter
+            | MicroNodeKind::LocalBinding
+            | MicroNodeKind::AssignmentSite
+            | MicroNodeKind::ReturnSite
+            | MicroNodeKind::CallSite
+            | MicroNodeKind::PropertyAccess
+    )
+}
+
+fn persist_mvp4_1_ast_micro_nodes_for_file(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    file_hash: Option<&str>,
+    candidates: &[Mvp4TypeScriptMicroNodeCandidate],
+    omitted_count: u64,
+    cap_hits: &[Mvp4TypeScriptMicroNodeCapHit],
+    completeness_label: &str,
+    profile: &mut IndexPhaseRecorder,
+) -> Result<usize, StoreError> {
+    let mut inserted = 0usize;
+    let mut seen = BTreeSet::new();
+    let file_id = normalize_graph_path(repo_relative_path);
+    for candidate in candidates {
+        if candidate.source_role.as_str() != "production" {
+            continue;
+        }
+        if !is_mvp4_1_authorized_micro_node_kind(candidate.node_kind) {
+            continue;
+        }
+        if candidate.language != "typescript" {
+            continue;
+        }
+        if candidate.row_schema_version != MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION {
+            return Err(StoreError::Message(format!(
+                "mvp4.1 micro-node row schema drift for {}: got {}, expected {}",
+                candidate.micro_node_id,
+                candidate.row_schema_version,
+                MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION
+            )));
+        }
+        if candidate.payload_version != MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION {
+            return Err(StoreError::Message(format!(
+                "mvp4.1 micro-node payload version drift for {}: got {}, expected {}",
+                candidate.micro_node_id,
+                candidate.payload_version,
+                MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION
+            )));
+        }
+        if candidate.extraction_version != MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION {
+            return Err(StoreError::Message(format!(
+                "mvp4.1 micro-node extraction version drift for {}: got {}, expected {}",
+                candidate.micro_node_id,
+                candidate.extraction_version,
+                MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION
+            )));
+        }
+        if normalize_graph_path(&candidate.repo_relative_path) != file_id {
+            return Err(StoreError::Message(format!(
+                "mvp4.1 micro-node {} file mismatch: candidate {}, bundle {}",
+                candidate.micro_node_id, candidate.repo_relative_path, file_id
+            )));
+        }
+        if normalize_graph_path(&candidate.source_span.repo_relative_path) != file_id {
+            return Err(StoreError::Message(format!(
+                "mvp4.1 micro-node {} source span path mismatch: span {}, bundle {}",
+                candidate.micro_node_id, candidate.source_span.repo_relative_path, file_id
+            )));
+        }
+        if !seen.insert(candidate.micro_node_id.as_str()) {
+            return Err(StoreError::Message(format!(
+                "duplicate mvp4.1 micro-node candidate id {}",
+                candidate.micro_node_id
+            )));
+        }
+
+        let source_span_start = Instant::now();
+        writer.insert_source_span_after_file_delete(
+            &candidate.micro_node_id,
+            &candidate.source_span,
+        )?;
+        profile.add_duration(
+            "mvp4_1_micro_node_source_span_insert",
+            source_span_start.elapsed(),
+            1,
+            1,
+        );
+
+        let row = AstMicroNodeRow {
+            micro_node_id: candidate.micro_node_id.clone(),
+            file_id: file_id.clone(),
+            function_entity_id: candidate
+                .function_entity_id
+                .clone()
+                .or_else(|| Some(candidate.enclosing_function_identity.clone())),
+            scope_entity_id: None,
+            micro_kind: candidate.node_kind.as_str().to_string(),
+            symbol: if candidate.name_or_literal.is_empty() {
+                None
+            } else {
+                Some(candidate.name_or_literal.clone())
+            },
+            source_span_id: candidate.micro_node_id.clone(),
+            schema_version: candidate.row_schema_version,
+            extraction_version: candidate.extraction_version.clone(),
+            exactness: candidate.exactness.as_str().to_string(),
+            provenance_id: Some(candidate.micro_node_id.clone()),
+            source_role: candidate.source_role.as_str().to_string(),
+            language: candidate.language.clone(),
+            payload_version: candidate.payload_version,
+            claimability: candidate.claimability.clone(),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+        let insert_start = Instant::now();
+        writer.insert_ast_micro_node(&row)?;
+        profile.add_duration("mvp4_1_micro_node_insert", insert_start.elapsed(), 1, 1);
+        inserted += 1;
+    }
+    persist_mvp4_1_micro_node_cap_warning(
+        writer,
+        repo_relative_path,
+        file_hash,
+        omitted_count,
+        cap_hits,
+        completeness_label,
+        profile,
+    )?;
+    Ok(inserted)
+}
+
+fn persist_mvp4_1_micro_node_cap_warning(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    file_hash: Option<&str>,
+    omitted_count: u64,
+    cap_hits: &[Mvp4TypeScriptMicroNodeCapHit],
+    completeness_label: &str,
+    profile: &mut IndexPhaseRecorder,
+) -> Result<(), StoreError> {
+    if omitted_count == 0 && cap_hits.is_empty() {
+        return Ok(());
+    }
+
+    let truncated_functions = cap_hits
+        .iter()
+        .filter_map(|hit| hit.function_identity.as_deref())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let metadata = json!({
+        "fact_class": "extraction_warning",
+        "warning_kind": MVP4_1_MICRO_NODE_CAP_HIT_WARNING_KIND,
+        "repo_relative_path": normalize_graph_path(repo_relative_path),
+        "omitted_count": omitted_count,
+        "cap_hit_count": cap_hits.len(),
+        "truncated_function_count": truncated_functions,
+        "completeness_label": completeness_label,
+        "cap_hits": cap_hits,
+        "not_micro_edge_or_flow_proof": true,
+        "mutation_proof_activated": false,
+        "flow_proof_activated": false,
+    });
+    let start = Instant::now();
+    writer.insert_extraction_warning_after_file_delete(
+        repo_relative_path,
+        file_hash,
+        &format!(
+            "{MVP4_1_MICRO_NODE_CAP_HIT_WARNING_PREFIX} omitted {omitted_count} TypeScript micro-node candidates"
+        ),
+        &metadata,
+    )?;
+    profile.add_duration(
+        "mvp4_1_micro_node_cap_warning_insert",
+        start.elapsed(),
+        1,
+        1,
+    );
     Ok(())
 }
 
@@ -12296,6 +12501,17 @@ fn persist_local_fact_bundles(
             entity_count += 1;
         }
 
+        persist_mvp4_1_ast_micro_nodes_for_file(
+            store,
+            &indexed.repo_relative_path,
+            Some(&indexed.file_hash),
+            &indexed.mvp4_micro_nodes,
+            indexed.mvp4_micro_node_omitted_count,
+            &indexed.mvp4_micro_node_cap_hits,
+            &indexed.mvp4_micro_node_completeness_label,
+            profile,
+        )?;
+
         let preparation_start = Instant::now();
         let proof_edges = extraction
             .edges
@@ -12332,62 +12548,319 @@ pub const REFERENCE_CLASS_DYNAMIC_OR_COMPUTED: &str = "dynamic_or_computed";
 
 const RUST_STD_ROOTS: &[&str] = &["std", "core", "alloc"];
 const RUST_BUILTIN_MACROS: &[&str] = &[
-    "println", "print", "eprintln", "eprint", "format", "vec", "panic", "assert", "assert_eq",
-    "assert_ne", "debug_assert", "write", "writeln", "todo", "unimplemented", "unreachable",
-    "dbg", "matches", "include_str", "include_bytes", "env", "option_env", "concat", "stringify",
-    "cfg", "line", "file", "column", "compile_error", "format_args",
-];
-/// Rust prelude value/type/trait names that appear BARE (no `std::`/`core::`
-/// path prefix) and so are not caught by RUST_STD_ROOTS. Without this,
-/// `Ok(...)`/`Some(...)`/`Vec::new()` classify as repo_local_candidate and
-/// escalate as false-positive "likely hallucinated symbol" warnings on
-/// ordinary edits (2026-06-18 stress test, Q9).
-const RUST_PRELUDE: &[&str] = &[
-    "Ok", "Err", "Some", "None", "Option", "Result", "Vec", "String", "Box", "Copy", "Clone",
-    "Debug", "Default", "Drop", "Eq", "PartialEq", "Ord", "PartialOrd", "Hash", "From", "Into",
-    "TryFrom", "TryInto", "AsRef", "AsMut", "Iterator", "IntoIterator", "Send", "Sync", "Sized",
-    "ToString", "ToOwned",
+    "println",
+    "print",
+    "eprintln",
+    "eprint",
+    "format",
+    "vec",
+    "panic",
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
+    "write",
+    "writeln",
+    "todo",
+    "unimplemented",
+    "unreachable",
+    "dbg",
+    "matches",
+    "include_str",
+    "include_bytes",
+    "env",
+    "option_env",
+    "concat",
+    "stringify",
+    "cfg",
+    "line",
+    "file",
+    "column",
+    "compile_error",
+    "format_args",
 ];
 const PYTHON_BUILTINS_AND_STDLIB: &[&str] = &[
-    "print", "len", "range", "str", "int", "float", "bool", "list", "dict", "set", "tuple",
-    "open", "isinstance", "issubclass", "super", "enumerate", "zip", "map", "filter", "sorted",
-    "reversed", "min", "max", "sum", "abs", "round", "type", "getattr", "setattr", "hasattr",
-    "delattr", "repr", "hash", "id", "iter", "next", "vars", "dir", "input", "format", "any",
-    "all", "divmod", "pow", "ord", "chr", "bytes", "bytearray", "frozenset", "slice", "object",
-    "staticmethod", "classmethod", "property", "callable", "exec", "eval", "compile", "globals",
-    "locals", "breakpoint", "os", "sys", "re", "json", "math", "time", "datetime", "typing",
-    "collections", "itertools", "functools", "pathlib", "logging", "subprocess", "threading",
-    "asyncio", "unittest", "random", "string", "io", "csv", "copy", "pickle", "hashlib",
-    "base64", "struct", "socket", "shutil", "tempfile", "glob", "argparse", "enum", "abc",
-    "dataclasses", "contextlib", "traceback", "warnings", "uuid", "inspect", "operator",
-    "sqlite3", "urllib", "http", "textwrap", "pprint", "secrets", "statistics", "decimal",
-    "multiprocessing", "concurrent", "signal", "platform", "ctypes", "errno", "mmap",
+    "print",
+    "len",
+    "range",
+    "str",
+    "int",
+    "float",
+    "bool",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "open",
+    "isinstance",
+    "issubclass",
+    "super",
+    "enumerate",
+    "zip",
+    "map",
+    "filter",
+    "sorted",
+    "reversed",
+    "min",
+    "max",
+    "sum",
+    "abs",
+    "round",
+    "type",
+    "getattr",
+    "setattr",
+    "hasattr",
+    "delattr",
+    "repr",
+    "hash",
+    "id",
+    "iter",
+    "next",
+    "vars",
+    "dir",
+    "input",
+    "format",
+    "any",
+    "all",
+    "divmod",
+    "pow",
+    "ord",
+    "chr",
+    "bytes",
+    "bytearray",
+    "frozenset",
+    "slice",
+    "object",
+    "staticmethod",
+    "classmethod",
+    "property",
+    "callable",
+    "exec",
+    "eval",
+    "compile",
+    "globals",
+    "locals",
+    "breakpoint",
+    "os",
+    "sys",
+    "re",
+    "json",
+    "math",
+    "time",
+    "datetime",
+    "typing",
+    "collections",
+    "itertools",
+    "functools",
+    "pathlib",
+    "logging",
+    "subprocess",
+    "threading",
+    "asyncio",
+    "unittest",
+    "random",
+    "string",
+    "io",
+    "csv",
+    "copy",
+    "pickle",
+    "hashlib",
+    "base64",
+    "struct",
+    "socket",
+    "shutil",
+    "tempfile",
+    "glob",
+    "argparse",
+    "enum",
+    "abc",
+    "dataclasses",
+    "contextlib",
+    "traceback",
+    "warnings",
+    "uuid",
+    "inspect",
+    "operator",
+    "sqlite3",
+    "urllib",
+    "http",
+    "textwrap",
+    "pprint",
+    "secrets",
+    "statistics",
+    "decimal",
+    "multiprocessing",
+    "concurrent",
+    "signal",
+    "platform",
+    "ctypes",
+    "errno",
+    "mmap",
 ];
 const JS_TS_BUILTIN_ROOTS: &[&str] = &[
-    "console", "JSON", "Math", "Object", "Array", "Promise", "Reflect", "Proxy", "Symbol",
-    "String", "Number", "Boolean", "Date", "RegExp", "Error", "TypeError", "RangeError",
-    "SyntaxError", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "Intl", "globalThis",
-    "window", "document", "navigator", "location", "history", "localStorage", "sessionStorage",
-    "fetch", "atob", "btoa", "parseInt", "parseFloat", "isNaN", "isFinite",
-    "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI", "setTimeout",
-    "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "structuredClone",
-    "requestAnimationFrame", "cancelAnimationFrame", "alert", "confirm", "prompt", "process",
-    "Buffer", "require", "module", "exports", "URL", "URLSearchParams", "TextEncoder",
-    "TextDecoder", "AbortController", "AbortSignal", "Event", "CustomEvent", "EventTarget",
-    "Worker", "Blob", "File", "FormData", "Headers", "Request", "Response", "WebSocket",
-    "crypto", "performance", "BigInt", "Function", "ArrayBuffer", "SharedArrayBuffer",
-    "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array",
-    "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array",
-    "BigUint64Array", "Atomics", "Iterator",
+    "console",
+    "JSON",
+    "Math",
+    "Object",
+    "Array",
+    "Promise",
+    "Reflect",
+    "Proxy",
+    "Symbol",
+    "String",
+    "Number",
+    "Boolean",
+    "Date",
+    "RegExp",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "WeakRef",
+    "Intl",
+    "globalThis",
+    "window",
+    "document",
+    "navigator",
+    "location",
+    "history",
+    "localStorage",
+    "sessionStorage",
+    "fetch",
+    "atob",
+    "btoa",
+    "parseInt",
+    "parseFloat",
+    "isNaN",
+    "isFinite",
+    "encodeURIComponent",
+    "decodeURIComponent",
+    "encodeURI",
+    "decodeURI",
+    "setTimeout",
+    "setInterval",
+    "clearTimeout",
+    "clearInterval",
+    "queueMicrotask",
+    "structuredClone",
+    "requestAnimationFrame",
+    "cancelAnimationFrame",
+    "alert",
+    "confirm",
+    "prompt",
+    "process",
+    "Buffer",
+    "require",
+    "module",
+    "exports",
+    "URL",
+    "URLSearchParams",
+    "TextEncoder",
+    "TextDecoder",
+    "AbortController",
+    "AbortSignal",
+    "Event",
+    "CustomEvent",
+    "EventTarget",
+    "Worker",
+    "Blob",
+    "File",
+    "FormData",
+    "Headers",
+    "Request",
+    "Response",
+    "WebSocket",
+    "crypto",
+    "performance",
+    "BigInt",
+    "Function",
+    "ArrayBuffer",
+    "SharedArrayBuffer",
+    "DataView",
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "Float32Array",
+    "Float64Array",
+    "BigInt64Array",
+    "BigUint64Array",
+    "Atomics",
+    "Iterator",
 ];
 const GO_BUILTINS_AND_STDLIB_ROOTS: &[&str] = &[
-    "len", "cap", "make", "new", "append", "copy", "delete", "panic", "recover", "print",
-    "println", "close", "complex", "real", "imag", "min", "max", "clear", "fmt", "errors",
-    "strings", "strconv", "os", "io", "bufio", "bytes", "time", "math", "sort", "context",
-    "sync", "net", "http", "encoding", "json", "log", "slog", "regexp", "path", "filepath",
-    "reflect", "runtime", "testing", "flag", "unicode", "utf8", "hash", "crypto", "rand",
-    "database", "sql", "template", "url", "mime", "archive", "compress", "container", "image",
-    "signal", "syscall", "unsafe", "slices", "maps", "cmp", "iter",
+    "len",
+    "cap",
+    "make",
+    "new",
+    "append",
+    "copy",
+    "delete",
+    "panic",
+    "recover",
+    "print",
+    "println",
+    "close",
+    "complex",
+    "real",
+    "imag",
+    "min",
+    "max",
+    "clear",
+    "fmt",
+    "errors",
+    "strings",
+    "strconv",
+    "os",
+    "io",
+    "bufio",
+    "bytes",
+    "time",
+    "math",
+    "sort",
+    "context",
+    "sync",
+    "net",
+    "http",
+    "encoding",
+    "json",
+    "log",
+    "slog",
+    "regexp",
+    "path",
+    "filepath",
+    "reflect",
+    "runtime",
+    "testing",
+    "flag",
+    "unicode",
+    "utf8",
+    "hash",
+    "crypto",
+    "rand",
+    "database",
+    "sql",
+    "template",
+    "url",
+    "mime",
+    "archive",
+    "compress",
+    "container",
+    "image",
+    "signal",
+    "syscall",
+    "unsafe",
+    "slices",
+    "maps",
+    "cmp",
+    "iter",
 ];
 
 /// Built once per index/update run. Classifies persisted lane rows into the
@@ -12476,7 +12949,7 @@ impl UnresolvedReferenceClassifier {
 
         match language {
             ReferenceLanguage::Rust => {
-                if RUST_STD_ROOTS.contains(&first) || RUST_PRELUDE.contains(&first) {
+                if RUST_STD_ROOTS.contains(&first) {
                     return REFERENCE_CLASS_BUILTIN_OR_STD;
                 }
             }
@@ -12567,7 +13040,9 @@ impl UnresolvedReferenceClassifier {
             ReferenceLanguage::Other => Vec::new(),
         };
         let exists = candidates.iter().any(|candidate| candidate.is_file());
-        self.sibling_module_memo.borrow_mut().insert(memo_key, exists);
+        self.sibling_module_memo
+            .borrow_mut()
+            .insert(memo_key, exists);
         exists
     }
 }
@@ -12625,13 +13100,24 @@ fn collect_dependency_manifest_paths(dir: &Path, depth: usize, found: &mut Vec<P
         if path.is_dir() {
             if matches!(
                 name.as_ref(),
-                ".git" | "node_modules" | "target" | ".codegraph" | "dist" | "build" | "vendor"
-                    | "__pycache__" | "venv" | ".venv"
+                ".git"
+                    | "node_modules"
+                    | "target"
+                    | ".codegraph"
+                    | "dist"
+                    | "build"
+                    | "vendor"
+                    | "__pycache__"
+                    | "venv"
+                    | ".venv"
             ) {
                 continue;
             }
             collect_dependency_manifest_paths(&path, depth + 1, found);
-        } else if matches!(name.as_ref(), "Cargo.toml" | "package.json" | "pyproject.toml") {
+        } else if matches!(
+            name.as_ref(),
+            "Cargo.toml" | "package.json" | "pyproject.toml"
+        ) {
             found.push(path);
         }
     }
@@ -12742,22 +13228,6 @@ fn unresolved_reference_lane_relation(relation: RelationKind) -> bool {
     )
 }
 
-/// Cap-eviction priority for the unresolved-reference lane (lower = kept first
-/// when a file exceeds the per-file row cap). Repo-local candidates are the
-/// forward-hallucination signal and must survive eviction; known-good
-/// builtin/std and external-dependency references are dropped first
-/// (2026-06-18 stress test, Q8 1a).
-fn unresolved_reference_lane_class_priority(reference_class: &str) -> u8 {
-    match reference_class {
-        REFERENCE_CLASS_REPO_LOCAL_CANDIDATE => 0,
-        REFERENCE_CLASS_MACRO_OR_CODEGEN => 1,
-        REFERENCE_CLASS_DYNAMIC_OR_COMPUTED => 2,
-        REFERENCE_CLASS_EXTERNAL_DEPENDENCY => 3,
-        REFERENCE_CLASS_BUILTIN_OR_STD => 4,
-        _ => 5,
-    }
-}
-
 /// Persists reference-shaped unresolved references in ALL storage modes (Proof
 /// included). Rows are explicitly non-proof facts; on cap overflow a per-file
 /// extraction warning is written so validation can label the file bounded
@@ -12789,38 +13259,8 @@ fn persist_unresolved_reference_lane(
             && left.source_span == right.source_span
     });
     let total = lane_references.len();
-    // 1a (2026-06-18 stress test): when a file exceeds the per-file cap, keep the
-    // hallucination-relevant references first. A bare repo_local_candidate (no
-    // std/prelude/builtin/external/macro shape, no repo definition) is the forward
-    // hallucination signal; builtin/std/external/dynamic refs are known-good noise.
-    // Without this bias a NEW unresolved call could be evicted purely for sorting
-    // late by source span. Classification is computed once and reused for the row
-    // metadata. This changes only WHICH rows survive the cap, never the read order
-    // (the lane query re-sorts by span); files still over the cap remain labeled
-    // bounded/unknown by the validate-edit lane-truncation finding.
-    let mut classified = lane_references
-        .iter()
-        .map(|reference| {
-            (
-                *reference,
-                classifier.classify(reference, language, repo_relative_path),
-            )
-        })
-        .collect::<Vec<_>>();
-    classified.sort_by(|(left, left_class), (right, right_class)| {
-        unresolved_reference_lane_class_priority(left_class)
-            .cmp(&unresolved_reference_lane_class_priority(right_class))
-            // Newest source span first WITHIN a class, so an appended/edited
-            // unresolved reference survives the cap even when the file has more
-            // than the cap of SAME-class references (an mcp-server/lib.rs-scale
-            // file has >256 repo_local_candidate refs; class priority alone would
-            // still evict the latest-span one).
-            .then_with(|| right.source_span.start_line.cmp(&left.source_span.start_line))
-            .then_with(|| right.source_span.start_column.cmp(&left.source_span.start_column))
-            .then_with(|| left.reference_id.cmp(&right.reference_id))
-    });
     let mut rows = 0u64;
-    for (reference, reference_class) in classified
+    for reference in lane_references
         .iter()
         .take(UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE)
     {
@@ -12828,7 +13268,7 @@ fn persist_unresolved_reference_lane(
             "fact_class": "unresolved_reference",
             "persistence_lane": "unresolved_reference_lane",
             "not_graph_proof": true,
-            "reference_class": *reference_class,
+            "reference_class": classifier.classify(reference, language, repo_relative_path),
             "repo_relative_path": normalize_graph_path(repo_relative_path),
         });
         store.insert_unresolved_reference_after_file_delete(
@@ -13111,6 +13551,10 @@ fn parse_extract_pending_files_with_progress(
                         duplicate_of,
                         file.template_required,
                         extraction,
+                        Vec::new(),
+                        0,
+                        Vec::new(),
+                        "not_applicable".to_string(),
                     ));
                     let bundle_ms = bundle_start.elapsed().as_millis();
                     if emit_profile_json {
@@ -13215,6 +13659,10 @@ fn parse_extract_pending_files_with_progress(
                         None,
                         file.template_required,
                         extraction,
+                        Vec::new(),
+                        0,
+                        Vec::new(),
+                        "not_applicable".to_string(),
                     ));
                     let bundle_ms = bundle_start.elapsed().as_millis();
                     if emit_profile_json {
@@ -13297,6 +13745,11 @@ fn parse_extract_pending_files_with_progress(
                         let edge_count = extraction.edges.len();
                         let source_span_count = extraction_source_span_count(&extraction);
                         let local_fact_count = entity_count + edge_count + source_span_count;
+                        let mvp4_micro_node_report =
+                            emit_mvp4_typescript_in_memory_first_slice_inventory(
+                                &parsed,
+                                &file.source,
+                            );
                         let bundle_start = Instant::now();
                         outputs.push(LocalFactBundle::new(
                             file.repo_relative_path,
@@ -13305,6 +13758,10 @@ fn parse_extract_pending_files_with_progress(
                             None,
                             file.template_required,
                             extraction,
+                            mvp4_micro_node_report.candidates,
+                            mvp4_micro_node_report.omitted_count,
+                            mvp4_micro_node_report.cap_hits,
+                            mvp4_micro_node_report.completeness_label,
                         ));
                         let bundle_ms = bundle_start.elapsed().as_millis();
                         if emit_profile_json {
@@ -13418,6 +13875,10 @@ fn parse_extract_pending_files_with_progress(
                             None,
                             file.template_required,
                             extraction,
+                            Vec::new(),
+                            0,
+                            Vec::new(),
+                            "not_applicable".to_string(),
                         ));
                         let bundle_ms = bundle_start.elapsed().as_millis();
                         if emit_profile_json {
@@ -14204,6 +14665,8 @@ pub fn update_changed_files_with_cache_to_db(
 
             let extraction_start = Instant::now();
             let mut extraction = extract_entities_and_relations(&parsed, &source);
+            let mvp4_micro_node_report =
+                emit_mvp4_typescript_in_memory_first_slice_inventory(&parsed, &source);
             phase_profile.add_duration(
                 "extract_entities_and_relations",
                 extraction_start.elapsed(),
@@ -14272,6 +14735,18 @@ pub fn update_changed_files_with_cache_to_db(
                 changed_cache_entities.push(entity.clone());
                 entity_count += 1;
             }
+
+            write_path_chaos_failpoint("incremental_during_micro_node_insert")?;
+            persist_mvp4_1_ast_micro_nodes_for_file(
+                tx,
+                repo_relative_path,
+                Some(&hash),
+                &mvp4_micro_node_report.candidates,
+                mvp4_micro_node_report.omitted_count,
+                &mvp4_micro_node_report.cap_hits,
+                &mvp4_micro_node_report.completeness_label,
+                &mut phase_profile,
+            )?;
 
             for edge in extraction
                 .edges
@@ -19264,17 +19739,6 @@ fn collect_repo_files_inner(
         record_scope_path_warning_label(root, path, "symlink_entry", label, &error, scope_report);
         return Ok(());
     }
-    if scope_metadata_is_reparse_point(&metadata) {
-        record_scope_path_warning_label(
-            root,
-            path,
-            "reparse_entry",
-            "path_mapping_unavailable",
-            "windows reparse point skipped without target resolution",
-            scope_report,
-        );
-        return Ok(());
-    }
 
     if file_type.is_dir() {
         match fs::canonicalize(path) {
@@ -19425,19 +19889,6 @@ fn scope_loop_label() -> &'static str {
     } else {
         "symlink_loop"
     }
-}
-
-#[cfg(windows)]
-fn scope_metadata_is_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn scope_metadata_is_reparse_point(_metadata: &fs::Metadata) -> bool {
-    false
 }
 
 fn scope_path_identity_key(path: &Path) -> String {
@@ -25451,21 +25902,6 @@ mod tests {
         }
     }
 
-    fn remove_dir_symlink_if_present(link: &Path) -> bool {
-        if fs::symlink_metadata(link).is_err() {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            let _ = fs::remove_dir(link);
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = fs::remove_file(link);
-        }
-        fs::symlink_metadata(link).is_err()
-    }
-
     fn graph_output_test_budgets() -> GraphOutputBudgets {
         GraphOutputBudgets {
             max_entities_per_file: 100,
@@ -26087,6 +26523,854 @@ mod tests {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(path, source).expect("write test file");
+    }
+
+    fn ast_micro_node_ids(rows: &[AstMicroNodeRow]) -> Vec<String> {
+        rows.iter().map(|row| row.micro_node_id.clone()).collect()
+    }
+
+    fn ast_micro_node_symbols(rows: &[AstMicroNodeRow]) -> BTreeSet<String> {
+        rows.iter()
+            .filter_map(|row| row.symbol.clone())
+            .collect::<BTreeSet<_>>()
+    }
+
+    fn ast_micro_node_kind_count(rows: &[AstMicroNodeRow], kind: &str) -> usize {
+        rows.iter().filter(|row| row.micro_kind == kind).count()
+    }
+
+    fn assert_mvp4_micro_node_integrity(store: &SqliteGraphStore, rows: &[AstMicroNodeRow]) {
+        let mut seen = BTreeSet::new();
+        for row in rows {
+            assert!(
+                seen.insert(row.micro_node_id.as_str()),
+                "duplicate micro-node id"
+            );
+            assert_eq!(row.source_span_id, row.micro_node_id);
+            assert_eq!(row.schema_version, MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION);
+            assert_eq!(row.payload_version, MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION);
+            assert_eq!(
+                row.extraction_version,
+                MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION
+            );
+            assert_eq!(row.language, "typescript");
+            assert_eq!(row.lifecycle_binding, "db_passport");
+            assert!(
+                store
+                    .get_source_span(&row.source_span_id)
+                    .expect("source span lookup")
+                    .is_some(),
+                "missing source span for {}",
+                row.micro_node_id
+            );
+            if let Some(symbol) = &row.symbol {
+                assert!(!symbol.contains("export function"));
+                assert!(!symbol.contains('\n'));
+            }
+        }
+    }
+
+    fn assert_forbidden_mvp4_sidecars_empty(store: &SqliteGraphStore) {
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
+    }
+
+    #[test]
+    fn mvp4_1_ast_micro_nodes_persist_authorized_typescript_rows_only() {
+        let repo = temp_repo("mvp4-1-micro-node-persist-scope");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User, client: Client) {\n\
+                 const token = user.name;\n\
+                 let result = token;\n\
+                 result = client.send(token);\n\
+                 return result;\n\
+             }\n",
+        );
+        write_test_file(
+            &repo,
+            "tests/service.test.ts",
+            "export function testOnly(value: string) { const local = value; return local; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/__mocks__/service.ts",
+            "export function mockOnly(value: string) { const local = value; return local; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/generated/client.ts",
+            "export function generatedOnly(value: string) { const local = value; return local; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/types.d.ts",
+            "declare function ambient(value: string): void;\n",
+        );
+        write_test_file(
+            &repo,
+            "src/script.js",
+            "function jsOnly(value) { return value; }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/view.tsx",
+            "export function View() { return <div />; }\n",
+        );
+
+        let db = repo.join("target").join("mvp4-micro-nodes.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let rows = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("micro nodes");
+        assert!(
+            !rows.is_empty(),
+            "production TypeScript file should persist MVP4.1 rows"
+        );
+        let kinds = rows
+            .iter()
+            .map(|row| row.micro_kind.as_str())
+            .collect::<BTreeSet<_>>();
+        for kind in [
+            "function_frame",
+            "parameter",
+            "local_binding",
+            "assignment_site",
+            "return_site",
+            "call_site",
+            "property_access",
+        ] {
+            assert!(kinds.contains(kind), "missing persisted node kind {kind}");
+        }
+        let mut seen_ids = BTreeSet::new();
+        for row in &rows {
+            assert!(
+                seen_ids.insert(row.micro_node_id.as_str()),
+                "duplicate row id"
+            );
+            assert_eq!(row.file_id, "src/service.ts");
+            assert_eq!(row.schema_version, MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION);
+            assert_eq!(row.payload_version, MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION);
+            assert_eq!(
+                row.extraction_version,
+                MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION
+            );
+            assert_eq!(row.source_span_id, row.micro_node_id);
+            assert_eq!(row.source_role, "production");
+            assert_eq!(row.language, "typescript");
+            assert_eq!(row.lifecycle_binding, "db_passport");
+            assert!(matches!(
+                row.exactness.as_str(),
+                "exact" | "derived_with_provenance" | "heuristic" | "unsupported" | "unknown"
+            ));
+            assert!(!row.claimability.is_empty());
+            assert!(row.function_entity_id.is_some());
+            assert!(row.provenance_id.is_some());
+            if let Some(symbol) = &row.symbol {
+                assert!(symbol.len() <= 311);
+                assert!(!symbol.contains("export function handle"));
+            }
+        }
+
+        for forbidden in [
+            "tests/service.test.ts",
+            "src/__mocks__/service.ts",
+            "src/generated/client.ts",
+            "src/types.d.ts",
+            "src/script.js",
+            "src/view.tsx",
+        ] {
+            assert_eq!(
+                store
+                    .ast_micro_node_count_for_file(forbidden)
+                    .expect("count"),
+                0,
+                "{forbidden} must not persist MVP4.1 production rows"
+            );
+        }
+
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(
+            counts.get("ast_micro_nodes").copied(),
+            Some(rows.len() as u64)
+        );
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
+        assert!(!repo.join(".codegraph").exists());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mvp4_1_ast_micro_node_cap_hits_persist_for_read_only_visibility() {
+        let repo = temp_repo("mvp4-1-micro-node-cap-visibility");
+        let mut source = String::from("export function dense(input: string) {\n");
+        for index in 0..2600 {
+            source.push_str(&format!("  const local_{index} = input;\n"));
+        }
+        source.push_str("  return input;\n}\n");
+        write_test_file(&repo, "src/high_density.ts", &source);
+
+        let db = repo.join("target").join("mvp4-micro-node-cap.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open_read_only(&db).expect("store");
+        let rows = store
+            .ast_micro_nodes_for_file("src/high_density.ts")
+            .expect("micro nodes");
+        assert!(
+            !rows.is_empty(),
+            "high-density file should still persist retained rows"
+        );
+        assert!(
+            rows.len() < 2600,
+            "retained rows must be capped below source pressure"
+        );
+        let warnings = store
+            .list_extraction_warnings_by_file("src/high_density.ts")
+            .expect("warnings");
+        let cap_warning = warnings
+            .iter()
+            .find(|(warning, metadata)| {
+                warning.starts_with(MVP4_1_MICRO_NODE_CAP_HIT_WARNING_PREFIX)
+                    && metadata.get("warning_kind").and_then(Value::as_str)
+                        == Some(MVP4_1_MICRO_NODE_CAP_HIT_WARNING_KIND)
+            })
+            .unwrap_or_else(|| {
+                panic!("cap overflow must write a MVP4.1 cap warning; got {warnings:?}")
+            });
+        assert!(
+            cap_warning
+                .1
+                .get("omitted_count")
+                .and_then(Value::as_u64)
+                .is_some_and(|count| count > 0),
+            "cap warning must preserve omitted_count; got {cap_warning:?}"
+        );
+        let summary = store
+            .ast_micro_node_visibility_summary(0)
+            .expect("visibility summary");
+        assert_eq!(summary.truncated_file_count, 1, "{summary:?}");
+        assert!(
+            summary.truncated_function_count >= 1,
+            "function truncation must be visible; got {summary:?}"
+        );
+        assert!(summary.cap_hit_count >= 1, "{summary:?}");
+        assert!(summary.omitted_count > 0, "{summary:?}");
+        assert!(!summary.cap_hit_details.is_empty(), "{summary:?}");
+        assert_forbidden_mvp4_sidecars_empty(&store);
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mvp4_1_ast_micro_nodes_incremental_replace_is_atomic_and_file_scoped() {
+        let repo = temp_repo("mvp4-1-micro-node-incremental-replace");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const token = user.name;\n\
+                 return token;\n\
+             }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/other.ts",
+            "export function other(input: string) {\n\
+                 const stable = input;\n\
+                 return stable;\n\
+             }\n",
+        );
+        let db = repo
+            .join("target")
+            .join("mvp4-micro-node-incremental.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let service_before = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("service before");
+        let other_before = store
+            .ast_micro_nodes_for_file("src/other.ts")
+            .expect("other before");
+        let other_before_ids = ast_micro_node_ids(&other_before);
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User, client: Client) {\n\
+                 const token = user.name;\n\
+                 const response = client.send(token);\n\
+                 return response;\n\
+             }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("incremental update");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let service_after = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("service after");
+        let other_after = store
+            .ast_micro_nodes_for_file("src/other.ts")
+            .expect("other after");
+        assert_ne!(
+            ast_micro_node_ids(&service_before),
+            ast_micro_node_ids(&service_after)
+        );
+        assert_eq!(other_before_ids, ast_micro_node_ids(&other_after));
+        assert!(service_after
+            .iter()
+            .any(|row| row.symbol.as_deref() == Some("response")));
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User, client: Client) {\n\
+                 const leaked = client.send(user.name);\n\
+                 return leaked;\n\
+             }\n",
+        );
+        let failed =
+            with_write_path_chaos_failpoint("incremental_during_micro_node_insert", || {
+                update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            });
+        assert!(failed
+            .expect_err("failpoint should abort")
+            .to_string()
+            .contains("incremental_during_micro_node_insert"));
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let service_preserved = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("service preserved");
+        assert_eq!(
+            ast_micro_node_ids(&service_after),
+            ast_micro_node_ids(&service_preserved)
+        );
+        assert!(!service_preserved
+            .iter()
+            .any(|row| row.symbol.as_deref() == Some("leaked")));
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+        assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
+        assert!(!repo.join(".codegraph").exists());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mvp4_1_ast_micro_nodes_incremental_change_matrix_is_file_scoped() {
+        let repo = temp_repo("mvp4-1-micro-node-change-matrix");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User, client: Client) {\n\
+                 const token = user.name;\n\
+                 let result = token;\n\
+                 result = client.send(token);\n\
+                 return result;\n\
+             }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/other.ts",
+            "export function other(input: string) {\n\
+                 const stable = input;\n\
+                 return stable;\n\
+             }\n",
+        );
+        let db = repo.join("target").join("mvp4-micro-node-matrix.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let other_before = store
+            .ast_micro_nodes_for_file("src/other.ts")
+            .expect("other rows");
+        let other_before_ids = ast_micro_node_ids(&other_before);
+        drop(store);
+
+        let changed_cases = [
+            (
+                "body_param_local_assignment_call_property_added",
+                "export function handle(user: User, client: Client, audit: Audit) {\n\
+                     const token = user.name;\n\
+                     const extra = audit.label;\n\
+                     let result = token;\n\
+                     result = client.send(extra);\n\
+                     return extra;\n\
+                }\n",
+                vec!["audit", "extra"],
+                1usize,
+                1usize,
+                1usize,
+                3usize,
+            ),
+            (
+                "call_property_removed",
+                "export function handle(user: User) {\n\
+                     const token = \"static\";\n\
+                     return token;\n\
+                }\n",
+                vec!["token"],
+                0usize,
+                0usize,
+                1usize,
+                0usize,
+            ),
+            (
+                "return_removed",
+                "export function handle(user: User) {\n\
+                     const token = \"static\";\n\
+                }\n",
+                vec!["token"],
+                0usize,
+                0usize,
+                0usize,
+                0usize,
+            ),
+            (
+                "function_added",
+                "export function handle(user: User) {\n\
+                     const token = \"static\";\n\
+                     return token;\n\
+                 }\n\
+                 export function helper(input: string) {\n\
+                     const helperLocal = input;\n\
+                     return helperLocal;\n\
+                 }\n",
+                vec!["helper", "helperLocal"],
+                0usize,
+                0usize,
+                2usize,
+                0usize,
+            ),
+            (
+                "parameter_renamed",
+                "export function handle(account: User) {\n\
+                     const token = account.name;\n\
+                     return token;\n\
+                 }\n",
+                vec!["account", "token"],
+                0usize,
+                0usize,
+                1usize,
+                1usize,
+            ),
+            (
+                "function_renamed_and_local_removed",
+                "export function renamed(user: User) {\n\
+                     return user.name;\n\
+                 }\n",
+                vec!["renamed"],
+                0usize,
+                0usize,
+                1usize,
+                1usize,
+            ),
+        ];
+
+        for (
+            case_name,
+            source,
+            expected_symbols,
+            expected_assignments,
+            expected_calls,
+            expected_returns,
+            expected_props,
+        ) in changed_cases
+        {
+            write_test_file(&repo, "src/service.ts", source);
+            let summary =
+                update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+                    .unwrap_or_else(|error| panic!("{case_name}: update failed: {error}"));
+            assert_eq!(summary.files_read, 1, "{case_name}: files_read");
+            assert_eq!(summary.files_parsed, 1, "{case_name}: files_parsed");
+            assert_eq!(summary.files_indexed, 1, "{case_name}: files_indexed");
+            assert_eq!(summary.files_walked, 1, "{case_name}: files_walked");
+            let store = SqliteGraphStore::open(&db).expect("store");
+            let service_rows = store
+                .ast_micro_nodes_for_file("src/service.ts")
+                .expect("service rows");
+            assert_mvp4_micro_node_integrity(&store, &service_rows);
+            let symbols = ast_micro_node_symbols(&service_rows);
+            for symbol in expected_symbols {
+                assert!(
+                    symbols.contains(symbol),
+                    "{case_name}: missing symbol {symbol}"
+                );
+            }
+            assert_eq!(
+                ast_micro_node_kind_count(&service_rows, "assignment_site"),
+                expected_assignments,
+                "{case_name}: assignment_site count"
+            );
+            assert_eq!(
+                ast_micro_node_kind_count(&service_rows, "call_site"),
+                expected_calls,
+                "{case_name}: call_site count"
+            );
+            assert_eq!(
+                ast_micro_node_kind_count(&service_rows, "return_site"),
+                expected_returns,
+                "{case_name}: return_site count"
+            );
+            assert_eq!(
+                ast_micro_node_kind_count(&service_rows, "property_access"),
+                expected_props,
+                "{case_name}: property_access count"
+            );
+            let other_after = store
+                .ast_micro_nodes_for_file("src/other.ts")
+                .expect("other rows");
+            assert_eq!(other_before_ids, ast_micro_node_ids(&other_after));
+            assert_forbidden_mvp4_sidecars_empty(&store);
+            drop(store);
+        }
+
+        let cold_db = repo
+            .join("target")
+            .join("mvp4-micro-node-matrix-cold.sqlite");
+        index_repo_to_db(&repo, &cold_db).expect("cold reindex");
+        let incremental_store = SqliteGraphStore::open(&db).expect("incremental store");
+        let cold_store = SqliteGraphStore::open(&cold_db).expect("cold store");
+        assert_eq!(
+            ast_micro_node_ids(
+                &incremental_store
+                    .ast_micro_nodes_for_file("src/service.ts")
+                    .expect("incremental rows")
+            ),
+            ast_micro_node_ids(
+                &cold_store
+                    .ast_micro_nodes_for_file("src/service.ts")
+                    .expect("cold rows")
+            ),
+            "cold and incremental cap-selected rows must match"
+        );
+        drop(cold_store);
+        drop(incremental_store);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mvp4_1_ast_micro_nodes_delete_rename_role_and_parse_lifecycle() {
+        let repo = temp_repo("mvp4-1-micro-node-path-role-parse");
+        write_test_file(
+            &repo,
+            "src/lifecycle.ts",
+            "export function lifecycle(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/recover.ts",
+            "export function recover(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+        );
+        let db = repo.join("target").join("mvp4-micro-node-lifecycle.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let lifecycle_before = store
+            .ast_micro_nodes_for_file("src/lifecycle.ts")
+            .expect("lifecycle rows");
+        assert!(!lifecycle_before.is_empty());
+        let lifecycle_before_ids = ast_micro_node_ids(&lifecycle_before);
+        drop(store);
+
+        fs::remove_file(repo.join("src").join("lifecycle.ts")).expect("delete lifecycle");
+        let delete_summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/lifecycle.ts")], &db)
+                .expect("delete update");
+        assert_eq!(delete_summary.files_deleted, 1);
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_node_count_for_file("src/lifecycle.ts")
+                .expect("old count"),
+            0
+        );
+        assert!(store.get_file("src/lifecycle.ts").expect("file").is_none());
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/lifecycle.ts",
+            "export function lifecycle(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/lifecycle.ts")], &db)
+            .expect("add update");
+        fs::rename(
+            repo.join("src").join("lifecycle.ts"),
+            repo.join("src").join("renamed.ts"),
+        )
+        .expect("rename lifecycle");
+        let rename_summary = update_changed_files_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/lifecycle.ts"),
+                PathBuf::from("src/renamed.ts"),
+            ],
+            &db,
+        )
+        .expect("rename update");
+        assert!(
+            rename_summary.files_deleted >= 1 || rename_summary.files_renamed >= 1,
+            "rename summary should clean the old file"
+        );
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_node_count_for_file("src/lifecycle.ts")
+                .expect("old count"),
+            0
+        );
+        let renamed_rows = store
+            .ast_micro_nodes_for_file("src/renamed.ts")
+            .expect("renamed rows");
+        assert!(!renamed_rows.is_empty());
+        assert_ne!(lifecycle_before_ids, ast_micro_node_ids(&renamed_rows));
+        assert_mvp4_micro_node_integrity(&store, &renamed_rows);
+        drop(store);
+
+        fs::create_dir_all(repo.join("src").join("generated")).expect("generated dir");
+        fs::rename(
+            repo.join("src").join("renamed.ts"),
+            repo.join("src").join("generated").join("renamed.ts"),
+        )
+        .expect("move to generated");
+        update_changed_files_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/renamed.ts"),
+                PathBuf::from("src/generated/renamed.ts"),
+            ],
+            &db,
+        )
+        .expect("generated role update");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_node_count_for_file("src/renamed.ts")
+                .expect("old count"),
+            0
+        );
+        assert_eq!(
+            store
+                .ast_micro_node_count_for_file("src/generated/renamed.ts")
+                .expect("generated count"),
+            0
+        );
+        drop(store);
+
+        write_test_file(&repo, ".gitignore", "src/ignored_later.ts\n");
+        write_test_file(
+            &repo,
+            "src/ignored_later.ts",
+            "export function ignoredLater(value: string) {\n\
+                 const local = value;\n\
+                 return local;\n\
+             }\n",
+        );
+        index_repo_to_db(&repo, &db).expect("reindex with ignored path policy");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_node_count_for_file("src/ignored_later.ts")
+                .expect("ignored count"),
+            0
+        );
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "tests/renamed.test.ts",
+            "export function testOnly(value: string) { const local = value; return local; }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("tests/renamed.test.ts")], &db)
+            .expect("test role update");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_node_count_for_file("tests/renamed.test.ts")
+                .expect("test count"),
+            0
+        );
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/recover.ts",
+            "export function recover(user: User) {\n\
+                 const broken = user.name;\n\
+                 if (\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/recover.ts")], &db)
+            .expect("parse recovery update");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let recovery_rows = store
+            .ast_micro_nodes_for_file("src/recover.ts")
+            .expect("recovery rows");
+        assert!(!ast_micro_node_symbols(&recovery_rows).contains("stable"));
+        assert!(
+            recovery_rows.is_empty()
+                || recovery_rows
+                    .iter()
+                    .any(|row| row.claimability == "non_claimable_recovery_candidate"),
+            "parse-recovery rows must be non-claimable if retained"
+        );
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/recover.ts",
+            "export function recover(user: User) {\n\
+                 const restored = user.name;\n\
+                 return restored;\n\
+             }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/recover.ts")], &db)
+            .expect("recover update");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let recovered_rows = store
+            .ast_micro_nodes_for_file("src/recover.ts")
+            .expect("recovered rows");
+        assert!(ast_micro_node_symbols(&recovered_rows).contains("restored"));
+        assert!(recovered_rows
+            .iter()
+            .all(|row| row.claimability != "non_claimable_recovery_candidate"));
+        assert_mvp4_micro_node_integrity(&store, &recovered_rows);
+        assert_forbidden_mvp4_sidecars_empty(&store);
+        drop(store);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mvp4_1_ast_micro_nodes_failure_windows_and_readers_preserve_old_good() {
+        let repo = temp_repo("mvp4-1-micro-node-failure-readers");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+        );
+        let db = repo.join("target").join("mvp4-micro-node-failure.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let before_hash = semantic_graph_fact_hash(&db);
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let old_rows = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("old rows");
+        let old_ids = ast_micro_node_ids(&old_rows);
+        drop(store);
+
+        for failpoint in [
+            "incremental_before_stale_cleanup",
+            "incremental_after_stale_cleanup_before_insert",
+            "incremental_during_micro_node_insert",
+            "incremental_after_insert_before_commit",
+            "incremental_before_commit",
+        ] {
+            write_test_file(
+                &repo,
+                "src/service.ts",
+                &format!(
+                    "export function handle(user: User) {{\n  const {failpoint}_local = user.name;\n  return {failpoint}_local;\n}}\n"
+                ),
+            );
+            let error = with_write_path_chaos_failpoint(failpoint, || {
+                update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            })
+            .expect_err("failpoint must abort");
+            assert!(
+                error.to_string().contains(failpoint),
+                "failpoint={failpoint} error={error}"
+            );
+            let store = SqliteGraphStore::open(&db).expect("store");
+            assert_eq!(semantic_graph_fact_hash(&db), before_hash);
+            assert_eq!(
+                old_ids,
+                ast_micro_node_ids(
+                    &store
+                        .ast_micro_nodes_for_file("src/service.ts")
+                        .expect("preserved rows")
+                ),
+                "micro-node rows changed after {failpoint}"
+            );
+            assert_forbidden_mvp4_sidecars_empty(&store);
+            drop(store);
+        }
+
+        let writer = SqliteGraphStore::open(&db).expect("writer");
+        writer.begin_write_transaction().expect("begin transaction");
+        writer
+            .delete_facts_for_file("src/service.ts")
+            .expect("uncommitted delete");
+        let reader = SqliteGraphStore::open_read_only(&db).expect("read-only reader");
+        assert_eq!(
+            old_ids,
+            ast_micro_node_ids(
+                &reader
+                    .ast_micro_nodes_for_file("src/service.ts")
+                    .expect("reader rows")
+            ),
+            "read-only reader must see old-good micro-node rows during uncommitted delete"
+        );
+        assert!(!reader
+            .find_entities_by_exact_symbol("handle")
+            .expect("graph query")
+            .is_empty());
+        reader.full_integrity_gate().expect("reader integrity");
+        drop(reader);
+        writer
+            .rollback_write_transaction()
+            .expect("rollback transaction");
+        drop(writer);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const committed = user.name;\n\
+                 return committed;\n\
+             }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("successful update");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let rows = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("updated rows");
+        assert!(ast_micro_node_symbols(&rows).contains("committed"));
+        assert_mvp4_micro_node_integrity(&store, &rows);
+        assert_forbidden_mvp4_sidecars_empty(&store);
+        drop(store);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     fn validate_edit_preflight_for(
@@ -28538,48 +29822,17 @@ pub fn spool_target(value: i32) -> i32 {
         .expect("write fixture");
         let link = repo.join("src").join("loop");
 
-        if cfg!(windows) {
-            let mut report = IndexScopeRuntimeReport::new(&IndexScopeOptions::default());
-            record_scope_path_warning_label(
-                &repo,
-                &link,
-                "reparse_entry",
-                "path_mapping_unavailable",
-                "windows reparse point skipped without target resolution",
-                &mut report,
-            );
-            assert_eq!(
-                report
-                    .path_io_warning_counts
-                    .get("path_mapping_unavailable")
-                    .copied(),
-                Some(1)
-            );
-            fs::remove_dir_all(repo).expect("cleanup repo");
-            return;
-        }
-
         if try_create_dir_symlink(&repo, &link).is_ok() {
             let scoped = collect_repo_files_with_scope(&repo, &IndexScopeOptions::default())
                 .expect("collect scope with symlink");
-            let loop_warning_count = scoped
-                .scope_report
-                .path_io_warning_counts
-                .get("symlink_loop")
-                .or_else(|| {
-                    scoped
-                        .scope_report
-                        .path_io_warning_counts
-                        .get("junction_loop")
-                })
-                .or_else(|| {
-                    scoped
-                        .scope_report
-                        .path_io_warning_counts
-                        .get("path_mapping_unavailable")
-                })
-                .copied();
-            assert_eq!(loop_warning_count, Some(1), "{:?}", scoped.scope_report);
+            assert_eq!(
+                scoped
+                    .scope_report
+                    .path_io_warning_counts
+                    .get("symlink_loop")
+                    .copied(),
+                Some(1)
+            );
             assert!(
                 scoped.files.iter().all(|path| !path.starts_with(&link)),
                 "symlink traversal must not add duplicate source paths"
@@ -28603,9 +29856,7 @@ pub fn spool_target(value: i32) -> i32 {
             );
         }
 
-        if remove_dir_symlink_if_present(&link) {
-            fs::remove_dir_all(repo).expect("cleanup repo");
-        }
+        fs::remove_dir_all(repo).expect("cleanup repo");
     }
 
     #[test]
@@ -30977,8 +32228,9 @@ pub fn caller() {
                 .list_unresolved_references_by_file("src/auth.ts")
                 .expect("lane");
             assert!(
-                lane.iter().any(|row| row.name == "hallucinatedHelper"
-                    && row.relation == RelationKind::Calls),
+                lane.iter()
+                    .any(|row| row.name == "hallucinatedHelper"
+                        && row.relation == RelationKind::Calls),
                 "incremental update must persist new unresolved references; got {lane:?}"
             );
         }
@@ -31030,10 +32282,7 @@ pub fn caller() {
                 panic!("cap overflow must write a truncation warning; got {warnings:?}")
             });
         assert_eq!(
-            truncation
-                .1
-                .get("warning_kind")
-                .and_then(Value::as_str),
+            truncation.1.get("warning_kind").and_then(Value::as_str),
             Some(UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING)
         );
         assert!(
@@ -31045,41 +32294,6 @@ pub fn caller() {
             "truncation metadata must record the pre-cap total; got {truncation:?}"
         );
 
-        drop(store);
-        fs::remove_dir_all(repo).expect("cleanup");
-    }
-
-    #[test]
-    fn unresolved_reference_lane_cap_keeps_repo_local_candidate_over_builtin() {
-        // 1a regression (2026-06-18 stress test): a file with more refs than the
-        // cap, where the only repo_local_candidate has the LATEST source span,
-        // must still keep that candidate — known-good builtin/std refs are evicted
-        // first so an appended hallucinated call is never silently shed by the cap.
-        let repo = temp_repo("unresolved-lane-priority");
-        let mut source = String::from("pub fn flood() {\n");
-        for index in 0..UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE {
-            source.push_str(&format!("    std::probe_noise_{index}();\n"));
-        }
-        // Lone repo-local candidate at the latest span: span-order alone evicts it.
-        source.push_str("    missing_local_fn_zzz();\n");
-        source.push_str("}\n");
-        write_test_file(&repo, "src/flood.rs", &source);
-        let db = repo.join("target").join("lane-priority.sqlite");
-        index_repo_to_db(&repo, &db).expect("index");
-
-        let store = SqliteGraphStore::open_read_only(&db).expect("store");
-        let lane = store
-            .list_unresolved_references_by_file("src/flood.rs")
-            .expect("lane");
-        assert_eq!(
-            lane.len(),
-            UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE,
-            "lane must cap rows per file"
-        );
-        assert!(
-            lane.iter().any(|row| row.name == "missing_local_fn_zzz"),
-            "the repo_local_candidate must survive the cap over builtin/std refs; got {lane:?}"
-        );
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -35375,53 +36589,6 @@ pub fn caller() {
     }
 
     #[test]
-    fn snapshot_unresolved_lane_survives_shared_budget_exhaustion() {
-        // 1d regression (2026-06-18 stress test): the unresolved-reference lane is
-        // read LAST in the per-path snapshot, after entities/edges spend the shared
-        // budget. On fact-dense files that silently starved the forward-hallucination
-        // delta (validate-edit new_count=0 / status=ok on a genuinely new bad call).
-        // The lane now has a dedicated budget and must survive even when the shared
-        // per-path budget is fully exhausted.
-        let repo = temp_repo("snapshot-unresolved-budget");
-        write_test_file(
-            &repo,
-            "src/lib.rs",
-            "pub fn real_fn() -> i32 { 0 }\n\
-             pub fn big() {\n\
-             real_fn();\n    real_fn();\n    real_fn();\n\
-             cg_nonexistent_zzz();\n\
-             }\n",
-        );
-        let db = repo.join("target").join("snap-unresolved.sqlite");
-        index_repo_to_db(&repo, &db).expect("index");
-        let snapshot = snapshot_normalized_facts_for_paths_to_db(
-            &repo,
-            &[PathBuf::from("src/lib.rs")],
-            &[],
-            &db,
-            NormalizedFactSnapshotOptions {
-                max_facts_per_path: 3,
-                ..NormalizedFactSnapshotOptions::default()
-            },
-        )
-        .expect("snapshot");
-        assert!(
-            snapshot.omission.truncated,
-            "test must exhaust the shared per-path budget to be meaningful"
-        );
-        assert!(
-            snapshot
-                .facts
-                .unresolved_references
-                .iter()
-                .any(|fact| fact.name == "cg_nonexistent_zzz"),
-            "the unresolved ref must survive shared-budget exhaustion via its dedicated budget; got {:?}",
-            snapshot.facts.unresolved_references
-        );
-        fs::remove_dir_all(repo).expect("cleanup");
-    }
-
-    #[test]
     fn normalized_fact_snapshot_refuses_non_claimable_db() {
         let repo = temp_repo("normalized-snapshot-stale-db");
         write_test_file(
@@ -35451,6 +36618,7 @@ pub fn caller() {
             "incremental_before_stale_cleanup",
             "incremental_after_stale_cleanup_before_insert",
             "incremental_during_entity_insert",
+            "incremental_during_micro_node_insert",
             "incremental_during_edge_insert",
             "incremental_before_path_evidence_refresh",
             "incremental_after_insert_before_commit",
@@ -35525,13 +36693,22 @@ pub fn caller() {
             );
             store
                 .insert_entity_feature(&EntityFeatureRow {
+                    feature_id: "feature-old-auth-shape".to_string(),
+                    file_id: Some("src/auth.ts".to_string()),
                     entity_id: old_login.id.clone(),
+                    function_entity_id: Some(old_login.id.clone()),
                     feature_kind: "ast_shape".to_string(),
+                    schema_version: 1,
                     payload_version: 1,
                     compact_payload: "{\"shape\":\"old\"}".to_string(),
                     extraction_version: "test-sidecar-v1".to_string(),
+                    exactness: "exact".to_string(),
+                    provenance_id: None,
                     source_span_id: Some(old_login.id.clone()),
+                    source_role: "production".to_string(),
+                    language: "typescript".to_string(),
                     claimability: "diagnostic_only".to_string(),
+                    lifecycle_binding: "passport-old".to_string(),
                 })
                 .expect("insert entity feature");
             store
@@ -35541,9 +36718,16 @@ pub fn caller() {
                     task_intent_hash: "intent-old".to_string(),
                     packet_kind: "routing_packet".to_string(),
                     evidence_refs_json: format!("[\"{}\"]", old_login.id),
+                    source_span_id: Some(old_login.id.clone()),
                     expires_or_invalidates_on: "file_fact_cleanup".to_string(),
+                    schema_version: 1,
+                    exactness: "unsupported".to_string(),
+                    provenance_id: None,
+                    source_role: "unknown".to_string(),
+                    language: "unknown".to_string(),
                     payload_version: 1,
                     claimability: "diagnostic_only".to_string(),
+                    lifecycle_binding: "db_passport_hash".to_string(),
                 })
                 .expect("insert routing handle");
             let counts = store.sparse_sidecar_counts().expect("sidecar counts");
@@ -35594,13 +36778,22 @@ pub fn caller() {
             );
             store
                 .insert_entity_feature(&EntityFeatureRow {
+                    feature_id: "feature-old-auth-shape".to_string(),
+                    file_id: Some("src/auth.ts".to_string()),
                     entity_id: old_login.id.clone(),
+                    function_entity_id: Some(old_login.id.clone()),
                     feature_kind: "ast_shape".to_string(),
+                    schema_version: 1,
                     payload_version: 1,
                     compact_payload: "{\"shape\":\"old\"}".to_string(),
                     extraction_version: "test-sidecar-v1".to_string(),
+                    exactness: "exact".to_string(),
+                    provenance_id: None,
                     source_span_id: Some(old_login.id.clone()),
+                    source_role: "production".to_string(),
+                    language: "typescript".to_string(),
                     claimability: "diagnostic_only".to_string(),
+                    lifecycle_binding: "passport-old".to_string(),
                 })
                 .expect("insert entity feature");
             store
@@ -35610,9 +36803,16 @@ pub fn caller() {
                     task_intent_hash: "intent-old".to_string(),
                     packet_kind: "routing_packet".to_string(),
                     evidence_refs_json: format!("[\"{}\"]", old_login.id),
+                    source_span_id: Some(old_login.id.clone()),
                     expires_or_invalidates_on: "file_fact_cleanup".to_string(),
+                    schema_version: 1,
+                    exactness: "unsupported".to_string(),
+                    provenance_id: None,
+                    source_role: "unknown".to_string(),
+                    language: "unknown".to_string(),
                     payload_version: 1,
                     claimability: "diagnostic_only".to_string(),
+                    lifecycle_binding: "db_passport_hash".to_string(),
                 })
                 .expect("insert routing handle");
         }
@@ -35744,13 +36944,22 @@ pub fn caller() {
             );
             store
                 .insert_entity_feature(&EntityFeatureRow {
+                    feature_id: "feature-old-auth-shape".to_string(),
+                    file_id: Some("src/auth.ts".to_string()),
                     entity_id: old_login.id.clone(),
+                    function_entity_id: Some(old_login.id.clone()),
                     feature_kind: "ast_shape".to_string(),
+                    schema_version: 1,
                     payload_version: 1,
                     compact_payload: "{\"shape\":\"old\"}".to_string(),
                     extraction_version: "test-sidecar-v1".to_string(),
+                    exactness: "exact".to_string(),
+                    provenance_id: None,
                     source_span_id: Some(old_login.id.clone()),
+                    source_role: "production".to_string(),
+                    language: "typescript".to_string(),
                     claimability: "diagnostic_only".to_string(),
+                    lifecycle_binding: "passport-old".to_string(),
                 })
                 .expect("insert entity feature");
             store
@@ -35760,9 +36969,16 @@ pub fn caller() {
                     task_intent_hash: "intent-old".to_string(),
                     packet_kind: "routing_packet".to_string(),
                     evidence_refs_json: format!("[\"{}\"]", old_login.id),
+                    source_span_id: Some(old_login.id.clone()),
                     expires_or_invalidates_on: "file_fact_cleanup".to_string(),
+                    schema_version: 1,
+                    exactness: "unsupported".to_string(),
+                    provenance_id: None,
+                    source_role: "unknown".to_string(),
+                    language: "unknown".to_string(),
                     payload_version: 1,
                     claimability: "diagnostic_only".to_string(),
+                    lifecycle_binding: "db_passport_hash".to_string(),
                 })
                 .expect("insert routing handle");
         }

@@ -267,6 +267,9 @@
     "unavailable_evidence": {
       "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
     },
+    "unresolved_references": {
+      "$ref": "common.schema.json#/$defs/unresolved_references_block"
+    },
     "claimability_effect": {
       "$ref": "common.schema.json#/$defs/dirty_evidence_claimability_effect"
     },

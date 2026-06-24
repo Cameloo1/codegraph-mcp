@@ -138,6 +138,9 @@ const AGENT_USE_PROFILE_PARENT_PERMISSION_DENIED_FAILPOINT: &str =
     "agent_use_profile_parent_permission_denied";
 const AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT: &str =
     "agent_use_profile_parent_filesystem_inaccessible";
+const MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION: u32 = 1;
+const MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION: u32 = 1;
+const MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION: &str = "mvp4.1-typescript-micro-nodes-v1";
 const AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT: &str = "agent_use_git_metadata_unavailable";
 const AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT: &str =
     "agent_use_watch_after_delta_commit_before_state_clear";
@@ -393,7 +396,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "audit",
-        usage: "codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded]\n  codegraph-mcp audit vector-chunks --artifact <path> [--db <path>] [--repo <path>] [--json [path]] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit vector-chunks --db <path> [--vectors <path>] [--json [path]] [--sample <n>]\n  codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
+        usage: "codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded]\n  codegraph-mcp audit vector-chunks --artifact <path> [--db <path>] [--repo <path>] [--json [path]] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit vector-chunks --db <path> [--vectors <path>] [--json [path]] [--sample <n>]\n  codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit micro-nodes --db <path> [--json <path>] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
         description: "Run read-only audit inspections for vector chunks, storage, sampled edges, relation counts, and manual sample labels.",
     },
     CommandSpec {
@@ -1564,6 +1567,8 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "next_command": "codegraph-mcp index .",
         });
         merge_json_object(&mut value, staged_fields);
+        let micro_nodes = mvp4_micro_node_visibility_for_preflight(&preflight);
+        add_mvp4_micro_node_visibility(&mut value, micro_nodes);
         add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
         merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
@@ -1587,6 +1592,8 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
             "next_command": "codegraph-mcp index . --fresh",
         });
         merge_json_object(&mut value, staged_fields);
+        let micro_nodes = mvp4_micro_node_visibility_for_preflight(&preflight);
+        add_mvp4_micro_node_visibility(&mut value, micro_nodes);
         add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
         merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
@@ -1671,6 +1678,8 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         "languages": languages,
     });
     merge_json_object(&mut value, staged_fields);
+    let micro_nodes = mvp4_micro_node_visibility_from_store(&store, &preflight, 0, false)?;
+    add_mvp4_micro_node_visibility(&mut value, micro_nodes);
     add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
     Ok(value)
 }
@@ -1712,6 +1721,255 @@ fn status_db_read_blocker_json(
         "suggested_next": "Retry after the current writer/publisher releases the SQLite DB lock; do not treat this diagnostic as claimable context.",
         "next_command": "codegraph-mcp status . --json",
     }))
+}
+
+pub(crate) fn mvp4_micro_node_proof_boundary_json() -> Value {
+    json!({
+        "claimable_micro_node_existence_requires_source_span": true,
+        "micro_node_existence_may_be_claimable_when_source_spanned": true,
+        "not_micro_edge_or_flow_proof": true,
+        "mutation_proof_activated": false,
+        "flow_proof_activated": false,
+        "route_auth_security_semantics": false,
+        "complete_function_behavior_claim": false,
+        "runtime_behavior_claim": false,
+        "candidate_retrieval_proof": false,
+    })
+}
+
+fn mvp4_micro_node_visibility_for_preflight(preflight: &DbLifecyclePreflight) -> Value {
+    let status = mvp4_micro_node_status_from_preflight(preflight);
+    json!({
+        "status": status,
+        "feature_status": status,
+        "ready": false,
+        "feature": "mvp4_1_ast_micro_nodes",
+        "supported_language_slice": "typescript_ts_production_function_local_micro_nodes_v1",
+        "schema_version": preflight.db_health.schema_version,
+        "row_schema_version": MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION,
+        "payload_version": MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION,
+        "extraction_version": MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION,
+        "total_rows": 0,
+        "rows_by_node_kind": {},
+        "rows_by_language": {},
+        "rows_by_source_role": {},
+        "files_represented": 0,
+        "functions_represented": 0,
+        "truncated_file_count": 0,
+        "truncated_function_count": 0,
+        "cap_hit_count": 0,
+        "omitted_count": 0,
+        "cap_hit_details": [],
+        "sidecar_table_bytes": Value::Null,
+        "sidecar_table_bytes_measurement": "unavailable",
+        "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+        "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+        "availability_separate_from_graph_claimability": true,
+        "graph_claimability_unchanged": true,
+        "default_full_table_scan": false,
+        "bounded_summary": true,
+        "sample_available_in_audit": true,
+        "sample_count": 0,
+        "full_source_body_output": false,
+        "recovery_action": mvp4_micro_node_recovery_action(status),
+        "proof_boundary": mvp4_micro_node_proof_boundary_json(),
+    })
+}
+
+fn mvp4_micro_node_status_from_preflight(preflight: &DbLifecyclePreflight) -> &'static str {
+    if preflight.path_access_status == "db_missing" {
+        return "not_applicable";
+    }
+    if preflight.schema_status != "ok" {
+        return "incompatible";
+    }
+    match preflight.db_problem_kind.as_deref() {
+        Some("db_locked" | "permission_denied" | "filesystem_inaccessible") => "unavailable",
+        Some("sqlite_corrupt" | "passport_corrupt") => "corrupt",
+        Some("schema_mismatch" | "passport_missing" | "passport_mismatch") => "incompatible",
+        Some("repo_mismatch" | "scope_mismatch" | "repo_head_mismatch") => "stale",
+        Some(_) => "unavailable",
+        None if preflight.safe => "not_applicable",
+        None => "unavailable",
+    }
+}
+
+fn mvp4_micro_node_recovery_action(status: &str) -> &'static str {
+    match status {
+        "ready" => "none",
+        "not_applicable" => "run an MVP4.1-enabled index on production TypeScript .ts files if micro-node visibility is expected",
+        "unavailable" => "re-run index with a current writable schema if this DB should expose MVP4.1 micro-node availability",
+        "stale" => "refresh the DB for the current repo/head before trusting micro-node availability",
+        "incompatible" => "open with a writer/index path that performs the explicit schema migration, or rebuild the DB",
+        "corrupt" => "replace or rebuild the DB; do not use optional micro-node state as graph proof",
+        "truncated" => "inspect audit output and cap-hit counts before relying on completeness",
+        _ => "inspect DB lifecycle status",
+    }
+}
+
+fn mvp4_micro_node_visibility_from_store(
+    store: &SqliteGraphStore,
+    preflight: &DbLifecyclePreflight,
+    sample_limit: usize,
+    include_sample: bool,
+) -> Result<Value, String> {
+    if !store
+        .table_exists("ast_micro_nodes")
+        .map_err(|error| error.to_string())?
+    {
+        let mut layer = mvp4_micro_node_visibility_for_preflight(preflight);
+        if let Some(object) = layer.as_object_mut() {
+            object.insert("status".to_string(), json!("unavailable"));
+            object.insert("feature_status".to_string(), json!("unavailable"));
+            object.insert(
+                "recovery_action".to_string(),
+                json!(mvp4_micro_node_recovery_action("unavailable")),
+            );
+            object.insert(
+                "missing_reason".to_string(),
+                json!("ast_micro_nodes table missing"),
+            );
+        }
+        return Ok(layer);
+    }
+    if !store
+        .sparse_sidecar_schema_ready()
+        .map_err(|error| error.to_string())?
+    {
+        let mut layer = mvp4_micro_node_visibility_for_preflight(preflight);
+        if let Some(object) = layer.as_object_mut() {
+            object.insert("status".to_string(), json!("unavailable"));
+            object.insert("feature_status".to_string(), json!("unavailable"));
+            object.insert(
+                "recovery_action".to_string(),
+                json!(mvp4_micro_node_recovery_action("unavailable")),
+            );
+            object.insert(
+                "missing_reason".to_string(),
+                json!("sparse sidecar schema incomplete"),
+            );
+        }
+        return Ok(layer);
+    }
+
+    let summary = store
+        .ast_micro_node_visibility_summary(if include_sample { sample_limit } else { 0 })
+        .map_err(|error| error.to_string())?;
+    let status = if summary.total_rows == 0 {
+        "not_applicable"
+    } else if summary.cap_hit_count > 0 {
+        "truncated"
+    } else {
+        "ready"
+    };
+    let sample_count = summary.sample.len();
+    let mut layer = json!({
+        "status": status,
+        "feature_status": status,
+        "ready": status == "ready",
+        "feature": "mvp4_1_ast_micro_nodes",
+        "supported_language_slice": "typescript_ts_production_function_local_micro_nodes_v1",
+        "schema_version": preflight.db_health.schema_version,
+        "row_schema_version": summary.row_schema_versions.first().copied().unwrap_or(MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION),
+        "row_schema_versions": summary.row_schema_versions,
+        "payload_version": summary.payload_versions.first().copied().unwrap_or(MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION),
+        "payload_versions": summary.payload_versions,
+        "extraction_version": summary.extraction_versions.first().cloned().unwrap_or_else(|| MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION.to_string()),
+        "extraction_versions": summary.extraction_versions,
+        "total_rows": summary.total_rows,
+        "rows_by_node_kind": summary.rows_by_node_kind,
+        "rows_by_language": summary.rows_by_language,
+        "rows_by_source_role": summary.rows_by_source_role,
+        "files_represented": summary.files_represented,
+        "functions_represented": summary.functions_represented,
+        "truncated_file_count": summary.truncated_file_count,
+        "truncated_function_count": summary.truncated_function_count,
+        "cap_hit_count": summary.cap_hit_count,
+        "omitted_count": summary.omitted_count,
+        "cap_hit_details": summary.cap_hit_details,
+        "cap_hit_counts": {
+            "files": summary.truncated_file_count,
+            "functions": summary.truncated_function_count,
+            "total": summary.cap_hit_count,
+            "omitted_count": summary.omitted_count,
+            "detail_limit": 8,
+            "source": "MVP4.1 extraction_warnings cap-hit summaries joined to files with ast_micro_nodes"
+        },
+        "exactness_counts": summary.exactness_counts,
+        "claimability_counts": summary.claimability_counts,
+        "sidecar_table_bytes": summary.estimated_payload_bytes,
+        "sidecar_table_bytes_measurement": "estimated_row_payload_bytes",
+        "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+        "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+        "availability_separate_from_graph_claimability": true,
+        "graph_claimability_unchanged": true,
+        "default_full_table_scan": summary.default_full_table_scan,
+        "bounded_summary": true,
+        "sample_limit": summary.sample_limit,
+        "sample_count": sample_count,
+        "sample_available_in_audit": true,
+        "full_source_body_output": summary.full_source_body_output,
+        "query_plan": summary.query_plan,
+        "recovery_action": mvp4_micro_node_recovery_action(status),
+        "proof_boundary": mvp4_micro_node_proof_boundary_json(),
+    });
+    if include_sample {
+        if let Some(object) = layer.as_object_mut() {
+            object.insert(
+                "sample".to_string(),
+                serde_json::to_value(summary.sample).map_err(|error| error.to_string())?,
+            );
+        }
+    }
+    Ok(layer)
+}
+
+fn add_mvp4_micro_node_visibility(value: &mut Value, layer: Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let status = layer
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let ready = layer.get("ready").and_then(Value::as_bool).unwrap_or(false);
+    object.insert("mvp4_micro_nodes".to_string(), layer.clone());
+    object.insert("mvp4_micro_node_status".to_string(), json!(status.clone()));
+    object.insert(
+        "mvp4_micro_node_rows".to_string(),
+        layer.get("total_rows").cloned().unwrap_or_else(|| json!(0)),
+    );
+
+    if let Some(staged) = object
+        .get_mut("staged_availability")
+        .and_then(Value::as_object_mut)
+    {
+        if let Some(layer_readiness) = staged
+            .get_mut("layer_readiness")
+            .and_then(Value::as_object_mut)
+        {
+            layer_readiness.insert("mvp4_micro_nodes".to_string(), layer);
+        }
+        let target_array = if ready {
+            staged.get_mut("available_layers")
+        } else if matches!(
+            status.as_str(),
+            "unavailable" | "stale" | "incompatible" | "corrupt" | "truncated"
+        ) {
+            staged.get_mut("missing_layers")
+        } else {
+            None
+        };
+        if let Some(array) = target_array.and_then(Value::as_array_mut) {
+            if !array
+                .iter()
+                .any(|value| value.as_str() == Some("mvp4_micro_nodes"))
+            {
+                array.push(json!("mvp4_micro_nodes"));
+            }
+        }
+    }
 }
 
 fn run_languages_command(args: &[String]) -> CliOutput {
@@ -1889,6 +2147,47 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         "proof": "Doctor is local-only and treats missing optional components as warnings.",
     });
     merge_json_object(&mut value, staged_fields);
+    let micro_nodes = if db_lifecycle.safe_to_read {
+        match SqliteGraphStore::open_read_only(&db_path) {
+            Ok(store) => mvp4_micro_node_visibility_from_store(
+                &store,
+                &db_lifecycle.lifecycle_preflight,
+                0,
+                false,
+            )
+            .unwrap_or_else(|error| {
+                let mut layer =
+                    mvp4_micro_node_visibility_for_preflight(&db_lifecycle.lifecycle_preflight);
+                if let Some(object) = layer.as_object_mut() {
+                    object.insert("status".to_string(), json!("unavailable"));
+                    object.insert("feature_status".to_string(), json!("unavailable"));
+                    object.insert("read_error".to_string(), json!(error));
+                    object.insert(
+                        "recovery_action".to_string(),
+                        json!(mvp4_micro_node_recovery_action("unavailable")),
+                    );
+                }
+                layer
+            }),
+            Err(error) => {
+                let mut layer =
+                    mvp4_micro_node_visibility_for_preflight(&db_lifecycle.lifecycle_preflight);
+                if let Some(object) = layer.as_object_mut() {
+                    object.insert("status".to_string(), json!("unavailable"));
+                    object.insert("feature_status".to_string(), json!("unavailable"));
+                    object.insert("read_error".to_string(), json!(error.to_string()));
+                    object.insert(
+                        "recovery_action".to_string(),
+                        json!(mvp4_micro_node_recovery_action("unavailable")),
+                    );
+                }
+                layer
+            }
+        }
+    } else {
+        mvp4_micro_node_visibility_for_preflight(&db_lifecycle.lifecycle_preflight)
+    };
+    add_mvp4_micro_node_visibility(&mut value, micro_nodes);
     add_agent_use_dirty_evidence_output_fields(&mut value, "doctor", false);
     Ok(value)
 }
