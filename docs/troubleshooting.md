@@ -121,6 +121,16 @@ source files. An editor save hook may call the same command for saved files, but
 this is not a persistent editor daemon, editor plugin, background loop, or
 unsaved-buffer integration claim.
 
+If validate-edit, watch, status, doctor, or audit reports MVP4.2 micro-edge
+state as `unavailable`, `stale`, `incompatible`, `corrupt`, or `truncated`,
+treat it as optional layer state unless a reverified proof-integrity finding is
+also present. Normal `LOCAL_RETURNS_TO` add/remove/change deltas are not source
+errors. A persisted micro-edge integrity contradiction should recommend
+reindexing or repairing CodeGraph state before rerunning validation; it does not
+by itself prove that the source must be edited. Micro-edge visibility does not
+activate local-flow packets, `flow_proof`, `mutation_proof`, or route/auth
+semantics.
+
 ## Windows Application Control Blocks A Fresh Build Or Test
 
 If `cargo build`, `cargo test`, or a clean-clone smoke fails before the Rust test

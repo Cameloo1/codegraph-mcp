@@ -20,11 +20,15 @@ use std::{
 };
 
 use codegraph_core::{
-    relation_allows, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
-    stable_fact_identity_key, stable_micro_node_id, Edge, EdgeClass, EdgeContext, Entity,
-    EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, MicroDerivationKind, MicroExactness,
-    MicroFactProvenance, MicroNodeIdentityInput, MicroNodeKind, MicroSourceRole, RelationKind,
-    SourceSpan,
+    decide_local_returns_to_exactness, local_returns_to_identity_input, relation_allows,
+    stable_edge_id, stable_entity_id, stable_entity_id_for_kind, stable_fact_identity_key,
+    stable_micro_edge_id, stable_micro_node_id, validate_micro_fact_provenance, Edge, EdgeClass,
+    EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord,
+    LocalReturnsToExactnessInput, LocalReturnsToIdentityContractInput, Metadata,
+    MicroDerivationKind, MicroEdgeCandidate, MicroEdgeCandidateCapState, MicroEdgeKind,
+    MicroExactness, MicroFactProvenance, MicroNodeIdentityInput, MicroNodeKind, MicroSourceRole,
+    RelationKind, SourceSpan, MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+    MVP4_2_MICRO_EDGE_PAYLOAD_VERSION, MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1434,6 +1438,43 @@ pub struct Mvp4TypeScriptInMemoryInventoryReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptLocalReturnsToInMemoryReport {
+    pub status: String,
+    pub eligible: bool,
+    pub exclusion_reason: Option<String>,
+    pub source_role: MicroSourceRole,
+    pub parser_status: String,
+    pub candidates: Vec<MicroEdgeCandidate>,
+    pub diagnostics: Vec<Mvp4TypeScriptMicroEdgeDiagnostic>,
+    pub omitted_edge_count: u64,
+    pub completeness_label: String,
+    pub duplicate_candidate_count: u64,
+    pub cross_function_edge_count: u64,
+    pub cross_file_edge_count: u64,
+    pub claimable_edge_missing_span_count: u64,
+    pub claimable_edge_missing_provenance_count: u64,
+    pub flow_semantic_overclaim_count: u64,
+    pub production_micro_edge_rows: u64,
+    pub local_flow_packet_rows: u64,
+    pub mutation_proof_activated: bool,
+    pub flow_proof_activated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp4TypeScriptMicroEdgeDiagnostic {
+    pub diagnostic_kind: String,
+    pub classification: String,
+    pub reason: String,
+    pub head_micro_node_id: Option<String>,
+    pub tail_micro_node_id: Option<String>,
+    pub function_identity: Option<String>,
+    pub source_span: Option<SourceSpan>,
+    pub missing_requirements: Vec<String>,
+    pub omitted_count: u64,
+    pub recommended_action_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mvp4TypeScriptMicroNodeCapPolicy {
     pub max_micro_nodes_per_function: usize,
     pub max_micro_nodes_per_file: usize,
@@ -1948,6 +1989,411 @@ fn emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy(
     apply_mvp4_ts_micro_node_caps(&mut report, candidates, policy);
     finalize_mvp4_ts_inventory_counts(&mut report);
     report
+}
+
+pub fn emit_mvp4_typescript_local_returns_to_in_memory_candidates(
+    parsed: &ParsedFile,
+    source: &str,
+) -> Mvp4TypeScriptLocalReturnsToInMemoryReport {
+    emit_mvp4_typescript_local_returns_to_in_memory_candidates_with_policy(
+        parsed,
+        source,
+        &mvp4_typescript_first_slice_cap_policy(),
+    )
+}
+
+fn emit_mvp4_typescript_local_returns_to_in_memory_candidates_with_policy(
+    parsed: &ParsedFile,
+    source: &str,
+    policy: &Mvp4TypeScriptMicroNodeCapPolicy,
+) -> Mvp4TypeScriptLocalReturnsToInMemoryReport {
+    let inventory =
+        emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy(parsed, source, policy);
+    let mut report = Mvp4TypeScriptLocalReturnsToInMemoryReport {
+        status: inventory.status.clone(),
+        eligible: inventory.eligible,
+        exclusion_reason: inventory.exclusion_reason.clone(),
+        source_role: inventory.source_role,
+        parser_status: inventory.parser_status.clone(),
+        candidates: Vec::new(),
+        diagnostics: Vec::new(),
+        omitted_edge_count: mvp4_local_returns_to_omitted_return_site_count(&inventory),
+        completeness_label: inventory.completeness_label.clone(),
+        duplicate_candidate_count: 0,
+        cross_function_edge_count: 0,
+        cross_file_edge_count: 0,
+        claimable_edge_missing_span_count: 0,
+        claimable_edge_missing_provenance_count: 0,
+        flow_semantic_overclaim_count: 0,
+        production_micro_edge_rows: 0,
+        local_flow_packet_rows: 0,
+        mutation_proof_activated: false,
+        flow_proof_activated: false,
+    };
+
+    if !inventory.eligible {
+        report.completeness_label = "not_applicable".to_string();
+        return report;
+    }
+
+    let function_frames = inventory
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.node_kind == MicroNodeKind::FunctionFrame)
+        .map(|candidate| (candidate.enclosing_function_identity.clone(), candidate))
+        .collect::<BTreeMap<_, _>>();
+    let retained_return_site_count = inventory
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.node_kind == MicroNodeKind::ReturnSite)
+        .count();
+
+    if inventory.parser_status == "parsed_with_syntax_diagnostics"
+        && retained_return_site_count == 0
+    {
+        report.diagnostics.push(mvp4_local_returns_to_diagnostic(
+            "parser_recovery_no_retained_return_site",
+            "unsupported_degraded_condition",
+            "Parser recovery prevented retention of a claimable ReturnSite endpoint, so exact LOCAL_RETURNS_TO is unavailable.",
+            None,
+            None,
+            vec![
+                "current_return_site".to_string(),
+                "no_parser_recovery_ambiguity".to_string(),
+            ],
+            0,
+            "unsupported_or_unknown",
+        ));
+    }
+
+    for return_site in inventory
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.node_kind == MicroNodeKind::ReturnSite)
+    {
+        if return_site.parse_recovery {
+            report.diagnostics.push(mvp4_local_returns_to_diagnostic(
+                "parser_recovery_return_site",
+                "unsupported_degraded_condition",
+                "ReturnSite was retained only as parser-recovery evidence, so exact LOCAL_RETURNS_TO is omitted.",
+                Some(return_site),
+                None,
+                vec!["no_parser_recovery_ambiguity".to_string()],
+                0,
+                "unsupported_or_unknown",
+            ));
+            continue;
+        }
+
+        let Some(function_frame) = function_frames.get(&return_site.enclosing_function_identity)
+        else {
+            let omitted_by_cap = mvp4_local_returns_to_cap_may_have_omitted_function_frame(
+                &inventory,
+                &return_site.enclosing_function_identity,
+            );
+            if omitted_by_cap {
+                report.omitted_edge_count += 1;
+            }
+            report.diagnostics.push(mvp4_local_returns_to_diagnostic(
+                if omitted_by_cap {
+                    "function_frame_endpoint_omitted_by_cap"
+                } else {
+                    "missing_function_frame_endpoint"
+                },
+                if omitted_by_cap {
+                    "unsupported_degraded_condition"
+                } else {
+                    "proof_integrity_diagnostic"
+                },
+                if omitted_by_cap {
+                    "Retained ReturnSite has no retained FunctionFrame endpoint because the node inventory was cap-truncated."
+                } else {
+                    "Retained ReturnSite has no matching retained FunctionFrame endpoint in the same function identity domain."
+                },
+                Some(return_site),
+                None,
+                vec!["current_function_frame".to_string()],
+                u64::from(omitted_by_cap),
+                if omitted_by_cap {
+                    "unsupported_or_unknown"
+                } else {
+                    "reindex_or_repair"
+                },
+            ));
+            continue;
+        };
+
+        let provenance = mvp4_local_returns_to_provenance(return_site, function_frame);
+        let direct_ast_provenance = validate_micro_fact_provenance(&provenance).is_ok();
+        let exactness_input = LocalReturnsToExactnessInput {
+            supported_typescript_production_ts_file: parsed.language == SourceLanguage::TypeScript
+                && is_mvp4_exact_typescript_ts_path(&parsed.repo_relative_path)
+                && inventory.source_role == MicroSourceRole::Production,
+            current_return_site: return_site.node_kind == MicroNodeKind::ReturnSite
+                && return_site.extraction_version == MVP4_TS_MICRO_NODE_EXTRACTION_VERSION,
+            current_function_frame: function_frame.node_kind == MicroNodeKind::FunctionFrame
+                && function_frame.extraction_version == MVP4_TS_MICRO_NODE_EXTRACTION_VERSION,
+            return_site_source_span: mvp4_source_span_is_bounded(&return_site.source_span),
+            function_frame_source_span: mvp4_source_span_is_bounded(&function_frame.source_span),
+            deterministic_nearest_enclosing_function_ownership: return_site
+                .enclosing_function_identity
+                == function_frame.enclosing_function_identity,
+            identical_normalized_file_identity: return_site.repo_relative_path
+                == function_frame.repo_relative_path,
+            identical_enclosing_function_identity_domain: return_site.enclosing_function_identity
+                == function_frame.enclosing_function_identity,
+            endpoints_retained_after_caps: true,
+            current_extraction_versions: return_site.row_schema_version
+                == MVP4_TS_MICRO_NODE_ROW_SCHEMA_VERSION
+                && function_frame.row_schema_version == MVP4_TS_MICRO_NODE_ROW_SCHEMA_VERSION
+                && return_site.payload_version == MVP4_TS_MICRO_NODE_PAYLOAD_VERSION
+                && function_frame.payload_version == MVP4_TS_MICRO_NODE_PAYLOAD_VERSION,
+            claimable_lifecycle_passport: return_site.claimability.starts_with("claimable_")
+                && function_frame.claimability.starts_with("claimable_"),
+            direct_ast_provenance,
+            no_parser_recovery_ambiguity: !return_site.parse_recovery
+                && !function_frame.parse_recovery,
+        };
+        let decision = decide_local_returns_to_exactness(&exactness_input);
+        if !decision.claimable {
+            report.diagnostics.push(mvp4_local_returns_to_diagnostic(
+                "local_returns_to_exactness_requirements_missing",
+                "unsupported_degraded_condition",
+                "LOCAL_RETURNS_TO exact edge requirements were not all satisfied; no proof row candidate emitted.",
+                Some(return_site),
+                Some(function_frame),
+                decision
+                    .missing_requirements
+                    .iter()
+                    .map(|requirement| requirement.as_str().to_string())
+                    .collect(),
+                0,
+                "unsupported_or_unknown",
+            ));
+            continue;
+        }
+
+        let identity_input = LocalReturnsToIdentityContractInput {
+            repo_relative_path: return_site.repo_relative_path.clone(),
+            language: format!("{}@{}", return_site.language, return_site.frontend),
+            function_entity_id: return_site.enclosing_function_identity.clone(),
+            scope_path: function_frame.scope_path.clone(),
+            head_return_site_micro_node_id: return_site.micro_node_id.clone(),
+            tail_function_frame_micro_node_id: function_frame.micro_node_id.clone(),
+            return_structural_path: mvp4_local_returns_to_identity_path(return_site),
+            occurrence_index: return_site.occurrence_index,
+            source_role: return_site.source_role,
+            row_schema_version: MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
+            payload_version: MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
+            extraction_version: MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION.to_string(),
+            relation_span: Some(return_site.source_span.clone()),
+        };
+        let edge_identity = local_returns_to_identity_input(&identity_input);
+        let cap_omission_state = (inventory.omitted_count > 0).then(|| MicroEdgeCandidateCapState {
+            omitted_count: inventory.omitted_count,
+            reason: "retained micro-node inventory is cap-truncated; exact edge coverage is incomplete".to_string(),
+            completeness_label: inventory.completeness_label.clone(),
+        });
+
+        report.candidates.push(MicroEdgeCandidate {
+            micro_edge_id: stable_micro_edge_id(&edge_identity),
+            micro_edge_kind: MicroEdgeKind::LocalReturnsTo,
+            head_micro_node_id: return_site.micro_node_id.clone(),
+            tail_micro_node_id: function_frame.micro_node_id.clone(),
+            repo_relative_path: return_site.repo_relative_path.clone(),
+            function_identity: return_site.enclosing_function_identity.clone(),
+            relation_source_span: return_site.source_span.clone(),
+            head_source_span: return_site.source_span.clone(),
+            tail_source_span: function_frame.source_span.clone(),
+            provenance,
+            exactness: decision.exactness,
+            claimability: "claimable_source_spanned_local_return_containment".to_string(),
+            language: return_site.language.clone(),
+            frontend: return_site.frontend.clone(),
+            source_role: return_site.source_role,
+            row_schema_version: MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
+            payload_version: MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
+            extraction_version: MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION.to_string(),
+            cap_omission_state,
+        });
+    }
+
+    sort_mvp4_micro_edge_candidates(&mut report.candidates);
+    finalize_mvp4_local_returns_to_report(&mut report);
+    if report.omitted_edge_count > 0 || !report.diagnostics.is_empty() {
+        report.completeness_label = "truncated_or_degraded_unknown_completeness".to_string();
+    }
+    report
+}
+
+fn mvp4_local_returns_to_provenance(
+    return_site: &Mvp4TypeScriptMicroNodeCandidate,
+    function_frame: &Mvp4TypeScriptMicroNodeCandidate,
+) -> MicroFactProvenance {
+    MicroFactProvenance {
+        derivation_kind: MicroDerivationKind::DirectAstExtraction,
+        source_fact_ids: vec![
+            return_site.micro_node_id.clone(),
+            function_frame.micro_node_id.clone(),
+        ],
+        source_spans: vec![
+            return_site.source_span.clone(),
+            function_frame.source_span.clone(),
+        ],
+        extractor_or_adapter_version: MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION.to_string(),
+        exactness: MicroExactness::Exact,
+        limitations: vec![
+            "local_ast_containment_only".to_string(),
+            "does_not_prove_returned_value_flow".to_string(),
+            "does_not_prove_reachability".to_string(),
+            "does_not_prove_complete_return_coverage".to_string(),
+            "does_not_prove_runtime_behavior".to_string(),
+            "does_not_generate_local_flow_packet".to_string(),
+            "does_not_activate_mutation_proof_or_flow_proof".to_string(),
+        ],
+    }
+}
+
+fn mvp4_local_returns_to_identity_path(
+    return_site: &Mvp4TypeScriptMicroNodeCandidate,
+) -> Vec<String> {
+    vec![
+        "relation:local_returns_to".to_string(),
+        "ownership:nearest_enclosing_function".to_string(),
+        format!("frontend:{}", return_site.frontend),
+        format!("head_kind:{}", MicroNodeKind::ReturnSite.as_str()),
+        format!("tail_kind:{}", MicroNodeKind::FunctionFrame.as_str()),
+        format!("return_node:{}", return_site.micro_node_id),
+    ]
+}
+
+fn mvp4_local_returns_to_diagnostic(
+    diagnostic_kind: &str,
+    classification: &str,
+    reason: &str,
+    head: Option<&Mvp4TypeScriptMicroNodeCandidate>,
+    tail: Option<&Mvp4TypeScriptMicroNodeCandidate>,
+    missing_requirements: Vec<String>,
+    omitted_count: u64,
+    recommended_action_kind: &str,
+) -> Mvp4TypeScriptMicroEdgeDiagnostic {
+    Mvp4TypeScriptMicroEdgeDiagnostic {
+        diagnostic_kind: diagnostic_kind.to_string(),
+        classification: classification.to_string(),
+        reason: reason.to_string(),
+        head_micro_node_id: head.map(|candidate| candidate.micro_node_id.clone()),
+        tail_micro_node_id: tail.map(|candidate| candidate.micro_node_id.clone()),
+        function_identity: head
+            .or(tail)
+            .map(|candidate| candidate.enclosing_function_identity.clone()),
+        source_span: head
+            .map(|candidate| candidate.source_span.clone())
+            .or_else(|| tail.map(|candidate| candidate.source_span.clone())),
+        missing_requirements,
+        omitted_count,
+        recommended_action_kind: recommended_action_kind.to_string(),
+    }
+}
+
+fn mvp4_local_returns_to_omitted_return_site_count(
+    inventory: &Mvp4TypeScriptInMemoryInventoryReport,
+) -> u64 {
+    inventory
+        .cap_hits
+        .iter()
+        .filter(|hit| {
+            hit.node_kind == Some(MicroNodeKind::ReturnSite)
+                || (hit.node_kind.is_none()
+                    && matches!(hit.cap_kind.as_str(), "file_total" | "function_total"))
+        })
+        .map(|hit| hit.omitted_count)
+        .sum()
+}
+
+fn mvp4_local_returns_to_cap_may_have_omitted_function_frame(
+    inventory: &Mvp4TypeScriptInMemoryInventoryReport,
+    function_identity: &str,
+) -> bool {
+    inventory.cap_hits.iter().any(|hit| {
+        hit.node_kind == Some(MicroNodeKind::FunctionFrame)
+            || (hit.node_kind.is_none()
+                && (hit.function_identity.as_deref() == Some(function_identity)
+                    || hit.cap_kind == "file_total"))
+    })
+}
+
+fn sort_mvp4_micro_edge_candidates(candidates: &mut [MicroEdgeCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.repo_relative_path
+            .cmp(&right.repo_relative_path)
+            .then_with(|| left.function_identity.cmp(&right.function_identity))
+            .then_with(|| {
+                left.relation_source_span
+                    .start_line
+                    .cmp(&right.relation_source_span.start_line)
+            })
+            .then_with(|| {
+                left.relation_source_span
+                    .start_column
+                    .cmp(&right.relation_source_span.start_column)
+            })
+            .then_with(|| left.micro_edge_kind.cmp(&right.micro_edge_kind))
+            .then_with(|| left.head_micro_node_id.cmp(&right.head_micro_node_id))
+            .then_with(|| left.tail_micro_node_id.cmp(&right.tail_micro_node_id))
+            .then_with(|| left.micro_edge_id.cmp(&right.micro_edge_id))
+    });
+}
+
+fn finalize_mvp4_local_returns_to_report(report: &mut Mvp4TypeScriptLocalReturnsToInMemoryReport) {
+    let mut ids = BTreeSet::new();
+    for candidate in &report.candidates {
+        if !ids.insert(candidate.micro_edge_id.clone()) {
+            report.duplicate_candidate_count += 1;
+        }
+        if candidate.repo_relative_path != candidate.head_source_span.repo_relative_path
+            || candidate.repo_relative_path != candidate.tail_source_span.repo_relative_path
+        {
+            report.cross_file_edge_count += 1;
+        }
+        if candidate.head_micro_node_id == candidate.tail_micro_node_id
+            || candidate.function_identity.trim().is_empty()
+        {
+            report.cross_function_edge_count += 1;
+        }
+        if candidate.claimability.starts_with("claimable_")
+            && (!mvp4_source_span_is_bounded(&candidate.relation_source_span)
+                || !mvp4_source_span_is_bounded(&candidate.head_source_span)
+                || !mvp4_source_span_is_bounded(&candidate.tail_source_span))
+        {
+            report.claimable_edge_missing_span_count += 1;
+        }
+        if candidate.claimability.starts_with("claimable_")
+            && validate_micro_fact_provenance(&candidate.provenance).is_err()
+        {
+            report.claimable_edge_missing_provenance_count += 1;
+        }
+        if mvp4_local_returns_to_overclaims_flow_semantics(candidate) {
+            report.flow_semantic_overclaim_count += 1;
+        }
+    }
+}
+
+fn mvp4_local_returns_to_overclaims_flow_semantics(candidate: &MicroEdgeCandidate) -> bool {
+    candidate.micro_edge_kind != MicroEdgeKind::LocalReturnsTo
+        || candidate.claimability.contains("flow_proof")
+        || candidate.claimability.contains("mutation_proof")
+        || !candidate
+            .provenance
+            .limitations
+            .contains(&"local_ast_containment_only".to_string())
+        || !candidate
+            .provenance
+            .limitations
+            .contains(&"does_not_prove_returned_value_flow".to_string())
+        || !candidate
+            .provenance
+            .limitations
+            .contains(&"does_not_prove_runtime_behavior".to_string())
 }
 
 fn find_mvp4_ts_function_node_by_span<'tree>(
@@ -2735,7 +3181,9 @@ fn is_mvp4_exact_typescript_ts_path(path: &str) -> bool {
 fn mvp4_typescript_source_role(path: &str) -> Mvp4SourceRoleDecision {
     let normalized = normalize_repo_relative_path(path).to_ascii_lowercase();
     let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
-    if normalized.contains("/generated/")
+    if normalized.starts_with("generated/")
+        || normalized.starts_with("gen/")
+        || normalized.contains("/generated/")
         || normalized.contains("/gen/")
         || file_name.contains(".generated.")
         || file_name.ends_with(".generated.ts")
@@ -2754,7 +3202,12 @@ fn mvp4_typescript_source_role(path: &str) -> Mvp4SourceRoleDecision {
             source: "file_path",
         };
     }
-    if normalized.contains("/__mocks__/")
+    if normalized.starts_with("__mocks__/")
+        || normalized.starts_with("mocks/")
+        || normalized.starts_with("mock/")
+        || normalized.starts_with("stubs/")
+        || normalized.starts_with("stub/")
+        || normalized.contains("/__mocks__/")
         || normalized.contains("/mocks/")
         || normalized.contains("/mock/")
         || normalized.contains("/stubs/")
@@ -10683,8 +11136,8 @@ mod tests {
     };
 
     use codegraph_core::{
-        Entity, EntityKind, Exactness, MicroDerivationKind, MicroExactness, MicroNodeKind,
-        MicroSourceRole, RelationKind, SourceSpan,
+        Entity, EntityKind, Exactness, MicroDerivationKind, MicroEdgeKind, MicroExactness,
+        MicroNodeKind, MicroSourceRole, RelationKind, SourceSpan,
     };
     use codegraph_store::{GraphStore, SqliteGraphStore};
 
@@ -10693,6 +11146,8 @@ mod tests {
         emit_mvp4_typescript_core_declaration_candidates,
         emit_mvp4_typescript_in_memory_first_slice_inventory,
         emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy,
+        emit_mvp4_typescript_local_returns_to_in_memory_candidates,
+        emit_mvp4_typescript_local_returns_to_in_memory_candidates_with_policy,
         emit_mvp4_typescript_operation_site_candidates,
         emit_mvp4_typescript_property_access_candidates, extract_basic_entities,
         mvp4_typescript_first_slice_cap_policy, normalize_repo_relative_path, LanguageFrontend,
@@ -10891,6 +11346,161 @@ mod tests {
         emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy(&parsed, source, policy)
     }
 
+    fn mvp4_local_returns_to_report(
+        path: &str,
+        source: &str,
+    ) -> super::Mvp4TypeScriptLocalReturnsToInMemoryReport {
+        let parsed = parsed(path, source);
+        emit_mvp4_typescript_local_returns_to_in_memory_candidates(&parsed, source)
+    }
+
+    fn mvp4_local_returns_to_report_with_policy(
+        path: &str,
+        source: &str,
+        policy: &Mvp4TypeScriptMicroNodeCapPolicy,
+    ) -> super::Mvp4TypeScriptLocalReturnsToInMemoryReport {
+        let parsed = parsed(path, source);
+        emit_mvp4_typescript_local_returns_to_in_memory_candidates_with_policy(
+            &parsed, source, policy,
+        )
+    }
+
+    fn mvp4_local_returns_to_edge_ids(
+        report: &super::Mvp4TypeScriptLocalReturnsToInMemoryReport,
+    ) -> BTreeSet<String> {
+        report
+            .candidates
+            .iter()
+            .map(|candidate| candidate.micro_edge_id.clone())
+            .collect()
+    }
+
+    fn mvp4_local_returns_to_edge_ids_for_function(
+        path: &str,
+        source: &str,
+        function_name: &str,
+    ) -> BTreeSet<String> {
+        let inventory = mvp4_in_memory_inventory_report(path, source);
+        let frames = inventory
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.node_kind == MicroNodeKind::FunctionFrame
+                    && candidate.name_or_literal == function_name
+            })
+            .map(|candidate| candidate.micro_node_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert!(!frames.is_empty(), "missing FunctionFrame {function_name}");
+
+        let report = mvp4_local_returns_to_report(path, source);
+        report
+            .candidates
+            .iter()
+            .filter(|candidate| frames.contains(&candidate.tail_micro_node_id))
+            .map(|candidate| candidate.micro_edge_id.clone())
+            .collect()
+    }
+
+    fn assert_mvp4_local_returns_to_report_clean(
+        path: &str,
+        source: &str,
+        report: &super::Mvp4TypeScriptLocalReturnsToInMemoryReport,
+    ) {
+        let inventory = mvp4_in_memory_inventory_report(path, source);
+        let frames_by_id = inventory
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == MicroNodeKind::FunctionFrame)
+            .map(|candidate| (candidate.micro_node_id.clone(), candidate))
+            .collect::<BTreeMap<_, _>>();
+        let returns_by_id = inventory
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == MicroNodeKind::ReturnSite)
+            .map(|candidate| (candidate.micro_node_id.clone(), candidate))
+            .collect::<BTreeMap<_, _>>();
+        let mut ids = BTreeSet::new();
+
+        for candidate in &report.candidates {
+            assert!(
+                ids.insert(candidate.micro_edge_id.clone()),
+                "duplicate edge id {}",
+                candidate.micro_edge_id
+            );
+            assert_eq!(candidate.micro_edge_kind, MicroEdgeKind::LocalReturnsTo);
+            assert_eq!(candidate.repo_relative_path, path);
+            assert_eq!(candidate.source_role, MicroSourceRole::Production);
+            assert_eq!(candidate.exactness, MicroExactness::Exact);
+            assert_eq!(
+                candidate.claimability,
+                "claimable_source_spanned_local_return_containment"
+            );
+            assert_span_inside_source(path, source, &candidate.relation_source_span);
+            assert_span_inside_source(path, source, &candidate.head_source_span);
+            assert_span_inside_source(path, source, &candidate.tail_source_span);
+            assert_eq!(
+                candidate.provenance.derivation_kind,
+                MicroDerivationKind::DirectAstExtraction
+            );
+            assert_eq!(candidate.provenance.source_fact_ids.len(), 2);
+            assert_eq!(candidate.provenance.source_spans.len(), 2);
+            assert!(candidate
+                .provenance
+                .limitations
+                .contains(&"local_ast_containment_only".to_string()));
+            assert!(candidate
+                .provenance
+                .limitations
+                .contains(&"does_not_prove_returned_value_flow".to_string()));
+            assert!(candidate
+                .provenance
+                .limitations
+                .contains(&"does_not_prove_runtime_behavior".to_string()));
+            assert!(!candidate.claimability.contains("flow"));
+            assert!(!candidate.claimability.contains("mutation"));
+            let head = returns_by_id
+                .get(&candidate.head_micro_node_id)
+                .unwrap_or_else(|| {
+                    panic!("missing ReturnSite head {}", candidate.head_micro_node_id)
+                });
+            let tail = frames_by_id
+                .get(&candidate.tail_micro_node_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing FunctionFrame tail {}",
+                        candidate.tail_micro_node_id
+                    )
+                });
+            assert_eq!(head.node_kind, MicroNodeKind::ReturnSite);
+            assert_eq!(tail.node_kind, MicroNodeKind::FunctionFrame);
+            assert_eq!(
+                head.enclosing_function_identity, tail.enclosing_function_identity,
+                "LOCAL_RETURNS_TO must stay in the owning function identity"
+            );
+            assert_eq!(
+                candidate.function_identity,
+                head.enclosing_function_identity
+            );
+            assert_eq!(
+                candidate.function_identity,
+                tail.enclosing_function_identity
+            );
+            assert_eq!(head.repo_relative_path, tail.repo_relative_path);
+            assert_eq!(candidate.repo_relative_path, head.repo_relative_path);
+        }
+
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.cross_function_edge_count, 0);
+        assert_eq!(report.cross_file_edge_count, 0);
+        assert_eq!(report.claimable_edge_missing_span_count, 0);
+        assert_eq!(report.claimable_edge_missing_provenance_count, 0);
+        assert_eq!(report.flow_semantic_overclaim_count, 0);
+        assert_eq!(report.production_micro_edge_rows, 0);
+        assert_eq!(report.local_flow_packet_rows, 0);
+        assert!(!report.mutation_proof_activated);
+        assert!(!report.flow_proof_activated);
+    }
+
     fn mvp4_candidate_names(
         report: &super::Mvp4TypeScriptCoreDeclarationCandidateReport,
         kind: MicroNodeKind,
@@ -11072,8 +11682,10 @@ export function real(value: number) {
         let source = "export function helper(value: number) { return value; }\n";
         for (path, role) in [
             ("tests/helper.test.ts", MicroSourceRole::Test),
+            ("generated/client.ts", MicroSourceRole::Generated),
             ("src/generated/client.ts", MicroSourceRole::Generated),
             ("src/__mocks__/service.ts", MicroSourceRole::Mock),
+            ("__mocks__/service.ts", MicroSourceRole::Mock),
             ("src/service.stub.ts", MicroSourceRole::Mock),
         ] {
             let report = mvp4_scope_report(path, source);
@@ -12434,6 +13046,716 @@ export function broken(value: number, service: any) {
         assert_eq!(report.binding_overclaim_count, 0);
         assert_eq!(report.micro_edge_rows, 0);
         assert!(!report.flow_proof_activated);
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_candidates_cover_positive_containment_cases() {
+        let path = "src/local_returns.ts";
+        let source = "\
+export function simple(value: number) {
+  return value;
+}
+
+export function bare(flag: boolean) {
+  if (flag) {
+    return;
+  }
+  return;
+}
+
+export function branches(value: number) {
+  if (value > 0) {
+    return value;
+  } else {
+    return -value;
+  }
+}
+
+export function wrapped(value: number) {
+  try {
+    return value;
+  } catch (err) {
+    return 0;
+  } finally {
+    return value;
+  }
+}
+
+export async function asyncValue(loader: any) {
+  return await loader();
+}
+
+export function* generated(seed: number) {
+  yield seed;
+  return seed + 1;
+}
+
+class Box {
+  method(value: number) {
+    return value;
+  }
+  zero() {
+    const value = 1;
+  }
+}
+";
+        let inventory = mvp4_in_memory_inventory_report(path, source);
+        let retained_returns = inventory
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == MicroNodeKind::ReturnSite)
+            .count();
+        let report = mvp4_local_returns_to_report(path, source);
+
+        assert!(report.eligible);
+        assert_eq!(report.status, "complete");
+        assert_eq!(report.candidates.len(), retained_returns);
+        assert!(retained_returns >= 10, "{retained_returns}");
+        assert_eq!(report.omitted_edge_count, 0);
+        assert_eq!(report.duplicate_candidate_count, 0);
+        assert_eq!(report.cross_function_edge_count, 0);
+        assert_eq!(report.cross_file_edge_count, 0);
+        assert_eq!(report.claimable_edge_missing_span_count, 0);
+        assert_eq!(report.claimable_edge_missing_provenance_count, 0);
+        assert_eq!(report.flow_semantic_overclaim_count, 0);
+        assert_eq!(report.production_micro_edge_rows, 0);
+        assert_eq!(report.local_flow_packet_rows, 0);
+        assert!(!report.mutation_proof_activated);
+        assert!(!report.flow_proof_activated);
+
+        for candidate in &report.candidates {
+            assert_eq!(candidate.micro_edge_kind, MicroEdgeKind::LocalReturnsTo);
+            assert_eq!(candidate.repo_relative_path, path);
+            assert_eq!(candidate.language, "typescript");
+            assert_eq!(candidate.frontend, "tree-sitter-typescript");
+            assert_eq!(candidate.source_role, MicroSourceRole::Production);
+            assert_eq!(candidate.exactness, MicroExactness::Exact);
+            assert_eq!(
+                candidate.claimability,
+                "claimable_source_spanned_local_return_containment"
+            );
+            assert_eq!(candidate.row_schema_version, 1);
+            assert_eq!(candidate.payload_version, 1);
+            assert_eq!(
+                candidate.extraction_version,
+                "mvp4.2-typescript-local-returns-to-v1"
+            );
+            assert_span_inside_source(path, source, &candidate.relation_source_span);
+            assert_span_inside_source(path, source, &candidate.head_source_span);
+            assert_span_inside_source(path, source, &candidate.tail_source_span);
+            assert_eq!(
+                candidate.provenance.derivation_kind,
+                MicroDerivationKind::DirectAstExtraction
+            );
+            assert_eq!(candidate.provenance.source_fact_ids.len(), 2);
+            assert_eq!(candidate.provenance.source_spans.len(), 2);
+            assert!(candidate
+                .provenance
+                .limitations
+                .contains(&"local_ast_containment_only".to_string()));
+            assert!(candidate
+                .provenance
+                .limitations
+                .contains(&"does_not_prove_returned_value_flow".to_string()));
+            assert!(!candidate.claimability.contains("flow_proof"));
+            assert!(!candidate.claimability.contains("mutation_proof"));
+        }
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_uses_nearest_nested_function_ownership() {
+        let path = "src/nested_returns.ts";
+        let source = "\
+export function outer(value: number) {
+  if (value > 0) {
+    return value;
+  }
+  function inner() {
+    return 0;
+  }
+  return inner();
+}
+";
+        let inventory = mvp4_in_memory_inventory_report(path, source);
+        let report = mvp4_local_returns_to_report(path, source);
+        let inner_frame = inventory
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate.node_kind == MicroNodeKind::FunctionFrame
+                    && candidate.name_or_literal == "inner"
+            })
+            .expect("inner frame");
+        let outer_frame = inventory
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate.node_kind == MicroNodeKind::FunctionFrame
+                    && candidate.name_or_literal == "outer"
+            })
+            .expect("outer frame");
+
+        let inner_edges = report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.tail_micro_node_id == inner_frame.micro_node_id)
+            .collect::<Vec<_>>();
+        let outer_edges = report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.tail_micro_node_id == outer_frame.micro_node_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(report.candidates.len(), 3, "{report:?}");
+        assert_eq!(inner_edges.len(), 1, "{inner_edges:?}");
+        assert_eq!(outer_edges.len(), 2, "{outer_edges:?}");
+        assert_ne!(
+            inner_edges[0].tail_micro_node_id, outer_frame.micro_node_id,
+            "nested return must not link to outer FunctionFrame"
+        );
+        assert_eq!(report.cross_function_edge_count, 0);
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_negative_semantics_and_source_boundaries_emit_no_edges() {
+        let source = "\
+export function textOnly() {
+  const message = \"return value\";
+  const returnLike = { returnValue: message };
+  // return message;
+  returnLike.returnValue;
+}
+";
+        let report = mvp4_local_returns_to_report("src/text_only.ts", source);
+        assert!(report.eligible);
+        assert!(report.candidates.is_empty(), "{report:?}");
+        assert_eq!(report.production_micro_edge_rows, 0);
+        assert_eq!(report.flow_semantic_overclaim_count, 0);
+
+        for path in [
+            "tests/helper.test.ts",
+            "src/generated/client.ts",
+            "src/__mocks__/service.ts",
+            "src/service.stub.ts",
+            "src/component.tsx",
+            "src/file.js",
+            "src/file.jsx",
+            "src/types.d.ts",
+        ] {
+            let filtered =
+                mvp4_local_returns_to_report(path, "export function helper() { return 1; }\n");
+            assert!(!filtered.eligible, "{path}");
+            assert!(filtered.candidates.is_empty(), "{path}");
+            assert_eq!(filtered.production_micro_edge_rows, 0, "{path}");
+            assert_eq!(filtered.local_flow_packet_rows, 0, "{path}");
+            assert!(!filtered.flow_proof_activated, "{path}");
+        }
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_parser_recovery_is_diagnostic_not_exact_edge() {
+        let source = "\
+export function broken(value: number, service: any) {
+  service.send(value);
+  value =
+  return value;
+}
+";
+        let report = mvp4_local_returns_to_report("src/broken_returns.ts", source);
+
+        assert!(report.eligible);
+        assert_eq!(report.parser_status, "parsed_with_syntax_diagnostics");
+        assert!(report.candidates.is_empty(), "{report:?}");
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.diagnostic_kind.starts_with("parser_recovery_")
+                    && diagnostic.classification == "unsupported_degraded_condition"
+                    && diagnostic.recommended_action_kind == "unsupported_or_unknown"
+            }),
+            "{report:#?}"
+        );
+        assert_eq!(report.production_micro_edge_rows, 0);
+        assert!(!report.flow_proof_activated);
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_cap_omissions_are_explicit_and_non_dangling() {
+        let source = "\
+export function capped(value: number) {
+  if (value > 0) {
+    return value;
+  }
+  return 0;
+}
+";
+        let mut policy = mvp4_typescript_first_slice_cap_policy();
+        policy
+            .per_kind_nodes_per_function
+            .insert(MicroNodeKind::ReturnSite, 1);
+        let report =
+            mvp4_local_returns_to_report_with_policy("src/capped_returns.ts", source, &policy);
+        assert_eq!(report.candidates.len(), 1, "{report:?}");
+        assert!(report.omitted_edge_count > 0, "{report:?}");
+        assert_eq!(
+            report.completeness_label,
+            "truncated_or_degraded_unknown_completeness"
+        );
+        assert!(report.candidates[0].cap_omission_state.is_some());
+        assert_eq!(report.cross_function_edge_count, 0);
+        assert_eq!(report.cross_file_edge_count, 0);
+
+        let mut missing_frame_policy = mvp4_typescript_first_slice_cap_policy();
+        missing_frame_policy
+            .per_kind_nodes_per_function
+            .insert(MicroNodeKind::FunctionFrame, 0);
+        let missing_frame = mvp4_local_returns_to_report_with_policy(
+            "src/missing_frame.ts",
+            source,
+            &missing_frame_policy,
+        );
+        assert!(missing_frame.candidates.is_empty(), "{missing_frame:?}");
+        assert!(missing_frame.omitted_edge_count > 0, "{missing_frame:?}");
+        assert!(missing_frame.diagnostics.iter().any(|diagnostic| {
+            diagnostic.diagnostic_kind == "function_frame_endpoint_omitted_by_cap"
+                && diagnostic.recommended_action_kind == "unsupported_or_unknown"
+        }));
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_is_deterministic_deduped_and_does_not_persist() {
+        let path = "src/stable_returns.ts";
+        let source = "\
+export function stable(value: number) {
+  if (value) {
+    return value;
+  }
+  return 0;
+}
+";
+        let first = mvp4_local_returns_to_report(path, source);
+        let second = mvp4_local_returns_to_report(path, source);
+        let first_ids = first
+            .candidates
+            .iter()
+            .map(|candidate| candidate.micro_edge_id.clone())
+            .collect::<Vec<_>>();
+        let second_ids = second
+            .candidates
+            .iter()
+            .map(|candidate| candidate.micro_edge_id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_ids, second_ids);
+        assert_eq!(first.duplicate_candidate_count, 0);
+        assert_eq!(
+            first_ids.iter().collect::<BTreeSet<_>>().len(),
+            first_ids.len()
+        );
+        assert_eq!(first.cross_function_edge_count, 0);
+        assert_eq!(first.cross_file_edge_count, 0);
+        assert_eq!(first.claimable_edge_missing_span_count, 0);
+        assert_eq!(first.claimable_edge_missing_provenance_count, 0);
+        assert_eq!(first.flow_semantic_overclaim_count, 0);
+
+        let store = SqliteGraphStore::open_in_memory().expect("in-memory store");
+        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
+        assert_eq!(counts.get("ast_micro_nodes").copied(), Some(0));
+        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_identity_stability_matrix_matches_contract() {
+        let path = "src/identity_matrix.ts";
+        let base = "\
+export function stable(value: number) {
+  return value;
+}
+";
+        let whitespace_only = "\
+export function stable(value: number) {
+
+    return value;
+}
+";
+        let comment_only = "\
+export function stable(value: number) {
+  // harmless comment
+  return value;
+}
+";
+        let statement_before = "\
+export function stable(value: number) {
+  const marker = value + 1;
+  return value;
+}
+";
+        let statement_after = "\
+export function stable(value: number) {
+  return value;
+  const marker = value + 1;
+}
+";
+        let unrelated_function_before = "\
+export function helper() {
+  return 0;
+}
+
+export function stable(value: number) {
+  return value;
+}
+";
+        let moved_unique_return = "\
+export function stable(value: number) {
+  if (value > 0) {
+    return value + 1;
+  }
+}
+";
+        let moved_to_nested = "\
+export function stable(value: number) {
+  function nested() {
+    return value;
+  }
+  return nested();
+}
+";
+        let renamed_function = "\
+export function renamed(value: number) {
+  return value;
+}
+";
+
+        let base_ids = mvp4_local_returns_to_edge_ids_for_function(path, base, "stable");
+        assert_eq!(base_ids.len(), 1);
+        assert_eq!(
+            base_ids,
+            mvp4_local_returns_to_edge_ids_for_function(path, whitespace_only, "stable")
+        );
+        assert_eq!(
+            base_ids,
+            mvp4_local_returns_to_edge_ids_for_function(path, comment_only, "stable")
+        );
+        assert_eq!(
+            base_ids,
+            mvp4_local_returns_to_edge_ids_for_function(path, statement_before, "stable")
+        );
+        assert_eq!(
+            base_ids,
+            mvp4_local_returns_to_edge_ids_for_function(path, statement_after, "stable")
+        );
+
+        let inserted_report = mvp4_local_returns_to_report(path, unrelated_function_before);
+        assert_mvp4_local_returns_to_report_clean(
+            path,
+            unrelated_function_before,
+            &inserted_report,
+        );
+        assert_eq!(inserted_report.candidates.len(), 2);
+
+        let moved_ids =
+            mvp4_local_returns_to_edge_ids_for_function(path, moved_unique_return, "stable");
+        assert_eq!(moved_ids.len(), 1);
+        assert_ne!(base_ids, moved_ids);
+
+        let nested_report = mvp4_local_returns_to_report(path, moved_to_nested);
+        assert_mvp4_local_returns_to_report_clean(path, moved_to_nested, &nested_report);
+        assert_eq!(nested_report.candidates.len(), 2);
+        assert_ne!(
+            base_ids,
+            mvp4_local_returns_to_edge_ids_for_function(path, moved_to_nested, "nested")
+        );
+
+        assert_ne!(
+            base_ids,
+            mvp4_local_returns_to_edge_ids_for_function(path, renamed_function, "renamed")
+        );
+        assert_ne!(
+            base_ids,
+            mvp4_local_returns_to_edge_ids_for_function(
+                "src/identity_matrix_renamed.ts",
+                base,
+                "stable"
+            )
+        );
+
+        let duplicate_path_ids = mvp4_local_returns_to_edge_ids_for_function(
+            "src/copy/identity_matrix.ts",
+            base,
+            "stable",
+        );
+        assert!(base_ids.is_disjoint(&duplicate_path_ids));
+
+        let same_return_text = "\
+class A {
+  run(value: number) {
+    return value;
+  }
+}
+
+class B {
+  run(value: number) {
+    return value;
+  }
+}
+
+export function run(value: number) {
+  return value;
+}
+";
+        let report = mvp4_local_returns_to_report("src/same_text.ts", same_return_text);
+        assert_mvp4_local_returns_to_report_clean("src/same_text.ts", same_return_text, &report);
+        assert_eq!(report.candidates.len(), 3);
+        assert_eq!(
+            mvp4_local_returns_to_edge_ids(&report).len(),
+            report.candidates.len()
+        );
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_ownership_adversaries_stay_in_nearest_function() {
+        let path = "src/ownership_adversaries.ts";
+        let source = "\
+export function outer(value: number) {
+  if (value > 0) {
+    return value;
+  }
+  function middle(input: number) {
+    function inner() {
+      return input;
+    }
+    switch (input) {
+      case 1:
+        break;
+      default:
+        break;
+    }
+    try {
+      return input + 1;
+    } catch (err) {
+      return 0;
+    } finally {
+      return input;
+    }
+  }
+  throw new Error('stop');
+  return middle(value);
+}
+
+class Wrapper {
+  method(value: number) {
+    function insideMethod() {
+      return value;
+    }
+    return insideMethod();
+  }
+}
+";
+        let inventory = mvp4_in_memory_inventory_report(path, source);
+        let report = mvp4_local_returns_to_report(path, source);
+        assert_mvp4_local_returns_to_report_clean(path, source, &report);
+
+        let frames = inventory
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.node_kind == MicroNodeKind::FunctionFrame)
+            .map(|candidate| {
+                (
+                    candidate.name_or_literal.clone(),
+                    candidate.micro_node_id.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let edge_count_for = |name: &str| {
+            let frame_id = frames
+                .get(name)
+                .unwrap_or_else(|| panic!("missing frame {name}"));
+            report
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.tail_micro_node_id == *frame_id)
+                .count()
+        };
+
+        assert_eq!(edge_count_for("outer"), 2);
+        assert_eq!(edge_count_for("middle"), 3);
+        assert_eq!(edge_count_for("inner"), 1);
+        assert_eq!(edge_count_for("method"), 1);
+        assert_eq!(edge_count_for("insideMethod"), 1);
+        assert!(frames.keys().all(|name| name != "Wrapper"));
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_exactness_adversaries_do_not_fallback_to_heuristics() {
+        let unsupported_arrow = "\
+export function holder(value: number) {
+  const callback = () => {
+    return value;
+  };
+  return value;
+}
+";
+        let report = mvp4_local_returns_to_report("src/unsupported_arrow.ts", unsupported_arrow);
+        assert_mvp4_local_returns_to_report_clean(
+            "src/unsupported_arrow.ts",
+            unsupported_arrow,
+            &report,
+        );
+        assert_eq!(
+            report.candidates.len(),
+            1,
+            "unsupported arrow return must not leak into the outer function"
+        );
+
+        let malformed_boundary = "\
+export function broken(value: number) {
+  if (value > 0) {
+    return value;
+";
+        let broken = mvp4_local_returns_to_report("src/broken_boundary.ts", malformed_boundary);
+        assert!(broken.eligible);
+        assert_eq!(broken.parser_status, "parsed_with_syntax_diagnostics");
+        assert!(broken.candidates.is_empty(), "{broken:?}");
+        assert!(broken.diagnostics.iter().any(|diagnostic| {
+            diagnostic.classification == "unsupported_degraded_condition"
+                && diagnostic
+                    .missing_requirements
+                    .iter()
+                    .any(|requirement| requirement == "no_parser_recovery_ambiguity")
+        }));
+
+        for path in [
+            "src/unknown-source.tsx",
+            "src/unknown-source.js",
+            "src/unknown-source.jsx",
+            "src/unknown-source.d.ts",
+            "src/__mocks__/unknown-source.ts",
+            "src/generated/unknown-source.ts",
+            "tests/unknown-source.test.ts",
+        ] {
+            let filtered = mvp4_local_returns_to_report(path, "export function f() { return 1; }");
+            assert!(!filtered.eligible, "{path}");
+            assert!(filtered.candidates.is_empty(), "{path}");
+            assert_eq!(filtered.production_micro_edge_rows, 0, "{path}");
+        }
+
+        let capped_source = "\
+export function capped(value: number) {
+  return value;
+}
+";
+        let mut stale_endpoint_policy = mvp4_typescript_first_slice_cap_policy();
+        stale_endpoint_policy
+            .per_kind_nodes_per_function
+            .insert(MicroNodeKind::FunctionFrame, 0);
+        let capped = mvp4_local_returns_to_report_with_policy(
+            "src/capped_endpoint.ts",
+            capped_source,
+            &stale_endpoint_policy,
+        );
+        assert!(capped.candidates.is_empty(), "{capped:?}");
+        assert!(capped.omitted_edge_count > 0, "{capped:?}");
+        assert!(capped.diagnostics.iter().all(|diagnostic| {
+            diagnostic.recommended_action_kind == "unsupported_or_unknown"
+                || diagnostic.recommended_action_kind == "reindex_or_repair"
+        }));
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_cap_stress_is_deterministic_and_explicit() {
+        fn source_with_returns(return_count: usize) -> String {
+            let mut source = String::from("export function many(value: number) {\n");
+            for index in 0..return_count {
+                source.push_str(&format!("  if (value === {index}) {{ return {index}; }}\n"));
+            }
+            source.push_str("}\n");
+            source
+        }
+
+        let mut policy = mvp4_typescript_first_slice_cap_policy();
+        policy
+            .per_kind_nodes_per_function
+            .insert(MicroNodeKind::ReturnSite, 3);
+
+        let below = source_with_returns(2);
+        let below_report =
+            mvp4_local_returns_to_report_with_policy("src/return_cap_below.ts", &below, &policy);
+        assert_mvp4_local_returns_to_report_clean("src/return_cap_below.ts", &below, &below_report);
+        assert_eq!(below_report.candidates.len(), 2);
+        assert_eq!(below_report.omitted_edge_count, 0);
+
+        let at = source_with_returns(3);
+        let at_report =
+            mvp4_local_returns_to_report_with_policy("src/return_cap_at.ts", &at, &policy);
+        assert_mvp4_local_returns_to_report_clean("src/return_cap_at.ts", &at, &at_report);
+        assert_eq!(at_report.candidates.len(), 3);
+        assert_eq!(at_report.omitted_edge_count, 0);
+
+        let over = source_with_returns(8);
+        let first_over =
+            mvp4_local_returns_to_report_with_policy("src/return_cap_over.ts", &over, &policy);
+        let second_over =
+            mvp4_local_returns_to_report_with_policy("src/return_cap_over.ts", &over, &policy);
+        assert_mvp4_local_returns_to_report_clean("src/return_cap_over.ts", &over, &first_over);
+        assert_eq!(first_over.candidates.len(), 3);
+        assert!(first_over.omitted_edge_count >= 5, "{first_over:?}");
+        assert_eq!(
+            first_over.completeness_label,
+            "truncated_or_degraded_unknown_completeness"
+        );
+        assert!(first_over
+            .candidates
+            .iter()
+            .all(|candidate| candidate.cap_omission_state.is_some()));
+        assert_eq!(
+            mvp4_local_returns_to_edge_ids(&first_over),
+            mvp4_local_returns_to_edge_ids(&second_over)
+        );
+        assert_eq!(
+            first_over.omitted_edge_count,
+            second_over.omitted_edge_count
+        );
+
+        let mut file_cap_policy = policy.clone();
+        file_cap_policy.max_micro_nodes_per_file = 2;
+        let file_capped = mvp4_local_returns_to_report_with_policy(
+            "src/return_file_cap.ts",
+            &source_with_returns(5),
+            &file_cap_policy,
+        );
+        assert!(file_capped.candidates.len() <= 1, "{file_capped:?}");
+        assert!(file_capped.omitted_edge_count > 0, "{file_capped:?}");
+        assert_eq!(
+            file_capped.completeness_label,
+            "truncated_or_degraded_unknown_completeness"
+        );
+    }
+
+    #[test]
+    fn mvp4_local_returns_to_proof_invariants_hold_for_adversarial_inventory() {
+        let path = "src/proof_invariants.ts";
+        let source = "\
+export async function proof(loader: any, value: number) {
+  const result = await loader(value);
+  if (result) {
+    return result;
+  }
+  return value;
+}
+";
+        let report = mvp4_local_returns_to_report(path, source);
+        assert_mvp4_local_returns_to_report_clean(path, source, &report);
+        assert_eq!(report.candidates.len(), 2);
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+        let serialized = serde_json::to_string(&report.candidates).expect("serialize edges");
+        assert!(!serialized.contains("export async function proof"));
+        assert!(!serialized.contains("await loader"));
+        assert!(!serialized.contains("route"));
+        assert!(!serialized.contains("auth"));
+        assert!(!serialized.contains("security"));
+        assert_eq!(report.local_flow_packet_rows, 0);
+        assert!(!report.flow_proof_activated);
+        assert!(!report.mutation_proof_activated);
     }
 
     fn import_entity<'a>(

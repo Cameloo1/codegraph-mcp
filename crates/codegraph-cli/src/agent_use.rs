@@ -142,6 +142,21 @@ const CG_MVP3_ROUTE_HANDLER_RENAMED_NOT_UPDATED: &str = "CG_MVP3_ROUTE_HANDLER_R
 const CG_MVP3_ROUTE_COMPUTED_UNKNOWN: &str = "CG_MVP3_ROUTE_COMPUTED_UNKNOWN";
 const CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN: &str =
     "CG_MVP3_ROUTE_UNSUPPORTED_FRAMEWORK_UNKNOWN";
+const CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD: &str = "CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD";
+const CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL: &str = "CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL";
+const CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND: &str = "CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND";
+const CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND: &str = "CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND";
+const CG_MVP4_2_MICRO_EDGE_CROSS_FILE: &str = "CG_MVP4_2_MICRO_EDGE_CROSS_FILE";
+const CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION: &str = "CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION";
+const CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN: &str = "CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN";
+const CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE: &str = "CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE";
+const CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH: &str = "CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH";
+const CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE: &str = "CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE";
+const CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH: &str = "CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH";
+const CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION: &str =
+    "CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION";
+const CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED: &str = "CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED";
+const CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE: &str = "CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE";
 const CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH: &str = "CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH";
 const CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING: &str = "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING";
 const CG_MVP3_CONFIG_PACKAGE_UNSUPPORTED_UNKNOWN: &str =
@@ -1939,8 +1954,25 @@ pub(crate) fn agent_use_validate_edit_packet_json(
 ) -> Value {
     let changed_files =
         agent_use_validate_edit_changed_files(&profile.repo_root, options, &source_update);
-    let validation_packet =
+    let mut validation_packet =
         agent_use_validate_edit_validation_packet(&source_update, &changed_files);
+    agent_use_validate_edit_attach_micro_edge_sections(&mut validation_packet);
+    let micro_edge_delta = validation_packet
+        .get("micro_edge_delta")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_edge_integrity = validation_packet
+        .get("micro_edge_integrity")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_edge_layer_status = validation_packet
+        .get("micro_edge_layer_status")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_edge_proof_changes = validation_packet
+        .get("micro_edge_proof_changes")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let validation_status = validation_packet
         .get("status")
         .and_then(Value::as_str)
@@ -2105,6 +2137,10 @@ pub(crate) fn agent_use_validate_edit_packet_json(
         "input_diagnostics": source_update.get("input_diagnostics").cloned().unwrap_or_else(|| json!([])),
         "input_warnings": source_update.get("input_warnings").cloned().unwrap_or_else(|| json!([])),
         "validation_packet": validation_packet,
+        "micro_edge_delta": micro_edge_delta,
+        "micro_edge_integrity": micro_edge_integrity,
+        "micro_edge_layer_status": micro_edge_layer_status,
+        "micro_edge_proof_changes": micro_edge_proof_changes,
         "hard_interrupt_available": source_update
             .get("hard_interrupt_available")
             .cloned()
@@ -2619,6 +2655,247 @@ fn agent_use_validate_edit_validation_packet(
     })
 }
 
+fn agent_use_validate_edit_attach_micro_edge_sections(packet: &mut Value) {
+    let graph_delta = packet
+        .get("graph_delta")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let proof_ladder_changes = packet
+        .get("proof_ladder_changes")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_edge_delta = agent_use_validate_edit_micro_edge_delta_section(&graph_delta);
+    let micro_edge_integrity =
+        agent_use_validate_edit_micro_edge_integrity_section(packet, &graph_delta);
+    let micro_edge_layer_status =
+        agent_use_validate_edit_micro_edge_layer_status_section(&graph_delta);
+    let micro_edge_proof_changes = agent_use_validate_edit_micro_edge_proof_changes_section(
+        &proof_ladder_changes,
+        &graph_delta,
+    );
+
+    if let Some(object) = packet.as_object_mut() {
+        object.insert("micro_edge_delta".to_string(), micro_edge_delta);
+        object.insert("micro_edge_integrity".to_string(), micro_edge_integrity);
+        object.insert(
+            "micro_edge_layer_status".to_string(),
+            micro_edge_layer_status,
+        );
+        object.insert(
+            "micro_edge_proof_changes".to_string(),
+            micro_edge_proof_changes,
+        );
+    }
+}
+
+fn agent_use_validate_edit_micro_edge_delta_section(graph_delta: &Value) -> Value {
+    let added_count = graph_delta
+        .get("micro_edges_added_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let removed_count = graph_delta
+        .get("micro_edges_removed_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let changed_count = graph_delta
+        .get("micro_edges_changed_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let detailed_total = added_count + removed_count + changed_count;
+    let summary_total = graph_delta
+        .get("summary")
+        .and_then(|summary| summary.get("micro_edge_delta_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let total_count = detailed_total.max(summary_total);
+    let top_added =
+        agent_use_validate_edit_top_micro_edge_entries(graph_delta, "micro_edges_added");
+    let top_removed =
+        agent_use_validate_edit_top_micro_edge_entries(graph_delta, "micro_edges_removed");
+    let top_changed =
+        agent_use_validate_edit_top_micro_edge_entries(graph_delta, "micro_edges_changed");
+    let graph_relation_proof_changed_count = top_added
+        .iter()
+        .chain(top_removed.iter())
+        .chain(top_changed.iter())
+        .filter(|entry| {
+            entry
+                .get("graph_relation_proof_changed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count() as u64;
+    json!({
+        "available": true,
+        "normal_micro_edge_delta_not_error": graph_delta
+            .get("normal_micro_edge_delta_not_validation_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        "counts": {
+            "added": added_count,
+            "removed": removed_count,
+            "changed": changed_count,
+            "total": total_count,
+            "summary_total": summary_total,
+            "detailed_total": detailed_total,
+        },
+        "counts_by_kind": graph_delta.get("micro_edge_counts_by_kind").cloned().unwrap_or_else(|| json!({})),
+        "counts_by_exactness": graph_delta.get("micro_edge_counts_by_exactness").cloned().unwrap_or_else(|| json!({})),
+        "counts_by_language": graph_delta.get("micro_edge_counts_by_language").cloned().unwrap_or_else(|| json!({})),
+        "top_added": top_added,
+        "top_removed": top_removed,
+        "top_changed": top_changed,
+        "graph_relation_proof_changed_count": graph_relation_proof_changed_count,
+        "flow_proof_activated": false,
+        "mutation_proof_activated": false,
+        "full_detail_handle": "validation_packet.graph_delta",
+    })
+}
+
+fn agent_use_validate_edit_top_micro_edge_entries(graph_delta: &Value, key: &str) -> Vec<Value> {
+    graph_delta
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(3)
+                .map(agent_use_validate_edit_compact_micro_edge_delta_entry)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn agent_use_validate_edit_compact_micro_edge_delta_entry(entry: &Value) -> Value {
+    json!({
+        "micro_edge_id": entry.get("micro_edge_id").cloned().unwrap_or(Value::Null),
+        "micro_edge_kind": entry.get("micro_edge_kind").cloned().unwrap_or(Value::Null),
+        "head_micro_node_id": entry.get("head_micro_node_id").cloned().unwrap_or(Value::Null),
+        "tail_micro_node_id": entry.get("tail_micro_node_id").cloned().unwrap_or(Value::Null),
+        "file": entry.get("repo_relative_path").cloned().unwrap_or(Value::Null),
+        "function_identity": entry.get("function_identity").cloned().unwrap_or(Value::Null),
+        "relation_source_span": entry.get("relation_source_span").cloned().unwrap_or(Value::Null),
+        "exactness": entry.get("exactness").cloned().unwrap_or(Value::Null),
+        "claimability": entry.get("claimability_label").cloned().unwrap_or(Value::Null),
+        "graph_relation_proof_changed": entry.get("graph_relation_proof_changed").cloned().unwrap_or_else(|| json!(false)),
+        "validation_error": entry.get("validation_error").cloned().unwrap_or_else(|| json!(false)),
+    })
+}
+
+fn agent_use_validate_edit_micro_edge_integrity_section(
+    packet: &Value,
+    graph_delta: &Value,
+) -> Value {
+    let mut top_findings = Vec::new();
+    let mut blocking = 0usize;
+    let mut warning = 0usize;
+    let mut unknown = 0usize;
+    let mut diagnostic = 0usize;
+    for (bucket, counter) in [
+        ("blocking_errors", &mut blocking),
+        ("warnings", &mut warning),
+        ("unknowns", &mut unknown),
+        ("diagnostics", &mut diagnostic),
+    ] {
+        if let Some(items) = packet.get(bucket).and_then(Value::as_array) {
+            for item in items {
+                if !agent_use_validate_edit_is_micro_edge_finding(item) {
+                    continue;
+                }
+                *counter += 1;
+                if top_findings.len() < 3 {
+                    top_findings.push(agent_use_validate_edit_compact_micro_edge_finding(item));
+                }
+            }
+        }
+    }
+    let integrity_changes = graph_delta
+        .get("micro_edge_integrity_changes")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let integrity_change_count = integrity_changes
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "available": true,
+        "blocking_count": blocking,
+        "warning_count": warning,
+        "unknown_count": unknown,
+        "diagnostic_count": diagnostic,
+        "integrity_change_count": integrity_change_count,
+        "integrity_changes": integrity_changes,
+        "top_findings": top_findings,
+        "source_problem_vs_tool_integrity_separated": true,
+        "false_source_fix_recommendation_count": 0,
+        "hard_interrupt_for_micro_edge_integrity": false,
+        "recommended_action_default": "reindex_or_repair_codegraph_micro_edge_state",
+        "full_detail_handle": "validation_packet.micro_edge_integrity",
+    })
+}
+
+fn agent_use_validate_edit_is_micro_edge_finding(item: &Value) -> bool {
+    item.get("validation_rule_id")
+        .and_then(Value::as_str)
+        .is_some_and(|rule_id| {
+            rule_id.starts_with("CG_MVP4_2_MICRO_EDGE")
+                || rule_id == CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION
+        })
+}
+
+fn agent_use_validate_edit_compact_micro_edge_finding(item: &Value) -> Value {
+    json!({
+        "finding_id": item.get("finding_id").cloned().unwrap_or(Value::Null),
+        "rule_id": item.get("validation_rule_id").cloned().unwrap_or(Value::Null),
+        "classification": item.get("classification").cloned().unwrap_or(Value::Null),
+        "blocking_level": item.get("blocking_level").cloned().unwrap_or(Value::Null),
+        "file": item.get("file").or_else(|| item.get("affected_file")).cloned().unwrap_or(Value::Null),
+        "source_span": item.get("source_span").cloned().unwrap_or(Value::Null),
+        "reason": item.get("reason").cloned().unwrap_or(Value::Null),
+        "recommended_fix": item.get("recommended_fix").cloned().unwrap_or(Value::Null),
+        "expansion_handle": item.get("expansion_handle").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn agent_use_validate_edit_micro_edge_layer_status_section(graph_delta: &Value) -> Value {
+    json!({
+        "available": true,
+        "status_change": graph_delta.get("micro_edge_layer_status_change").cloned().unwrap_or(Value::Null),
+        "cap_omissions": graph_delta.get("micro_edge_cap_omissions").cloned().unwrap_or_else(|| json!(0)),
+        "layer_status_not_source_error": true,
+        "core_graph_claimability_separate": true,
+        "full_detail_handle": "validation_packet.graph_delta.micro_edge_layer_status_change",
+    })
+}
+
+fn agent_use_validate_edit_micro_edge_proof_changes_section(
+    proof_ladder_changes: &Value,
+    graph_delta: &Value,
+) -> Value {
+    let graph_relation = proof_ladder_changes
+        .get("graph_relation_proof")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "changed": false,
+                "status": "not_applicable",
+                "graph_proof": false,
+            })
+        });
+    json!({
+        "graph_relation_proof": graph_relation,
+        "micro_edge_delta_count": graph_delta
+            .get("summary")
+            .and_then(|summary| summary.get("micro_edge_delta_count"))
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+        "flow_proof_activated": false,
+        "mutation_proof_activated": false,
+        "candidate_retrieval_not_proof": true,
+        "full_detail_handle": "validation_packet.proof_ladder_changes.graph_relation_proof",
+    })
+}
+
 fn agent_use_validate_edit_preflight_blockers(source_update: &Value) -> Vec<String> {
     let mut blockers = Vec::new();
     for key in ["errors", "blockers"] {
@@ -2914,6 +3191,10 @@ fn agent_use_validate_edit_enforce_compact_budget(
             "diagnostics",
             "severity_trace",
             "proof_ladder_changes",
+            "micro_edge_delta",
+            "micro_edge_integrity",
+            "micro_edge_layer_status",
+            "micro_edge_proof_changes",
             "validation_recovery_commands",
             "recovery_commands",
             "timings",
@@ -3179,6 +3460,8 @@ fn agent_use_validate_edit_compact_graph_delta_summary(graph_delta: &Value) -> V
     json!({
         "entity_delta_count": summary.get("entity_delta_count").cloned().unwrap_or(Value::Null),
         "edge_delta_count": summary.get("edge_delta_count").cloned().unwrap_or(Value::Null),
+        "micro_edge_delta_count": summary.get("micro_edge_delta_count").cloned().unwrap_or(Value::Null),
+        "micro_edge_cap_omissions": graph_delta.get("micro_edge_cap_omissions").cloned().unwrap_or(Value::Null),
         "source_span_delta_count": summary.get("source_span_delta_count").cloned().unwrap_or(Value::Null),
         "freshness_delta_count": summary.get("freshness_delta_count").cloned().unwrap_or(Value::Null),
         "closure_files_considered": closure
@@ -4470,6 +4753,7 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
     let mut rules = agent_use_exact_calls_validation_rules();
     rules.extend(agent_use_exact_imports_validation_rules());
     rules.extend(agent_use_proof_integrity_validation_rules());
+    rules.extend(agent_use_micro_edge_validation_rules());
     rules.extend(agent_use_source_role_tests_validation_rules());
     rules.extend(agent_use_activation_gated_contract_validation_rules());
     rules.extend(agent_use_unresolved_reference_validation_rules());
@@ -4577,6 +4861,21 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         agent_use_collect_proof_integrity_findings(
             profile,
             &store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
+    substages.begin("micro_edge_integrity");
+    if Instant::now() >= validation_deadline {
+        wall_skipped_substages.push("micro_edge_integrity");
+    } else {
+        agent_use_collect_micro_edge_integrity_findings(
+            profile,
+            store,
             &rule_by_id,
             lifecycle.clone(),
             delta,
@@ -5540,6 +5839,111 @@ fn agent_use_proof_integrity_validation_rules() -> Vec<ValidationRule> {
     rules
 }
 
+fn agent_use_micro_edge_validation_rules() -> Vec<ValidationRule> {
+    fn integrity_rule(rule_id: &str, invariant: &str, docs_summary: &str) -> ValidationRule {
+        let mut rule = ValidationRule::exact_blocking(
+            rule_id,
+            ValidationRuleKind::ProofIntegrity,
+            None,
+            invariant,
+            docs_summary,
+        );
+        rule.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+        rule.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+        rule.activation_condition =
+            "activated LOCAL_RETURNS_TO micro-edge layer plus current exact edge integrity reverification"
+                .to_string();
+        rule
+    }
+
+    let mut missing_provenance = integrity_rule(
+        CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE,
+        "exact LOCAL_RETURNS_TO micro-edges must carry direct AST provenance",
+        "Reindex or repair CodeGraph micro-edge state, then rerun validation.",
+    );
+    missing_provenance.provenance_requirement =
+        ValidationProvenanceRequirement::RequiredForDerivedEdges;
+
+    let mut layer_truncated = ValidationRule::diagnostic(
+        CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED,
+        "truncated micro-edge layers cannot claim complete graph_relation_proof coverage",
+        "Treat micro-edge proof as degraded for the truncated scope; reindex with valid caps if complete coverage is required.",
+    );
+    layer_truncated.rule_kind = ValidationRuleKind::UnsupportedRelationBoundary;
+    layer_truncated.supported_relation_status = SupportedRelationStatus::DiagnosticOnly;
+    layer_truncated.default_classification_when_unsupported = ValidationClassification::Degraded;
+
+    let mut layer_unavailable = ValidationRule::diagnostic(
+        CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE,
+        "unavailable, stale, incompatible, or corrupt optional micro-edge layers cannot provide proof",
+        "Repair or rebuild the CodeGraph micro-edge layer before relying on micro-edge proof.",
+    );
+    layer_unavailable.rule_kind = ValidationRuleKind::UnsupportedRelationBoundary;
+    layer_unavailable.supported_relation_status = SupportedRelationStatus::DiagnosticOnly;
+    layer_unavailable.default_classification_when_unsupported = ValidationClassification::Unknown;
+
+    vec![
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD,
+            "LOCAL_RETURNS_TO edge head must reference a current ReturnSite micro-node",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL,
+            "LOCAL_RETURNS_TO edge tail must reference a current FunctionFrame micro-node",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
+            "LOCAL_RETURNS_TO edge head kind must be ReturnSite",
+            "Reindex or repair CodeGraph micro-edge endpoint state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
+            "LOCAL_RETURNS_TO edge tail kind must be FunctionFrame",
+            "Reindex or repair CodeGraph micro-edge endpoint state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_CROSS_FILE,
+            "LOCAL_RETURNS_TO endpoints must remain in the same normalized file",
+            "Reindex or repair CodeGraph micro-edge state; do not edit source solely to satisfy a corrupt edge.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION,
+            "LOCAL_RETURNS_TO endpoints must remain in the same function ownership domain",
+            "Reindex or repair CodeGraph micro-edge state; do not edit source solely to satisfy a corrupt edge.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
+            "exact LOCAL_RETURNS_TO micro-edges must carry a current relation source span",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validation.",
+        ),
+        missing_provenance,
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH,
+            "LOCAL_RETURNS_TO proof rows must remain exact and claimable or proof is unavailable",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE,
+            "stale LOCAL_RETURNS_TO proof rows must not remain claimable after source changes",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH,
+            "LOCAL_RETURNS_TO rows must match the current MVP4.2 extraction/version contract",
+            "Reindex or migrate CodeGraph micro-edge state with the current extractor version, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
+            "LOCAL_RETURNS_TO must target the nearest enclosing FunctionFrame for the ReturnSite",
+            "Reindex or repair CodeGraph micro-edge ownership state, then rerun validation.",
+        ),
+        layer_truncated,
+        layer_unavailable,
+    ]
+}
+
 fn agent_use_source_role_tests_validation_rules() -> Vec<ValidationRule> {
     let source_role_rules = [
         (
@@ -5851,6 +6255,16 @@ fn agent_use_relation_family_status_json() -> Value {
             "text_evidence_warning_only": true,
             "graph_proof": false
         },
+        "local_returns_to_micro_edge": {
+            "status": "graph_relation_proof_candidate",
+            "relation_kind": "LOCAL_RETURNS_TO",
+            "activated": true,
+            "meaning": "ReturnSite is structurally owned by nearest enclosing FunctionFrame",
+            "normal_delta_is_error": false,
+            "source_code_hard_interrupt_active": false,
+            "mutation_proof_activated": false,
+            "flow_proof_activated": false
+        },
         "package_build_system_text_evidence": {
             "status": "text_evidence_only",
             "files": [".mk", "Config.in", ".adoc", ".md", "shell/support scripts"],
@@ -5885,6 +6299,13 @@ fn agent_use_activation_gate_state_json(delta: &EntitySourceRoleDeltaReport) -> 
         "text_evidence_not_graph_entity_delta": delta.text_evidence_not_graph_entity_delta,
         "text_candidate_evidence_not_graph_delta": delta.text_candidate_evidence_not_graph_delta,
         "source_navigation_only_not_graph_entity_delta": delta.source_navigation_only_not_graph_entity_delta,
+        "micro_edge_delta_count": delta.micro_edges_added_count + delta.micro_edges_removed_count + delta.micro_edges_changed_count,
+        "micro_edge_integrity_change_count": delta.micro_edge_integrity_changes.len(),
+        "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
+        "normal_micro_edge_delta_not_error": delta.normal_micro_edge_delta_not_validation_error,
+        "local_returns_to_graph_relation_proof_only": true,
+        "micro_edge_flow_proof_activated": false,
+        "micro_edge_mutation_proof_activated": false,
         "unsupported_relation_classes": delta.unsupported_relation_classes,
         "degraded_relation_classes": delta.degraded_relation_classes,
         "hard_interrupt_eligibility_gate": "implemented",
@@ -6116,6 +6537,590 @@ fn agent_use_collect_proof_integrity_findings(
     }
 
     Ok(())
+}
+
+fn agent_use_collect_micro_edge_integrity_findings(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let mut scan_paths = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<Vec<_>>();
+    scan_paths.sort();
+    scan_paths.dedup();
+
+    for path in scan_paths {
+        let nodes = store
+            .ast_micro_nodes_for_file(&path)
+            .map_err(|error| format!("read changed-file micro-node endpoints failed: {error}"))?;
+        let nodes_by_id = nodes
+            .into_iter()
+            .map(|node| (node.micro_node_id.clone(), node))
+            .collect::<BTreeMap<_, _>>();
+        let micro_edges = store
+            .ast_micro_edges_for_file(&path)
+            .map_err(|error| format!("read changed-file micro-edge rows failed: {error}"))?;
+        for micro_edge in micro_edges {
+            agent_use_validate_current_micro_edge_integrity(
+                profile,
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &micro_edge,
+                &nodes_by_id,
+                Some(json!({
+                    "source": "changed_or_closure_file_current_micro_edges",
+                    "repo_relative_path": path,
+                })),
+                findings,
+                seen_edge_rule,
+            );
+        }
+    }
+
+    for change in &delta.micro_edge_integrity_changes {
+        let Some((rule_id, reason)) = agent_use_micro_edge_integrity_change_rule(change) else {
+            continue;
+        };
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[rule_id],
+            lifecycle.clone(),
+            None,
+            Some(json!({
+                "source": "normalized_micro_edge_delta_integrity",
+                "integrity_change": change,
+            })),
+            None,
+            reason,
+        );
+    }
+
+    if delta.micro_edge_cap_omissions > 0 {
+        agent_use_push_micro_edge_layer_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED],
+            lifecycle.clone(),
+            json!({
+                "source": "normalized_micro_edge_delta_cap_omission",
+                "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
+            }),
+            "micro-edge delta was truncated by approved caps; graph_relation_proof coverage is incomplete for the omitted scope",
+        );
+    }
+
+    if let Some(layer) = &delta.micro_edge_layer_status_change {
+        let new_status = layer.new_status.to_ascii_lowercase();
+        if new_status.contains("truncated") {
+            agent_use_push_micro_edge_layer_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED],
+                lifecycle.clone(),
+                json!({
+                    "source": "micro_edge_layer_status_change",
+                    "layer": layer,
+                }),
+                "micro-edge layer status is truncated; proof coverage remains incomplete",
+            );
+        } else if !matches!(
+            new_status.as_str(),
+            "ready" | "current" | "ok" | "not_applicable"
+        ) {
+            agent_use_push_micro_edge_layer_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE],
+                lifecycle,
+                json!({
+                    "source": "micro_edge_layer_status_change",
+                    "layer": layer,
+                }),
+                "micro-edge layer is unavailable, stale, incompatible, or corrupt; micro-edge proof is unavailable",
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_use_validate_current_micro_edge_integrity(
+    profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    micro_edge: &AstMicroEdgeRow,
+    nodes_by_id: &BTreeMap<String, AstMicroNodeRow>,
+    affected_delta: Option<Value>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+) {
+    let Some(relation_kind) = MicroEdgeKind::from_storage_str(&micro_edge.relation_kind) else {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH],
+            lifecycle.clone(),
+            Some(micro_edge),
+            affected_delta.clone(),
+            agent_use_micro_edge_source_span(store, micro_edge),
+            "unsupported micro-edge relation kind is not active for MVP4.2 validate-edit proof",
+        );
+        return;
+    };
+
+    if relation_kind != MicroEdgeKind::LocalReturnsTo {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH],
+            lifecycle.clone(),
+            Some(micro_edge),
+            affected_delta.clone(),
+            agent_use_micro_edge_source_span(store, micro_edge),
+            "unsupported micro-edge relation kind is not active for MVP4.2 validate-edit proof",
+        );
+        return;
+    }
+
+    let relation_span = agent_use_micro_edge_source_span(store, micro_edge);
+    let head = nodes_by_id.get(&micro_edge.source_micro_node_id);
+    let tail = nodes_by_id.get(&micro_edge.target_micro_node_id);
+
+    if head.is_none() {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD],
+            lifecycle.clone(),
+            Some(micro_edge),
+            affected_delta.clone(),
+            relation_span.clone(),
+            "persisted LOCAL_RETURNS_TO head endpoint does not exist in the current retained micro-node set",
+        );
+    }
+    if tail.is_none() {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL],
+            lifecycle.clone(),
+            Some(micro_edge),
+            affected_delta.clone(),
+            relation_span.clone(),
+            "persisted LOCAL_RETURNS_TO tail endpoint does not exist in the current retained micro-node set",
+        );
+    }
+
+    if let Some(head) = head {
+        if head.micro_kind != "return_site" {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                "LOCAL_RETURNS_TO head endpoint is not a ReturnSite micro-node",
+            );
+        }
+        if head.file_id != micro_edge.file_id {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_CROSS_FILE],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                "LOCAL_RETURNS_TO head endpoint belongs to a different file than the edge row",
+            );
+        }
+    }
+
+    if let Some(tail) = tail {
+        if tail.micro_kind != "function_frame" {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                "LOCAL_RETURNS_TO tail endpoint is not a FunctionFrame micro-node",
+            );
+        }
+        if tail.file_id != micro_edge.file_id {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_CROSS_FILE],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                "LOCAL_RETURNS_TO tail endpoint belongs to a different file than the edge row",
+            );
+        }
+    }
+
+    if let (Some(head), Some(tail)) = (head, tail) {
+        if head.function_entity_id != tail.function_entity_id {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                "LOCAL_RETURNS_TO endpoints belong to different function ownership domains",
+            );
+        }
+        if micro_edge.function_entity_id != head.function_entity_id {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                "LOCAL_RETURNS_TO edge does not target the nearest enclosing FunctionFrame domain recorded by the retained endpoints",
+            );
+        }
+    }
+
+    if relation_span.is_none() {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN],
+            lifecycle.clone(),
+            Some(micro_edge),
+            affected_delta.clone(),
+            None,
+            "exact LOCAL_RETURNS_TO edge has no current relation source span",
+        );
+    }
+    if micro_edge.provenance_id.is_none() {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE],
+            lifecycle.clone(),
+            Some(micro_edge),
+            affected_delta.clone(),
+            relation_span.clone(),
+            "exact LOCAL_RETURNS_TO edge has no direct AST provenance",
+        );
+    }
+    let capability = mvp4_micro_edge_language_capability(&micro_edge.language, relation_kind);
+    let source_role = MicroSourceRole::from_storage_str(&micro_edge.source_role)
+        .unwrap_or(MicroSourceRole::Unknown);
+    let exactness =
+        MicroExactness::from_storage_str(&micro_edge.exactness).unwrap_or(MicroExactness::Unknown);
+    if !capability.supports_claimable_exact(
+        &micro_edge.frontend,
+        source_role,
+        exactness,
+        &micro_edge.claimability,
+        &micro_edge.extraction_version,
+    ) {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH],
+            lifecycle.clone(),
+            Some(micro_edge),
+            affected_delta.clone(),
+            relation_span.clone(),
+            "LOCAL_RETURNS_TO proof row is not exact and claimable under the active micro-edge language capability",
+        );
+    }
+    if Some(micro_edge.extraction_version.as_str()) != capability.extraction_version {
+        agent_use_push_micro_edge_integrity_finding(
+            findings,
+            seen_edge_rule,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH],
+            lifecycle,
+            Some(micro_edge),
+            affected_delta,
+            relation_span,
+            "LOCAL_RETURNS_TO extraction version does not match the current MVP4.2 contract",
+        );
+    }
+
+    let _ = profile;
+}
+
+fn agent_use_micro_edge_integrity_change_rule(
+    change: &str,
+) -> Option<(&'static str, &'static str)> {
+    if change.contains("missing_relation_source_span") {
+        Some((
+            CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
+            "normalized micro-edge delta reports a missing relation source span",
+        ))
+    } else if change.contains("missing_provenance") {
+        Some((
+            CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE,
+            "normalized micro-edge delta reports missing direct AST provenance",
+        ))
+    } else if change.contains("non_exact_micro_edge") {
+        Some((
+            CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH,
+            "normalized micro-edge delta reports a non-exact LOCAL_RETURNS_TO proof row",
+        ))
+    } else if change.contains("non_claimable_micro_edge") {
+        Some((
+            CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE,
+            "normalized micro-edge delta reports a non-claimable or stale micro-edge proof row",
+        ))
+    } else if change.contains("unsupported_micro_edge_kind") {
+        Some((
+            CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH,
+            "normalized micro-edge delta reports an unsupported micro-edge relation kind",
+        ))
+    } else {
+        None
+    }
+}
+
+fn agent_use_micro_edge_source_span(
+    store: &SqliteGraphStore,
+    micro_edge: &AstMicroEdgeRow,
+) -> Option<SourceSpan> {
+    micro_edge
+        .source_span_id
+        .as_deref()
+        .and_then(|span_id| store.get_source_span(span_id).ok().flatten())
+}
+
+fn agent_use_micro_edge_source_role_label(role: &str) -> Option<EvidenceRole> {
+    match role {
+        "production" => Some(EvidenceRole::Production),
+        "test" => Some(EvidenceRole::Test),
+        "mock" => Some(EvidenceRole::Mock),
+        "mixed" => Some(EvidenceRole::Mixed),
+        "unknown" => Some(EvidenceRole::Unknown),
+        _ => None,
+    }
+}
+
+fn agent_use_micro_edge_exactness_label(exactness: &str) -> Option<Exactness> {
+    match exactness {
+        "exact" => Some(Exactness::ParserVerified),
+        "derived_with_provenance" => Some(Exactness::DerivedFromVerifiedEdges),
+        "heuristic" => Some(Exactness::StaticHeuristic),
+        "unknown" | "unsupported" => Some(Exactness::Inferred),
+        _ => None,
+    }
+}
+
+fn agent_use_push_micro_edge_integrity_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    micro_edge: Option<&AstMicroEdgeRow>,
+    affected_delta: Option<Value>,
+    source_span: Option<SourceSpan>,
+    reason: &str,
+) {
+    let evidence_id = micro_edge
+        .map(|edge| edge.micro_edge_id.clone())
+        .or_else(|| {
+            affected_delta
+                .as_ref()
+                .and_then(|value| value.get("integrity_change"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| rule.validation_rule_id.clone());
+    let key = format!("{}:{evidence_id}:{reason}", rule.validation_rule_id);
+    if !seen_edge_rule.insert(key) {
+        return;
+    }
+
+    let mut input =
+        agent_use_lifecycle_integrity_input(lifecycle, evidence_id.clone(), reason.to_string());
+    input.source_span_required = rule.source_span_requirement
+        == ValidationSourceSpanRequirement::RequiredForClaimableGraphFact;
+    input.source_span_present = source_span.is_some();
+    input.provenance_required = rule.provenance_requirement.requires_provenance()
+        || rule.validation_rule_id == CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE;
+    input.provenance_present = micro_edge
+        .and_then(|edge| edge.provenance_id.as_ref())
+        .is_some()
+        && rule.validation_rule_id != CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE;
+    input.integrity_issue_present = true;
+
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp4_2/micro_edge_integrity/{}/{}",
+            rule.validation_rule_id,
+            agent_use_validation_stable_u64(&evidence_id)
+        ),
+        input,
+    );
+    finding.classification = ValidationClassification::Degraded;
+    finding.blocking_level = finding.classification.blocking_level();
+    finding.integrity_kind = Some("micro_edge_proof_integrity".to_string());
+    finding.proof_level = "micro_edge_proof_availability".to_string();
+    finding.proof_strength = "degraded_micro_edge_integrity".to_string();
+    finding.proof_status = ValidationProofStatus::NeedsReverification;
+    finding.reverified_graph_source_proof = false;
+    finding.affected_delta = affected_delta.unwrap_or(Value::Null);
+    finding.affected_edge = micro_edge
+        .map(|edge| {
+            json!({
+                "micro_edge_id": edge.micro_edge_id,
+                "micro_edge_kind": edge.relation_kind,
+                "head_micro_node_id": edge.source_micro_node_id,
+                "tail_micro_node_id": edge.target_micro_node_id,
+                "file_id": edge.file_id,
+                "function_entity_id": edge.function_entity_id,
+                "source_span_id": edge.source_span_id,
+                "provenance_id": edge.provenance_id,
+                "exactness": edge.exactness,
+                "claimability": edge.claimability,
+                "source_role": edge.source_role,
+                "language": edge.language,
+                "frontend": edge.frontend,
+                "extraction_version": edge.extraction_version,
+                "source_code_edit_required": false,
+                "tool_integrity_repair_required": true,
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "micro_edge_integrity_change": evidence_id,
+                "source_code_edit_required": false,
+                "tool_integrity_repair_required": true,
+            })
+        });
+    finding.affected_file = micro_edge
+        .map(|edge| normalize_repo_relative_path(&edge.file_id))
+        .or_else(|| {
+            finding
+                .affected_delta
+                .get("repo_relative_path")
+                .and_then(Value::as_str)
+                .map(normalize_repo_relative_path)
+        });
+    finding.file = finding.affected_file.clone();
+    finding.source_span = source_span;
+    finding.source_role = micro_edge
+        .and_then(|edge| agent_use_micro_edge_source_role_label(edge.source_role.as_str()));
+    finding.exactness =
+        micro_edge.and_then(|edge| agent_use_micro_edge_exactness_label(edge.exactness.as_str()));
+    finding.provenance = json!({
+        "required": true,
+        "present": micro_edge.and_then(|edge| edge.provenance_id.as_ref()).is_some(),
+        "provenance_id": micro_edge.and_then(|edge| edge.provenance_id.clone()),
+        "derivation_kind": "direct_ast_ownership",
+        "source_code_edit_required": false,
+    });
+    finding.reason = format!(
+        "{reason}; this blocks use of the affected micro-edge proof but is not proof that source code is wrong"
+    );
+    finding.recommended_fix = Some(
+        "Reindex or repair CodeGraph micro-edge state, then rerun agent-use validate-edit; do not edit source solely to satisfy this stored edge."
+            .to_string(),
+    );
+    finding.suggested_next_steps = vec![
+        "Run agent-use index or the lifecycle-safe changed-file update to rebuild micro-edge sidecars."
+            .to_string(),
+        "Rerun agent-use validate-edit after CodeGraph state is repaired.".to_string(),
+    ];
+    finding
+        .diagnostics
+        .push("source_problem_vs_tool_integrity_separated".to_string());
+    finding.expansion_handle = Some(format!(
+        "validation_packet:micro_edge_integrity:{}",
+        agent_use_validation_stable_u64(&evidence_id)
+    ));
+    findings.push(finding);
+}
+
+fn agent_use_push_micro_edge_layer_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_edge_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) {
+    let evidence_id = format!(
+        "{}:{}",
+        rule.validation_rule_id,
+        agent_use_validation_stable_u64(reason)
+    );
+    if !seen_edge_rule.insert(evidence_id.clone()) {
+        return;
+    }
+    let mut input =
+        agent_use_lifecycle_integrity_input(lifecycle, evidence_id.clone(), reason.to_string());
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        evidence_id.clone(),
+        reason.to_string(),
+    )];
+    input.over_budget = rule.validation_rule_id == CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED;
+    input.integrity_issue_present = false;
+    input.graph_source_relation_reverified = false;
+    input.integrity_condition_reverified = false;
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp4_2/micro_edge_layer/{}/{}",
+            rule.validation_rule_id,
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    if rule.validation_rule_id == CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED {
+        finding.classification = ValidationClassification::Degraded;
+    } else {
+        finding.classification = ValidationClassification::Unknown;
+    }
+    finding.blocking_level = finding.classification.blocking_level();
+    finding.integrity_kind = Some("micro_edge_layer_status".to_string());
+    finding.proof_level = "not_graph_proof".to_string();
+    finding.proof_strength = "diagnostic_only".to_string();
+    finding.proof_status = ValidationProofStatus::OverBudgetDegraded;
+    finding.reverified_graph_source_proof = false;
+    finding.affected_delta = affected_delta;
+    finding.affected_edge = json!({
+        "micro_edge_layer_status": true,
+        "source_code_edit_required": false,
+        "tool_integrity_repair_required": true,
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(rule.docs_summary.clone());
+    finding.suggested_next_steps = vec![rule.docs_summary.clone()];
+    finding
+        .diagnostics
+        .push("micro_edge_layer_status_not_source_error".to_string());
+    finding.expansion_handle = Some(format!(
+        "validation_packet:micro_edge_layer:{}",
+        agent_use_validation_stable_u64(reason)
+    ));
+    findings.push(finding);
 }
 
 fn agent_use_collect_source_role_tests_findings(
@@ -9335,6 +10340,7 @@ mod exact_calls_validation_tests {
         let mut rules = agent_use_exact_calls_validation_rules();
         rules.extend(agent_use_exact_imports_validation_rules());
         rules.extend(agent_use_proof_integrity_validation_rules());
+        rules.extend(agent_use_micro_edge_validation_rules());
         rules.extend(agent_use_source_role_tests_validation_rules());
         rules.extend(agent_use_activation_gated_contract_validation_rules());
         rules
@@ -12113,6 +13119,352 @@ mod exact_calls_validation_tests {
 
         assert_eq!(findings.len(), 7);
         assert_no_blocking_findings("adversarial false-positive matrix", &findings);
+    }
+
+    #[test]
+    fn micro_edge_validation_rules_cover_local_returns_to_contract() {
+        let rules = agent_use_micro_edge_validation_rules();
+        for rule_id in [
+            CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD,
+            CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL,
+            CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
+            CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
+            CG_MVP4_2_MICRO_EDGE_CROSS_FILE,
+            CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION,
+            CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
+            CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE,
+            CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH,
+            CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE,
+            CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH,
+            CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
+            CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED,
+            CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE,
+        ] {
+            assert!(
+                rules.iter().any(|rule| rule.validation_rule_id == rule_id),
+                "missing micro-edge validation rule {rule_id}"
+            );
+        }
+        let truncated = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED)
+            .expect("truncated rule");
+        assert_eq!(
+            truncated.supported_relation_status,
+            SupportedRelationStatus::DiagnosticOnly
+        );
+        let missing_span = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN)
+            .expect("missing span rule");
+        assert_eq!(
+            missing_span.proof_requirement,
+            ValidationProofRequirement::ReverifiedGraphIntegrity
+        );
+    }
+
+    #[test]
+    fn validate_edit_micro_edge_delta_sections_are_not_errors() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = AgentUseValidateEditOptions {
+            repo: repo.clone(),
+            changed_paths: vec![PathBuf::from("src/service.ts")],
+            detail_mode: AgentUseDetailMode::Compact,
+            max_output_bytes: None,
+            fail_on_blocking: false,
+            task_id: None,
+            edit_intent: None,
+            expected_touched_files: Vec::new(),
+            max_validation_ms: None,
+        };
+        let source_update = json!({
+            "status": "ok",
+            "changed_paths": ["src/service.ts"],
+            "normalized_changed_files": ["src/service.ts"],
+            "normal_dot_codegraph_mutated": false,
+            "validation_packet": {
+                "schema_version": 1,
+                "packet_kind": "graph_validation_packet",
+                "status": "ok",
+                "final_status": "ok",
+                "must_fix_before_continuing": false,
+                "hard_interrupt_available": false,
+                "hard_interrupt": null,
+                "graph_delta": {
+                    "summary": {"micro_edge_delta_count": 1},
+                    "micro_edges_added_count": 1,
+                    "micro_edges_removed_count": 0,
+                    "micro_edges_changed_count": 0,
+                    "micro_edges_added": [{
+                        "micro_edge_id": "edge-return-to-function",
+                        "micro_edge_kind": "local_returns_to",
+                        "head_micro_node_id": "return-site-1",
+                        "tail_micro_node_id": "function-frame-1",
+                        "repo_relative_path": "src/service.ts",
+                        "function_identity": "function://src/service.ts/service",
+                        "relation_source_span": {"repo_relative_path": "src/service.ts", "start_line": 2, "start_column": 3, "end_line": 2, "end_column": 12},
+                        "exactness": "exact",
+                        "claimability_label": "claimable_source_spanned_local_return_containment",
+                        "graph_relation_proof_changed": true,
+                        "validation_error": false
+                    }],
+                    "micro_edges_removed": [],
+                    "micro_edges_changed": [],
+                    "micro_edge_counts_by_kind": {"local_returns_to": 1},
+                    "micro_edge_counts_by_exactness": {"exact": 1},
+                    "micro_edge_counts_by_language": {"typescript": 1},
+                    "micro_edge_integrity_changes": [],
+                    "micro_edge_cap_omissions": 0,
+                    "normal_micro_edge_delta_not_validation_error": true
+                },
+                "proof_ladder_changes": {
+                    "graph_relation_proof": {
+                        "changed": true,
+                        "status": "graph_relation_proof",
+                        "graph_proof": true,
+                        "proof_strength": "graph_source_span_proof"
+                    }
+                },
+                "blocking_errors": [],
+                "warnings": [],
+                "unknowns": [],
+                "diagnostics": [],
+                "claimability": {"claimable": true, "current": true, "diagnostic_only": false},
+                "lifecycle": {"claimable": true, "current": true}
+            }
+        });
+
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(false));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        assert_eq!(
+            packet["micro_edge_delta"]["normal_micro_edge_delta_not_error"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet["micro_edge_delta"]["counts"]["total"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            packet["micro_edge_proof_changes"]["flow_proof_activated"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["micro_edge_proof_changes"]["mutation_proof_activated"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["micro_edge_integrity"]["false_source_fix_recommendation_count"].as_u64(),
+            Some(0)
+        );
+
+        let compact_graph_delta = json!({
+            "summary": {"micro_edge_delta_count": 7},
+            "normal_micro_edge_delta_not_validation_error": true
+        });
+        let compact_micro_edge_delta =
+            agent_use_validate_edit_micro_edge_delta_section(&compact_graph_delta);
+        assert_eq!(
+            compact_micro_edge_delta["counts"]["total"].as_u64(),
+            Some(7),
+            "compact graph-delta packets must preserve the micro-edge delta count"
+        );
+        assert_eq!(
+            compact_micro_edge_delta["counts"]["summary_total"].as_u64(),
+            Some(7)
+        );
+        assert_eq!(
+            compact_micro_edge_delta["normal_micro_edge_delta_not_error"].as_bool(),
+            Some(true)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn micro_edge_integrity_recommends_tool_repair_not_source_fix() {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        let row = AstMicroEdgeRow {
+            micro_edge_id: "edge-corrupt-return".to_string(),
+            file_id: "src/service.ts".to_string(),
+            function_entity_id: Some("function://src/service.ts/service".to_string()),
+            scope_entity_id: None,
+            core_edge_id: None,
+            source_micro_node_id: "return-site-1".to_string(),
+            target_micro_node_id: "function-frame-1".to_string(),
+            relation_kind: "local_returns_to".to_string(),
+            source_span_id: None,
+            exactness: "exact".to_string(),
+            provenance_id: None,
+            schema_version: 1,
+            extraction_version: MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION.to_string(),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            frontend: "tree-sitter-typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_local_return_containment".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+
+        agent_use_push_micro_edge_integrity_finding(
+            &mut findings,
+            &mut seen,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE],
+            ValidationLifecycleState::claimable_current(),
+            Some(&row),
+            Some(json!({"test_delta": true})),
+            None,
+            "exact LOCAL_RETURNS_TO edge has no direct AST provenance",
+        );
+
+        let finding = findings.first().expect("finding");
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::NeedsReverification
+        );
+        assert_eq!(finding.reverified_graph_source_proof, false);
+        let recommended = finding.recommended_fix.as_deref().unwrap_or_default();
+        assert!(recommended.contains("Reindex or repair CodeGraph micro-edge state"));
+        assert!(recommended.contains("do not edit source solely"));
+        assert_eq!(
+            finding.affected_edge["source_code_edit_required"].as_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn micro_edge_fault_actionability_rubric_separates_source_tool_and_support_state() {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let row = AstMicroEdgeRow {
+            micro_edge_id: "edge-fault-rubric".to_string(),
+            file_id: "src/service.ts".to_string(),
+            function_entity_id: Some("function://src/service.ts/service".to_string()),
+            scope_entity_id: None,
+            core_edge_id: None,
+            source_micro_node_id: "return-site-1".to_string(),
+            target_micro_node_id: "function-frame-1".to_string(),
+            relation_kind: "local_returns_to".to_string(),
+            source_span_id: None,
+            exactness: "exact".to_string(),
+            provenance_id: None,
+            schema_version: 1,
+            extraction_version: MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION.to_string(),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            frontend: "tree-sitter-typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_local_return_containment".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        for rule_id in [
+            CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD,
+            CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL,
+            CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
+            CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
+            CG_MVP4_2_MICRO_EDGE_CROSS_FILE,
+            CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION,
+            CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
+            CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE,
+            CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH,
+            CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE,
+            CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH,
+            CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
+        ] {
+            agent_use_push_micro_edge_integrity_finding(
+                &mut findings,
+                &mut seen,
+                rule_by_id[rule_id],
+                ValidationLifecycleState::claimable_current(),
+                Some(&row),
+                Some(json!({"fault_injection": rule_id})),
+                None,
+                "controlled micro-edge dogfood integrity fault",
+            );
+        }
+
+        let integrity_count = findings.len();
+        agent_use_push_micro_edge_layer_finding(
+            &mut findings,
+            &mut seen,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED],
+            ValidationLifecycleState::claimable_current(),
+            json!({"fault_injection": "edge_layer_truncated"}),
+            "micro-edge layer truncated under controlled dogfood cap pressure",
+        );
+        agent_use_push_micro_edge_layer_finding(
+            &mut findings,
+            &mut seen,
+            rule_by_id[CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE],
+            ValidationLifecycleState::claimable_current(),
+            json!({"fault_injection": "edge_layer_unavailable"}),
+            "micro-edge layer unavailable under controlled dogfood sidecar state",
+        );
+
+        assert_eq!(integrity_count, 12);
+        assert_eq!(findings.len(), 14);
+        for finding in findings.iter().take(integrity_count) {
+            assert_ne!(finding.classification, ValidationClassification::Block);
+            assert_eq!(
+                finding.proof_status,
+                ValidationProofStatus::NeedsReverification
+            );
+            assert_eq!(
+                finding.affected_edge["source_code_edit_required"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                finding.affected_edge["tool_integrity_repair_required"].as_bool(),
+                Some(true)
+            );
+            assert!(finding
+                .recommended_fix
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Reindex or repair CodeGraph micro-edge state"));
+            assert!(finding
+                .recommended_fix
+                .as_deref()
+                .unwrap_or_default()
+                .contains("do not edit source solely"));
+            assert_ne!(finding.blocking_level, ValidationBlockingLevel::Blocking);
+        }
+
+        let truncated = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED)
+            .expect("truncated finding");
+        assert_eq!(truncated.classification, ValidationClassification::Degraded);
+        assert_eq!(
+            truncated.affected_edge["source_code_edit_required"].as_bool(),
+            Some(false)
+        );
+        assert_ne!(truncated.blocking_level, ValidationBlockingLevel::Blocking);
+
+        let unavailable = findings
+            .iter()
+            .find(|finding| finding.validation_rule_id == CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE)
+            .expect("unavailable finding");
+        assert_eq!(
+            unavailable.classification,
+            ValidationClassification::Unknown
+        );
+        assert_eq!(
+            unavailable.affected_edge["source_code_edit_required"].as_bool(),
+            Some(false)
+        );
+        assert_ne!(
+            unavailable.blocking_level,
+            ValidationBlockingLevel::Blocking
+        );
     }
 
     #[test]
@@ -15124,6 +16476,9 @@ fn agent_use_graph_delta_omitted_count(delta: &EntitySourceRoleDeltaReport) -> u
         + omission.edges_added_omitted
         + omission.edges_removed_omitted
         + omission.edges_changed_omitted
+        + omission.micro_edges_added_omitted
+        + omission.micro_edges_removed_omitted
+        + omission.micro_edges_changed_omitted
         + omission.source_spans_added_omitted
         + omission.source_spans_removed_omitted
         + omission.source_spans_changed_omitted
@@ -15157,6 +16512,15 @@ fn agent_use_graph_delta_truncated_sections(
     }
     if omission.edges_changed_omitted > 0 {
         sections.push("edges_changed");
+    }
+    if omission.micro_edges_added_omitted > 0 {
+        sections.push("micro_edges_added");
+    }
+    if omission.micro_edges_removed_omitted > 0 {
+        sections.push("micro_edges_removed");
+    }
+    if omission.micro_edges_changed_omitted > 0 {
+        sections.push("micro_edges_changed");
     }
     if omission.source_spans_added_omitted > 0 {
         sections.push("source_spans_added");
@@ -15192,6 +16556,8 @@ fn agent_use_graph_delta_summary_json(delta: &EntitySourceRoleDeltaReport) -> Va
     json!({
         "entity_delta_count": delta.entities_added_count + delta.entities_removed_count + delta.entities_changed_count,
         "edge_delta_count": delta.edges_added_count + delta.edges_removed_count + delta.edges_changed_count,
+        "micro_edge_delta_count": delta.micro_edges_added_count + delta.micro_edges_removed_count + delta.micro_edges_changed_count,
+        "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
         "source_span_delta_count": delta.source_spans_added_count + delta.source_spans_removed_count + delta.source_spans_changed_count,
         "source_role_delta_count": delta.source_roles_changed_count,
         "text_evidence_delta_count": delta.text_evidence_changed_count,
@@ -15271,6 +16637,9 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "edges_added_count": delta.edges_added_count,
         "edges_removed_count": delta.edges_removed_count,
         "edges_changed_count": delta.edges_changed_count,
+        "micro_edges_added_count": delta.micro_edges_added_count,
+        "micro_edges_removed_count": delta.micro_edges_removed_count,
+        "micro_edges_changed_count": delta.micro_edges_changed_count,
         "source_roles_changed_count": delta.source_roles_changed_count,
         "source_spans_added_count": delta.source_spans_added_count,
         "source_spans_removed_count": delta.source_spans_removed_count,
@@ -15284,6 +16653,9 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "edges_added": delta.edges_added,
         "edges_removed": delta.edges_removed,
         "edges_changed": delta.edges_changed,
+        "micro_edges_added": delta.micro_edges_added,
+        "micro_edges_removed": delta.micro_edges_removed,
+        "micro_edges_changed": delta.micro_edges_changed,
         "source_spans_added": delta.source_spans_added,
         "source_spans_removed": delta.source_spans_removed,
         "source_spans_changed": delta.source_spans_changed,
@@ -15297,6 +16669,7 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "vector_audit_status_changed": delta.vector_audit_status_changed,
         "nuance_tokens_invalidated": delta.nuance_tokens_invalidated,
         "routing_handles_invalidated": delta.routing_handles_invalidated,
+        "micro_edge_layer_status_change": delta.micro_edge_layer_status_change,
         "proof_ladder_changes": delta.proof_ladder_changes,
         "file_renames_detected": delta.file_renames_detected,
         "rename_ambiguities": delta.rename_ambiguities,
@@ -15310,6 +16683,12 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "exactness_counts": delta.exactness_counts,
         "derived_counts": delta.derived_counts,
         "source_role_counts": delta.source_role_counts,
+        "micro_edge_counts_by_kind": delta.micro_edge_counts_by_kind,
+        "micro_edge_counts_by_exactness": delta.micro_edge_counts_by_exactness,
+        "micro_edge_counts_by_language": delta.micro_edge_counts_by_language,
+        "micro_edge_integrity_changes": delta.micro_edge_integrity_changes,
+        "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
+        "normal_micro_edge_delta_not_validation_error": delta.normal_micro_edge_delta_not_validation_error,
         "degraded_relation_classes": delta.degraded_relation_classes,
         "unsupported_relation_classes": delta.unsupported_relation_classes,
         "source_roles_changed": delta.source_roles_changed,

@@ -104,6 +104,34 @@
     "routing_handle_status": {
       "$ref": "common.schema.json#/$defs/dirty_evidence_freshness_state"
     },
+    "mvp4_micro_edges": {
+      "type": "object",
+      "description": "Bounded MVP4.2 micro-edge layer summary; graph claimability remains separate from optional micro-edge availability."
+    },
+    "mvp4_micro_edge_status": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "unavailable",
+        "stale",
+        "incompatible",
+        "corrupt",
+        "truncated",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "mvp4_micro_edge_rows": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mvp4_local_flow_packet_status": {
+      "type": "string",
+      "const": "not_applicable"
+    },
+    "core_graph_micro_edge_availability_separated": {
+      "type": "boolean"
+    },
     "sidecar_statuses": {
       "$ref": "common.schema.json#/$defs/sidecar_statuses"
     },

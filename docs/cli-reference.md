@@ -458,13 +458,22 @@ Runs read-only audit inspections over DBs and manual-label artifacts. Audit
 outputs can support stable summaries, but raw audit DBs/logs are not final
 benchmark artifacts by themselves.
 
+`audit micro-edges [--repo <repo>] [--db <path>] [--sample-limit <n>] [--json-out <path>] [--markdown-out <path>]`
+
+Runs a bounded read-only MVP4.2 micro-edge layer inspection. The summary reports
+optional `LOCAL_RETURNS_TO` status, counts, versions, cap/omission fields, and a
+bounded sample with endpoint ids/kinds, spans, exactness, claimability, and
+provenance summary. It does not output full source bodies, local-flow packets,
+`flow_proof`, or `mutation_proof`.
+
 `doctor [repo] [--json]`
 
 Checks the local SQLite DB, language frontends, optional Node/TypeScript
 resolver, `.codex/config.toml`, bundled UI assets, and `.codegraph`
 permissions. DB inspection is read-only and lifecycle-aware. JSON output
-includes passport status plus `sqlite_sidecars` and `sidecar_status`; normal
-WAL/SHM files are not reported as orphaned unless the main DB is missing.
+includes passport status plus `sqlite_sidecars`, `sidecar_status`, and optional
+MVP4.2 micro-edge availability where present; normal WAL/SHM files are not
+reported as orphaned unless the main DB is missing.
 
 `config [show|completions|release-metadata] [--shell <powershell|bash|zsh|fish>]`
 

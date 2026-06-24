@@ -180,7 +180,11 @@ proof eligibility.
 shape for status-like agent surfaces. The existing `status` and `doctor --json`
 commands still expose their historical rich diagnostic objects unless a compact
 mode is added; clients should treat these schemas as the compact lifecycle
-contract, not as a claim that the rich diagnostics were removed.
+contract, not as a claim that the rich diagnostics were removed. MVP4.2
+micro-edge visibility fields are additive summaries only: they report optional
+`LOCAL_RETURNS_TO` layer status, counts, caps, and recovery actions separately
+from core graph claimability, and they do not expose local-flow packets or
+`flow_proof`.
 
 `languages --json` is release capability metadata for language frontend
 support. It is intentionally outside the agent JSON packet schema set unless a

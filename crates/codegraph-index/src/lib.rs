@@ -24,28 +24,33 @@ use std::{
 };
 
 use codegraph_core::{
-    classify_entity_source_role, normalize_repo_relative_path as normalize_graph_path,
-    stable_edge_id, stable_entity_id_for_kind, Edge, EdgeClass, EdgeContext, Entity, EntityKind,
-    EvidenceRole, Exactness, FileRecord, Metadata, MicroNodeKind, NormalizedClaimabilityMetadata,
-    NormalizedEdgeFact, NormalizedEntityFact, NormalizedFactEnvelope, NormalizedFactOmission,
-    NormalizedFileFact, NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact,
-    NormalizedSourceRoleFact, NormalizedSourceSpanFact, NormalizedTextEvidenceFact,
-    NormalizedUnresolvedReferenceFact, PathEvidence, RelationKind, RepoIndexState,
-    RetrievalCandidate, RetrievalCandidateLifecycleBinding, RetrievalCandidateLifecycleStatus,
+    classify_entity_source_role, mvp4_micro_edge_language_capability,
+    normalize_repo_relative_path as normalize_graph_path, stable_edge_id,
+    stable_entity_id_for_kind, validate_micro_fact_provenance, Edge, EdgeClass, EdgeContext,
+    Entity, EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, MicroDerivationKind,
+    MicroEdgeCandidate, MicroEdgeKind, MicroNodeKind, MicroSourceRole,
+    NormalizedClaimabilityMetadata, NormalizedEdgeFact, NormalizedEntityFact,
+    NormalizedFactEnvelope, NormalizedFactOmission, NormalizedFileFact, NormalizedMicroEdgeFact,
+    NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact,
+    NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NormalizedUnresolvedReferenceFact,
+    PathEvidence, RelationKind, RepoIndexState, RetrievalCandidate,
+    RetrievalCandidateLifecycleBinding, RetrievalCandidateLifecycleStatus,
     RetrievalCandidateSource, RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
-    VectorEmbeddingSource,
+    VectorEmbeddingSource, MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
+    MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
 };
 use codegraph_parser::{
     content_hash, detect_language, emit_mvp4_typescript_in_memory_first_slice_inventory,
-    extract_entities_and_relations, BasicExtraction, LanguageParser,
-    Mvp4TypeScriptMicroNodeCandidate, Mvp4TypeScriptMicroNodeCapHit, TreeSitterParser,
+    emit_mvp4_typescript_local_returns_to_in_memory_candidates, extract_entities_and_relations,
+    BasicExtraction, LanguageParser, Mvp4TypeScriptMicroNodeCandidate,
+    Mvp4TypeScriptMicroNodeCapHit, TreeSitterParser,
 };
 use codegraph_query::{
     is_proof_path_relation, ExactGraphQueryEngine, GraphPath, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
-    classify_sqlite_access_problem, inspect_db_preflight, AstMicroNodeRow, DbPassport,
-    DbPreflightReport, ExpectedDbPassport, GraphStore, SqliteGraphStore, StoreError,
+    classify_sqlite_access_problem, inspect_db_preflight, AstMicroEdgeRow, AstMicroNodeRow,
+    DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore, SqliteGraphStore, StoreError,
     DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
@@ -77,6 +82,8 @@ const MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION: u32 = 1;
 const MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION: &str = "mvp4.1-typescript-micro-nodes-v1";
 const MVP4_1_MICRO_NODE_CAP_HIT_WARNING_KIND: &str = "mvp4_1_micro_node_cap_hit";
 const MVP4_1_MICRO_NODE_CAP_HIT_WARNING_PREFIX: &str = "mvp4_1_micro_node_cap_hit:";
+const MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_KIND: &str = "mvp4_2_micro_edge_cap_hit";
+const MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_PREFIX: &str = "mvp4_2_micro_edge_cap_hit:";
 pub const DEFAULT_GRAPH_OUTPUT_MAX_ENTITIES_PER_FILE: usize = 10_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_EDGES_PER_FILE: usize = 20_000;
 pub const DEFAULT_GRAPH_OUTPUT_MAX_LOCAL_FACTS_PER_FILE: usize = 20_000;
@@ -1328,6 +1335,10 @@ pub struct NormalizedFactSnapshotOptions {
     pub include_text_evidence: bool,
     pub include_path_evidence: bool,
     pub include_sidecar_freshness: bool,
+    /// Pre-MVP4.2 serialized options deserialize without micro-edge capture
+    /// and keep their old behavior.
+    #[serde(default)]
+    pub include_micro_edges: bool,
     /// Pre-9.5.4 serialized options (e.g. an in-flight validation journal)
     /// deserialize without the lane and keep their old behavior.
     #[serde(default)]
@@ -1341,6 +1352,7 @@ impl Default for NormalizedFactSnapshotOptions {
             include_text_evidence: true,
             include_path_evidence: true,
             include_sidecar_freshness: true,
+            include_micro_edges: true,
             include_unresolved_references: true,
         }
     }
@@ -1351,6 +1363,8 @@ pub struct NormalizedFactSnapshotFacts {
     pub files: Vec<NormalizedFileFact>,
     pub entities: Vec<NormalizedEntityFact>,
     pub edges: Vec<NormalizedEdgeFact>,
+    #[serde(default)]
+    pub micro_edges: Vec<NormalizedMicroEdgeFact>,
     pub source_spans: Vec<NormalizedSourceSpanFact>,
     pub source_roles: Vec<NormalizedSourceRoleFact>,
     pub text_evidence: Vec<NormalizedTextEvidenceFact>,
@@ -2039,6 +2053,231 @@ impl EdgeDeltaEntry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MicroEdgeDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub micro_edge_id: String,
+    pub micro_edge_kind: String,
+    pub head_micro_node_id: String,
+    pub tail_micro_node_id: String,
+    pub repo_relative_path: String,
+    pub function_identity: Option<String>,
+    pub relation_source_span_id: Option<String>,
+    pub relation_source_span: Option<SourceSpan>,
+    pub head_source_span_id: Option<String>,
+    pub tail_source_span_id: Option<String>,
+    pub provenance_id: Option<String>,
+    pub provenance_hash: Option<String>,
+    pub exactness: String,
+    pub claimability_label: String,
+    pub source_role: EvidenceRole,
+    pub language: String,
+    pub frontend: String,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub lifecycle_status: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub warnings: Vec<String>,
+}
+
+impl MicroEdgeDeltaFactSummary {
+    fn from_fact(fact: &NormalizedMicroEdgeFact) -> Self {
+        let mut warnings = normalized_micro_edge_fact_warnings(fact);
+        warnings.sort();
+        warnings.dedup();
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            micro_edge_id: fact.micro_edge_id.clone(),
+            micro_edge_kind: fact.micro_edge_kind.clone(),
+            head_micro_node_id: fact.head_micro_node_id.clone(),
+            tail_micro_node_id: fact.tail_micro_node_id.clone(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            function_identity: fact.function_identity.clone(),
+            relation_source_span_id: fact.relation_source_span_id.clone(),
+            relation_source_span: fact.relation_source_span.clone(),
+            head_source_span_id: fact.head_source_span_id.clone(),
+            tail_source_span_id: fact.tail_source_span_id.clone(),
+            provenance_id: fact.provenance_id.clone(),
+            provenance_hash: fact.provenance_hash.clone(),
+            exactness: fact.exactness.clone(),
+            claimability_label: fact.claimability_label.clone(),
+            source_role: fact.source_role,
+            language: fact.language.clone(),
+            frontend: fact.frontend.clone(),
+            row_schema_version: fact.row_schema_version,
+            payload_version: fact.payload_version,
+            extraction_version: fact.extraction_version.clone(),
+            lifecycle_status: fact.lifecycle_status.clone(),
+            claimability: fact.claimability.clone(),
+            proof_strength: normalized_proof_strength(&fact.claimability),
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MicroEdgeDeltaEntry {
+    pub stable_identity_key: String,
+    pub old_stable_identity_key: Option<String>,
+    pub new_stable_identity_key: Option<String>,
+    pub old: Option<MicroEdgeDeltaFactSummary>,
+    pub new: Option<MicroEdgeDeltaFactSummary>,
+    pub micro_edge_id: String,
+    pub micro_edge_kind: String,
+    pub head_micro_node_id: String,
+    pub tail_micro_node_id: String,
+    pub repo_relative_path: String,
+    pub function_identity: Option<String>,
+    pub relation_source_span_id: Option<String>,
+    pub relation_source_span: Option<SourceSpan>,
+    pub head_source_span_id: Option<String>,
+    pub tail_source_span_id: Option<String>,
+    pub provenance_id: Option<String>,
+    pub provenance_hash: Option<String>,
+    pub exactness: String,
+    pub claimability_label: String,
+    pub source_role: EvidenceRole,
+    pub language: String,
+    pub frontend: String,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub lifecycle_status: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub proof_strength: String,
+    pub change_kind: String,
+    pub reason: String,
+    pub graph_relation_proof_changed: bool,
+    pub validation_error: bool,
+    pub warnings: Vec<String>,
+}
+
+impl MicroEdgeDeltaEntry {
+    fn added(fact: &NormalizedMicroEdgeFact) -> Self {
+        let summary = MicroEdgeDeltaFactSummary::from_fact(fact);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            None,
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            "added",
+            "normalized micro-edge fact was absent before update and present after update",
+        )
+    }
+
+    fn removed(fact: &NormalizedMicroEdgeFact) -> Self {
+        let summary = MicroEdgeDeltaFactSummary::from_fact(fact);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            None,
+            "removed",
+            "normalized micro-edge fact was present before update and absent after update",
+        )
+    }
+
+    fn changed(old: &NormalizedMicroEdgeFact, new: &NormalizedMicroEdgeFact) -> Self {
+        let old_summary = MicroEdgeDeltaFactSummary::from_fact(old);
+        let new_summary = MicroEdgeDeltaFactSummary::from_fact(new);
+        Self::from_summary(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary.stable_identity_key.clone()),
+            Some(new_summary.stable_identity_key.clone()),
+            Some(old_summary),
+            Some(new_summary),
+            "changed",
+            micro_edge_change_reason(old, new),
+        )
+    }
+
+    fn from_summary(
+        stable_identity_key: String,
+        old_stable_identity_key: Option<String>,
+        new_stable_identity_key: Option<String>,
+        old: Option<MicroEdgeDeltaFactSummary>,
+        new: Option<MicroEdgeDeltaFactSummary>,
+        change_kind: &str,
+        reason: impl Into<String>,
+    ) -> Self {
+        let representative = new.as_ref().or(old.as_ref()).expect("micro-edge summary");
+        let mut warnings = representative.warnings.clone();
+        if let (Some(old_summary), Some(new_summary)) = (&old, &new) {
+            warnings.extend(old_summary.warnings.iter().cloned());
+            warnings.extend(new_summary.warnings.iter().cloned());
+        }
+        warnings.push("normal_micro_edge_delta_is_not_a_validation_error".to_string());
+        warnings.sort();
+        warnings.dedup();
+        let graph_relation_proof_changed =
+            micro_edge_summary_is_graph_relation_proof(representative);
+        let micro_edge_id = representative.micro_edge_id.clone();
+        let micro_edge_kind = representative.micro_edge_kind.clone();
+        let head_micro_node_id = representative.head_micro_node_id.clone();
+        let tail_micro_node_id = representative.tail_micro_node_id.clone();
+        let repo_relative_path = representative.repo_relative_path.clone();
+        let function_identity = representative.function_identity.clone();
+        let relation_source_span_id = representative.relation_source_span_id.clone();
+        let relation_source_span = representative.relation_source_span.clone();
+        let head_source_span_id = representative.head_source_span_id.clone();
+        let tail_source_span_id = representative.tail_source_span_id.clone();
+        let provenance_id = representative.provenance_id.clone();
+        let provenance_hash = representative.provenance_hash.clone();
+        let exactness = representative.exactness.clone();
+        let claimability_label = representative.claimability_label.clone();
+        let source_role = representative.source_role;
+        let language = representative.language.clone();
+        let frontend = representative.frontend.clone();
+        let row_schema_version = representative.row_schema_version;
+        let payload_version = representative.payload_version;
+        let extraction_version = representative.extraction_version.clone();
+        let lifecycle_status = representative.lifecycle_status.clone();
+        let claimability = representative.claimability.clone();
+        let proof_strength = representative.proof_strength.clone();
+        Self {
+            stable_identity_key,
+            old_stable_identity_key,
+            new_stable_identity_key,
+            old,
+            new,
+            micro_edge_id,
+            micro_edge_kind,
+            head_micro_node_id,
+            tail_micro_node_id,
+            repo_relative_path,
+            function_identity,
+            relation_source_span_id,
+            relation_source_span,
+            head_source_span_id,
+            tail_source_span_id,
+            provenance_id,
+            provenance_hash,
+            exactness,
+            claimability_label,
+            source_role,
+            language,
+            frontend,
+            row_schema_version,
+            payload_version,
+            extraction_version,
+            lifecycle_status,
+            claimability,
+            proof_strength,
+            change_kind: change_kind.to_string(),
+            reason: reason.into(),
+            graph_relation_proof_changed,
+            validation_error: false,
+            warnings,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntitySourceRoleDeltaOmission {
     pub truncated: bool,
@@ -2049,6 +2288,12 @@ pub struct EntitySourceRoleDeltaOmission {
     pub edges_added_omitted: usize,
     pub edges_removed_omitted: usize,
     pub edges_changed_omitted: usize,
+    #[serde(default)]
+    pub micro_edges_added_omitted: usize,
+    #[serde(default)]
+    pub micro_edges_removed_omitted: usize,
+    #[serde(default)]
+    pub micro_edges_changed_omitted: usize,
     pub source_spans_added_omitted: usize,
     pub source_spans_removed_omitted: usize,
     pub source_spans_changed_omitted: usize,
@@ -2608,6 +2853,12 @@ pub struct EntitySourceRoleDeltaReport {
     pub edges_added_count: usize,
     pub edges_removed_count: usize,
     pub edges_changed_count: usize,
+    #[serde(default)]
+    pub micro_edges_added_count: usize,
+    #[serde(default)]
+    pub micro_edges_removed_count: usize,
+    #[serde(default)]
+    pub micro_edges_changed_count: usize,
     pub source_roles_changed_count: usize,
     pub source_spans_added_count: usize,
     pub source_spans_removed_count: usize,
@@ -2633,6 +2884,12 @@ pub struct EntitySourceRoleDeltaReport {
     pub edges_added: Vec<EdgeDeltaEntry>,
     pub edges_removed: Vec<EdgeDeltaEntry>,
     pub edges_changed: Vec<EdgeDeltaEntry>,
+    #[serde(default)]
+    pub micro_edges_added: Vec<MicroEdgeDeltaEntry>,
+    #[serde(default)]
+    pub micro_edges_removed: Vec<MicroEdgeDeltaEntry>,
+    #[serde(default)]
+    pub micro_edges_changed: Vec<MicroEdgeDeltaEntry>,
     pub source_spans_added: Vec<SourceSpanDeltaEntry>,
     pub source_spans_removed: Vec<SourceSpanDeltaEntry>,
     pub source_spans_changed: Vec<SourceSpanDeltaEntry>,
@@ -2646,6 +2903,8 @@ pub struct EntitySourceRoleDeltaReport {
     pub vector_audit_status_changed: FreshnessLayerDelta,
     pub nuance_tokens_invalidated: FreshnessLayerDelta,
     pub routing_handles_invalidated: FreshnessLayerDelta,
+    #[serde(default)]
+    pub micro_edge_layer_status_change: Option<FreshnessLayerDelta>,
     pub proof_ladder_changes: BTreeMap<String, ProofLadderChange>,
     pub file_renames_detected: Vec<FileRenameDeltaEntry>,
     pub rename_ambiguities: Vec<FileRenameDeltaEntry>,
@@ -2659,6 +2918,18 @@ pub struct EntitySourceRoleDeltaReport {
     pub exactness_counts: BTreeMap<String, usize>,
     pub derived_counts: BTreeMap<String, usize>,
     pub source_role_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub micro_edge_counts_by_kind: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub micro_edge_counts_by_exactness: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub micro_edge_counts_by_language: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub micro_edge_integrity_changes: Vec<String>,
+    #[serde(default)]
+    pub micro_edge_cap_omissions: usize,
+    #[serde(default)]
+    pub normal_micro_edge_delta_not_validation_error: bool,
     pub degraded_relation_classes: BTreeMap<String, usize>,
     pub unsupported_relation_classes: BTreeMap<String, usize>,
     pub source_roles_changed: Vec<SourceRoleDeltaEntry>,
@@ -2790,6 +3061,21 @@ impl EntitySourceRoleDeltaReport {
             &mut report.edges_changed,
             max_items,
             &mut omission.edges_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.micro_edges_added,
+            max_items,
+            &mut omission.micro_edges_added_omitted,
+        );
+        truncate_tracked(
+            &mut report.micro_edges_removed,
+            max_items,
+            &mut omission.micro_edges_removed_omitted,
+        );
+        truncate_tracked(
+            &mut report.micro_edges_changed,
+            max_items,
+            &mut omission.micro_edges_changed_omitted,
         );
         truncate_tracked(
             &mut report.source_spans_added,
@@ -3166,6 +3452,8 @@ pub fn compute_entity_source_role_delta(
         &old_entities_by_id,
         &new_entities_by_id,
     );
+    let (micro_edges_added_all, micro_edges_removed_all, micro_edges_changed_all) =
+        classify_micro_edge_delta_entries(&old.facts.micro_edges, &new.facts.micro_edges);
     let relation_kind_counts =
         edge_relation_kind_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
     let exactness_counts =
@@ -3174,6 +3462,26 @@ pub fn compute_entity_source_role_delta(
         edge_derived_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
     let source_role_counts =
         edge_source_role_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
+    let micro_edge_counts_by_kind = micro_edge_counts_by_kind(
+        &micro_edges_added_all,
+        &micro_edges_removed_all,
+        &micro_edges_changed_all,
+    );
+    let micro_edge_counts_by_exactness = micro_edge_counts_by_exactness(
+        &micro_edges_added_all,
+        &micro_edges_removed_all,
+        &micro_edges_changed_all,
+    );
+    let micro_edge_counts_by_language = micro_edge_counts_by_language(
+        &micro_edges_added_all,
+        &micro_edges_removed_all,
+        &micro_edges_changed_all,
+    );
+    let micro_edge_integrity_changes = micro_edge_integrity_changes(
+        &micro_edges_added_all,
+        &micro_edges_removed_all,
+        &micro_edges_changed_all,
+    );
     let degraded_relation_classes =
         edge_degraded_relation_classes(&edges_added_all, &edges_removed_all, &edges_changed_all);
     let unsupported_relation_classes =
@@ -3249,6 +3557,15 @@ pub fn compute_entity_source_role_delta(
         &old.facts.sidecar_freshness,
         &new.facts.sidecar_freshness,
     );
+    let micro_edge_layer_status_change = sidecar_layer_delta(
+        "ast_micro_edges",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
+    let micro_edge_cap_omissions =
+        micro_edge_cap_omissions_from_sidecar_freshness(&new.facts.sidecar_freshness);
+    let micro_edge_layer_proof_ready =
+        micro_edge_layer_status_is_proof_ready(&new.facts.sidecar_freshness);
     let proof_ladder_changes = proof_ladder_changes_for_delta(
         &entities_added_all,
         &entities_removed_all,
@@ -3256,6 +3573,10 @@ pub fn compute_entity_source_role_delta(
         &edges_added_all,
         &edges_removed_all,
         &edges_changed_all,
+        &micro_edges_added_all,
+        &micro_edges_removed_all,
+        &micro_edges_changed_all,
+        micro_edge_layer_proof_ready,
         &source_spans_added_all,
         &source_spans_removed_all,
         &source_spans_changed_all,
@@ -3279,6 +3600,9 @@ pub fn compute_entity_source_role_delta(
     let edges_added_omitted = omitted_after_limit(edges_added_all.len(), max_items);
     let edges_removed_omitted = omitted_after_limit(edges_removed_all.len(), max_items);
     let edges_changed_omitted = omitted_after_limit(edges_changed_all.len(), max_items);
+    let micro_edges_added_omitted = omitted_after_limit(micro_edges_added_all.len(), max_items);
+    let micro_edges_removed_omitted = omitted_after_limit(micro_edges_removed_all.len(), max_items);
+    let micro_edges_changed_omitted = omitted_after_limit(micro_edges_changed_all.len(), max_items);
     let source_spans_added_omitted = omitted_after_limit(source_spans_added_all.len(), max_items);
     let source_spans_removed_omitted =
         omitted_after_limit(source_spans_removed_all.len(), max_items);
@@ -3305,6 +3629,9 @@ pub fn compute_entity_source_role_delta(
         + edges_added_omitted
         + edges_removed_omitted
         + edges_changed_omitted
+        + micro_edges_added_omitted
+        + micro_edges_removed_omitted
+        + micro_edges_changed_omitted
         + source_spans_added_omitted
         + source_spans_removed_omitted
         + source_spans_changed_omitted
@@ -3364,6 +3691,9 @@ pub fn compute_entity_source_role_delta(
         edges_added_count: edges_added_all.len(),
         edges_removed_count: edges_removed_all.len(),
         edges_changed_count: edges_changed_all.len(),
+        micro_edges_added_count: micro_edges_added_all.len(),
+        micro_edges_removed_count: micro_edges_removed_all.len(),
+        micro_edges_changed_count: micro_edges_changed_all.len(),
         source_roles_changed_count: source_roles_changed_all.len(),
         source_spans_added_count: source_spans_added_all.len(),
         source_spans_removed_count: source_spans_removed_all.len(),
@@ -3386,6 +3716,9 @@ pub fn compute_entity_source_role_delta(
         edges_added: take_delta_items(edges_added_all, max_items),
         edges_removed: take_delta_items(edges_removed_all, max_items),
         edges_changed: take_delta_items(edges_changed_all, max_items),
+        micro_edges_added: take_delta_items(micro_edges_added_all, max_items),
+        micro_edges_removed: take_delta_items(micro_edges_removed_all, max_items),
+        micro_edges_changed: take_delta_items(micro_edges_changed_all, max_items),
         source_spans_added: take_delta_items(source_spans_added_all, max_items),
         source_spans_removed: take_delta_items(source_spans_removed_all, max_items),
         source_spans_changed: take_delta_items(source_spans_changed_all, max_items),
@@ -3399,6 +3732,7 @@ pub fn compute_entity_source_role_delta(
         vector_audit_status_changed,
         nuance_tokens_invalidated,
         routing_handles_invalidated,
+        micro_edge_layer_status_change: Some(micro_edge_layer_status_change),
         proof_ladder_changes,
         file_renames_detected: take_delta_items(file_renames_detected_all, max_items),
         rename_ambiguities: take_delta_items(rename_ambiguities_all, max_items),
@@ -3412,6 +3746,12 @@ pub fn compute_entity_source_role_delta(
         exactness_counts,
         derived_counts,
         source_role_counts,
+        micro_edge_counts_by_kind,
+        micro_edge_counts_by_exactness,
+        micro_edge_counts_by_language,
+        micro_edge_integrity_changes,
+        micro_edge_cap_omissions,
+        normal_micro_edge_delta_not_validation_error: true,
         degraded_relation_classes,
         unsupported_relation_classes,
         source_roles_changed: take_delta_items(source_roles_changed_all, max_items),
@@ -3486,6 +3826,9 @@ pub fn compute_entity_source_role_delta(
             edges_added_omitted,
             edges_removed_omitted,
             edges_changed_omitted,
+            micro_edges_added_omitted,
+            micro_edges_removed_omitted,
+            micro_edges_changed_omitted,
             source_spans_added_omitted,
             source_spans_removed_omitted,
             source_spans_changed_omitted,
@@ -3522,6 +3865,14 @@ fn claimable_graph_fact_keys(snapshot: &NormalizedFactSnapshot) -> BTreeSet<Stri
             snapshot
                 .facts
                 .edges
+                .iter()
+                .filter(|fact| fact.claimability.graph_proof && fact.claimability.claimable)
+                .map(|fact| fact.stable_identity_key.clone()),
+        )
+        .chain(
+            snapshot
+                .facts
+                .micro_edges
                 .iter()
                 .filter(|fact| fact.claimability.graph_proof && fact.claimability.claimable)
                 .map(|fact| fact.stable_identity_key.clone()),
@@ -3749,6 +4100,7 @@ fn classify_sidecar_freshness_delta_entries(
         "vector_audit",
         "nuance_tokens",
         "routing_handles",
+        "ast_micro_edges",
         "path_evidence",
     ]
     .into_iter()
@@ -3803,6 +4155,33 @@ fn sidecar_layer_delta(
         reason: "sidecar freshness deltas are candidate/provenance state and are not graph proof"
             .to_string(),
     }
+}
+
+fn micro_edge_layer_status_is_proof_ready(sidecars: &[NormalizedSidecarFreshnessFact]) -> bool {
+    sidecars
+        .iter()
+        .filter(|fact| fact.sidecar_layer == "ast_micro_edges")
+        .all(|fact| matches!(fact.freshness_status.as_str(), "ready" | "current"))
+}
+
+fn micro_edge_cap_omissions_from_sidecar_freshness(
+    sidecars: &[NormalizedSidecarFreshnessFact],
+) -> usize {
+    sidecars
+        .iter()
+        .filter(|fact| fact.sidecar_layer == "ast_micro_edges")
+        .filter_map(|fact| fact.lifecycle.stale_reason.as_deref())
+        .filter_map(parse_first_omitted_count)
+        .sum()
+}
+
+fn parse_first_omitted_count(reason: &str) -> Option<usize> {
+    let (_, tail) = reason.split_once("omitted ")?;
+    let digits = tail
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
 }
 
 fn representative_sidecar_layer_fact<'a>(
@@ -3897,6 +4276,10 @@ fn proof_ladder_changes_for_delta(
     edges_added: &[EdgeDeltaEntry],
     edges_removed: &[EdgeDeltaEntry],
     edges_changed: &[EdgeDeltaEntry],
+    micro_edges_added: &[MicroEdgeDeltaEntry],
+    micro_edges_removed: &[MicroEdgeDeltaEntry],
+    micro_edges_changed: &[MicroEdgeDeltaEntry],
+    micro_edge_layer_proof_ready: bool,
     source_spans_added: &[SourceSpanDeltaEntry],
     source_spans_removed: &[SourceSpanDeltaEntry],
     source_spans_changed: &[SourceSpanDeltaEntry],
@@ -3911,6 +4294,12 @@ fn proof_ladder_changes_for_delta(
         !entities_added.is_empty() || !entities_removed.is_empty() || !entities_changed.is_empty();
     let relation_changed =
         !edges_added.is_empty() || !edges_removed.is_empty() || !edges_changed.is_empty();
+    let exact_micro_edge_relation_changed = micro_edge_layer_proof_ready
+        && micro_edges_added
+            .iter()
+            .chain(micro_edges_removed)
+            .chain(micro_edges_changed)
+            .any(micro_edge_delta_is_graph_relation_proof);
     let source_span_changed = !source_spans_added.is_empty()
         || !source_spans_removed.is_empty()
         || !source_spans_changed.is_empty();
@@ -3972,11 +4361,11 @@ fn proof_ladder_changes_for_delta(
         "graph_relation_proof".to_string(),
         proof_ladder_change(
             "graph_relation_proof",
-            relation_changed,
+            relation_changed || exact_micro_edge_relation_changed,
             "graph_relation_proof",
             true,
             "graph_source_span_proof",
-            "relation proof requires a claimable normalized edge with source span and provenance where derived",
+            "relation proof requires a claimable normalized edge or exact persisted micro-edge with source span, provenance, current lifecycle, and no truncation for the claimed scope",
         ),
     );
 
@@ -4441,6 +4830,133 @@ fn edge_change_reason(old: &NormalizedEdgeFact, new: &NormalizedEdgeFact) -> Str
     }
 }
 
+fn classify_micro_edge_delta_entries(
+    old_micro_edges: &[NormalizedMicroEdgeFact],
+    new_micro_edges: &[NormalizedMicroEdgeFact],
+) -> (
+    Vec<MicroEdgeDeltaEntry>,
+    Vec<MicroEdgeDeltaEntry>,
+    Vec<MicroEdgeDeltaEntry>,
+) {
+    let old_by_key = old_micro_edges
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_micro_edges
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => added.push(MicroEdgeDeltaEntry::added(new_fact)),
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                changed.push(MicroEdgeDeltaEntry::changed(old_fact, new_fact));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            removed.push(MicroEdgeDeltaEntry::removed(old_fact));
+        }
+    }
+    added.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    removed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    changed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    (added, removed, changed)
+}
+
+fn micro_edge_change_reason(
+    old: &NormalizedMicroEdgeFact,
+    new: &NormalizedMicroEdgeFact,
+) -> String {
+    let mut reasons = Vec::new();
+    if old.head_micro_node_id != new.head_micro_node_id {
+        reasons.push("head_endpoint_changed");
+    }
+    if old.tail_micro_node_id != new.tail_micro_node_id {
+        reasons.push("tail_endpoint_changed");
+    }
+    if old.relation_source_span != new.relation_source_span
+        || old.relation_source_span_id != new.relation_source_span_id
+    {
+        reasons.push("relation_source_span_changed");
+    }
+    if old.provenance_id != new.provenance_id || old.provenance_hash != new.provenance_hash {
+        reasons.push("provenance_changed");
+    }
+    if old.exactness != new.exactness {
+        reasons.push("exactness_changed");
+    }
+    if old.claimability_label != new.claimability_label || old.claimability != new.claimability {
+        reasons.push("claimability_changed");
+    }
+    if old.source_role != new.source_role {
+        reasons.push("source_role_changed");
+    }
+    if old.row_schema_version != new.row_schema_version
+        || old.payload_version != new.payload_version
+        || old.extraction_version != new.extraction_version
+    {
+        reasons.push("version_changed");
+    }
+    if old.lifecycle_status != new.lifecycle_status || old.lifecycle != new.lifecycle {
+        reasons.push("lifecycle_changed");
+    }
+    if reasons.is_empty() {
+        "normalized_micro_edge_fact_hash_changed".to_string()
+    } else {
+        reasons.join("+")
+    }
+}
+
+fn normalized_micro_edge_fact_warnings(fact: &NormalizedMicroEdgeFact) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if fact.relation_source_span.is_none() {
+        warnings.push("micro_edge_missing_relation_source_span".to_string());
+    }
+    if fact.provenance_id.is_none() {
+        warnings.push("micro_edge_missing_provenance".to_string());
+    }
+    if !fact.exactness.eq_ignore_ascii_case("exact") {
+        warnings.push("micro_edge_not_exact_not_graph_relation_proof".to_string());
+    }
+    if !fact.claimability.graph_proof || !fact.claimability.claimable {
+        warnings.push("micro_edge_delta_is_diagnostic_not_proof".to_string());
+    }
+    if !matches!(
+        fact.lifecycle_status.as_str(),
+        "db_passport" | "current" | "ready"
+    ) {
+        warnings.push("micro_edge_lifecycle_not_current".to_string());
+    }
+    if fact.micro_edge_kind != MicroEdgeKind::LocalReturnsTo.as_str() {
+        warnings.push("micro_edge_relation_not_authorized_for_mvp4_2_first_slice".to_string());
+    }
+    warnings
+}
+
+fn micro_edge_summary_is_graph_relation_proof(summary: &MicroEdgeDeltaFactSummary) -> bool {
+    summary.micro_edge_kind == MicroEdgeKind::LocalReturnsTo.as_str()
+        && summary.exactness.eq_ignore_ascii_case("exact")
+        && summary.claimability.graph_proof
+        && summary.claimability.claimable
+        && summary.relation_source_span.is_some()
+        && summary.provenance_id.is_some()
+        && matches!(
+            summary.lifecycle_status.as_str(),
+            "db_passport" | "current" | "ready"
+        )
+}
+
+fn micro_edge_delta_is_graph_relation_proof(entry: &MicroEdgeDeltaEntry) -> bool {
+    entry.graph_relation_proof_changed
+}
+
 fn normalized_edge_fact_warnings(fact: &NormalizedEdgeFact) -> Vec<String> {
     let mut warnings = Vec::new();
     if fact.derived && fact.provenance_edges.is_empty() {
@@ -4540,6 +5056,79 @@ fn count_edge_delta_labels(
         *counts.entry(label(entry)).or_insert(0) += 1;
     }
     counts
+}
+
+fn micro_edge_counts_by_kind(
+    added: &[MicroEdgeDeltaEntry],
+    removed: &[MicroEdgeDeltaEntry],
+    changed: &[MicroEdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_micro_edge_delta_labels(added, removed, changed, |entry| {
+        entry.micro_edge_kind.clone()
+    })
+}
+
+fn micro_edge_counts_by_exactness(
+    added: &[MicroEdgeDeltaEntry],
+    removed: &[MicroEdgeDeltaEntry],
+    changed: &[MicroEdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_micro_edge_delta_labels(added, removed, changed, |entry| entry.exactness.clone())
+}
+
+fn micro_edge_counts_by_language(
+    added: &[MicroEdgeDeltaEntry],
+    removed: &[MicroEdgeDeltaEntry],
+    changed: &[MicroEdgeDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_micro_edge_delta_labels(added, removed, changed, |entry| entry.language.clone())
+}
+
+fn count_micro_edge_delta_labels(
+    added: &[MicroEdgeDeltaEntry],
+    removed: &[MicroEdgeDeltaEntry],
+    changed: &[MicroEdgeDeltaEntry],
+    label: fn(&MicroEdgeDeltaEntry) -> String,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in added.iter().chain(removed).chain(changed) {
+        *counts.entry(label(entry)).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn micro_edge_integrity_changes(
+    added: &[MicroEdgeDeltaEntry],
+    removed: &[MicroEdgeDeltaEntry],
+    changed: &[MicroEdgeDeltaEntry],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for entry in added.iter().chain(removed).chain(changed) {
+        if entry.micro_edge_kind != MicroEdgeKind::LocalReturnsTo.as_str() {
+            findings.push(format!(
+                "{}:unsupported_micro_edge_kind:{}",
+                entry.micro_edge_id, entry.micro_edge_kind
+            ));
+        }
+        if entry.relation_source_span.is_none() {
+            findings.push(format!(
+                "{}:missing_relation_source_span",
+                entry.micro_edge_id
+            ));
+        }
+        if entry.provenance_id.is_none() {
+            findings.push(format!("{}:missing_provenance", entry.micro_edge_id));
+        }
+        if !entry.exactness.eq_ignore_ascii_case("exact") {
+            findings.push(format!("{}:non_exact_micro_edge", entry.micro_edge_id));
+        }
+        if !entry.claimability.graph_proof || !entry.claimability.claimable {
+            findings.push(format!("{}:non_claimable_micro_edge", entry.micro_edge_id));
+        }
+    }
+    findings.sort();
+    findings.dedup();
+    findings
 }
 
 fn edge_degraded_relation_classes(
@@ -4957,6 +5546,18 @@ fn collect_normalized_facts_for_path(
         .as_ref()
         .map(|file| NormalizedFileFact::from_file(file).source_role)
         .unwrap_or(EvidenceRole::Unknown);
+    let source_span_rows = store.list_source_spans_by_file(repo_relative_path)?;
+    let source_spans_by_id = source_span_rows
+        .iter()
+        .map(|(id, span)| (id.clone(), span.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let micro_edge_table_available = store.table_exists("ast_micro_edges")?;
+    let extraction_warnings = if options.include_micro_edges || options.include_sidecar_freshness {
+        store.list_extraction_warnings_by_file(repo_relative_path)?
+    } else {
+        Vec::new()
+    };
+    let micro_edge_cap_omitted = mvp4_2_micro_edge_cap_omission_count(&extraction_warnings);
 
     if let Some(file) = store.get_file(repo_relative_path)? {
         push_fact(
@@ -5046,7 +5647,51 @@ fn collect_normalized_facts_for_path(
         );
     }
 
-    for (span_id, span) in store.list_source_spans_by_file(repo_relative_path)? {
+    if options.include_micro_edges && micro_edge_table_available {
+        for row in store.ast_micro_edges_for_file(repo_relative_path)? {
+            let relation_source_span = row
+                .source_span_id
+                .as_ref()
+                .and_then(|span_id| source_spans_by_id.get(span_id))
+                .cloned();
+            let fact = normalized_micro_edge_fact_from_row(&row, relation_source_span.clone());
+            let edge_source_role = fact.source_role;
+            let edge_key = fact.stable_identity_key.clone();
+            let edge_id = fact.micro_edge_id.clone();
+            let relation_source_span_id = fact.relation_source_span_id.clone();
+            push_fact(budget, facts, fact, |facts, fact| {
+                facts.micro_edges.push(fact)
+            });
+            push_fact(
+                budget,
+                facts,
+                NormalizedSourceRoleFact::new(
+                    repo_relative_path,
+                    "micro_edge",
+                    edge_id.clone(),
+                    edge_source_role,
+                    "micro-edge source role",
+                ),
+                |facts, fact| facts.source_roles.push(fact),
+            );
+            if let (Some(span_id), Some(span)) = (relation_source_span_id, relation_source_span) {
+                push_fact(
+                    budget,
+                    facts,
+                    NormalizedSourceSpanFact::new(
+                        span_id,
+                        edge_key,
+                        "micro_edge",
+                        span,
+                        edge_source_role,
+                    ),
+                    |facts, fact| facts.source_spans.push(fact),
+                );
+            }
+        }
+    }
+
+    for (span_id, span) in source_span_rows {
         push_fact(
             budget,
             facts,
@@ -5135,6 +5780,34 @@ fn collect_normalized_facts_for_path(
     }
 
     if options.include_sidecar_freshness {
+        push_fact(
+            budget,
+            facts,
+            NormalizedSidecarFreshnessFact::new(
+                repo_relative_path,
+                "ast_micro_edges",
+                Some(format!("{scope}:{repo_relative_path}")),
+                if !options.include_micro_edges {
+                    "not_applicable"
+                } else if !micro_edge_table_available {
+                    "unavailable"
+                } else if micro_edge_cap_omitted > 0 {
+                    "truncated"
+                } else {
+                    "ready"
+                },
+                if micro_edge_cap_omitted > 0 {
+                    Some(format!(
+                        "mvp4_2 LOCAL_RETURNS_TO omitted {micro_edge_cap_omitted} edge(s) under caps; exact coverage is incomplete"
+                    ))
+                } else if !micro_edge_table_available {
+                    Some("ast_micro_edges table is unavailable in this DB".to_string())
+                } else {
+                    None
+                },
+            ),
+            |facts, fact| facts.sidecar_freshness.push(fact),
+        );
         for layer in [
             "candidate_spool",
             "candidate_query_index",
@@ -5163,6 +5836,61 @@ fn collect_normalized_facts_for_path(
     }
 
     Ok(())
+}
+
+fn normalized_micro_edge_fact_from_row(
+    row: &AstMicroEdgeRow,
+    relation_source_span: Option<SourceSpan>,
+) -> NormalizedMicroEdgeFact {
+    let source_role = EvidenceRole::from_str(&row.source_role).unwrap_or(EvidenceRole::Unknown);
+    NormalizedMicroEdgeFact::new(
+        row.micro_edge_id.clone(),
+        row.relation_kind.clone(),
+        row.source_micro_node_id.clone(),
+        row.target_micro_node_id.clone(),
+        &row.file_id,
+        row.function_entity_id
+            .clone()
+            .or_else(|| row.scope_entity_id.clone()),
+        row.source_span_id.clone(),
+        relation_source_span,
+        Some(row.source_micro_node_id.clone()),
+        Some(row.target_micro_node_id.clone()),
+        row.provenance_id.clone(),
+        row.exactness.clone(),
+        row.claimability.clone(),
+        source_role,
+        row.language.clone(),
+        row.frontend.clone(),
+        row.schema_version,
+        row.payload_version,
+        row.extraction_version.clone(),
+        row.lifecycle_binding.clone(),
+    )
+}
+
+fn mvp4_2_micro_edge_cap_omission_count(warnings: &[(String, Value)]) -> usize {
+    warnings
+        .iter()
+        .filter(|(warning, metadata)| {
+            warning.starts_with(MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_PREFIX)
+                || metadata
+                    .get("warning_kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind == MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_KIND)
+        })
+        .filter_map(|(_, metadata)| {
+            metadata
+                .get("omitted_edge_count")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    metadata
+                        .get("cap_state_omitted_count")
+                        .and_then(Value::as_u64)
+                })
+        })
+        .map(|value| value as usize)
+        .sum()
 }
 
 fn push_fact<T>(
@@ -6275,6 +7003,14 @@ pub struct LocalFactBundle {
     pub mvp4_micro_node_cap_hits: Vec<Mvp4TypeScriptMicroNodeCapHit>,
     #[serde(default)]
     pub mvp4_micro_node_completeness_label: String,
+    #[serde(default)]
+    pub mvp4_micro_edges: Vec<MicroEdgeCandidate>,
+    #[serde(default)]
+    pub mvp4_micro_edge_omitted_count: u64,
+    #[serde(default)]
+    pub mvp4_micro_edge_diagnostic_count: u64,
+    #[serde(default)]
+    pub mvp4_micro_edge_completeness_label: String,
     pub extraction: BasicExtraction,
 }
 
@@ -6292,6 +7028,10 @@ impl LocalFactBundle {
         mvp4_micro_node_omitted_count: u64,
         mvp4_micro_node_cap_hits: Vec<Mvp4TypeScriptMicroNodeCapHit>,
         mvp4_micro_node_completeness_label: String,
+        mvp4_micro_edges: Vec<MicroEdgeCandidate>,
+        mvp4_micro_edge_omitted_count: u64,
+        mvp4_micro_edge_diagnostic_count: u64,
+        mvp4_micro_edge_completeness_label: String,
     ) -> Self {
         let mut declarations = extraction
             .entities
@@ -6400,6 +7140,10 @@ impl LocalFactBundle {
             mvp4_micro_node_omitted_count,
             mvp4_micro_node_cap_hits,
             mvp4_micro_node_completeness_label,
+            mvp4_micro_edges,
+            mvp4_micro_edge_omitted_count,
+            mvp4_micro_edge_diagnostic_count,
+            mvp4_micro_edge_completeness_label,
             extraction,
         }
     }
@@ -12167,6 +12911,272 @@ fn persist_mvp4_1_micro_node_cap_warning(
     Ok(())
 }
 
+fn is_mvp4_1_persistable_micro_node_candidate(
+    candidate: &Mvp4TypeScriptMicroNodeCandidate,
+) -> bool {
+    candidate.source_role == MicroSourceRole::Production
+        && is_mvp4_1_authorized_micro_node_kind(candidate.node_kind)
+        && candidate.language == "typescript"
+        && candidate.row_schema_version == MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION
+        && candidate.payload_version == MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION
+        && candidate.extraction_version == MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION
+}
+
+fn source_span_is_bounded(span: &SourceSpan) -> bool {
+    !span.repo_relative_path.trim().is_empty()
+        && (span.end_line > span.start_line
+            || (span.end_line == span.start_line && span.end_column > span.start_column))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_mvp4_2_ast_micro_edges_for_file(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    file_hash: Option<&str>,
+    candidates: &[MicroEdgeCandidate],
+    omitted_count: u64,
+    diagnostic_count: u64,
+    completeness_label: &str,
+    retained_micro_nodes: &[Mvp4TypeScriptMicroNodeCandidate],
+    profile: &mut IndexPhaseRecorder,
+) -> Result<usize, StoreError> {
+    let file_id = normalize_graph_path(repo_relative_path);
+    let retained_nodes = retained_micro_nodes
+        .iter()
+        .filter(|candidate| is_mvp4_1_persistable_micro_node_candidate(candidate))
+        .map(|candidate| (candidate.micro_node_id.as_str(), candidate))
+        .collect::<BTreeMap<_, _>>();
+    let mut inserted = 0usize;
+    let mut seen = BTreeSet::new();
+
+    for candidate in candidates {
+        if candidate.micro_edge_kind != MicroEdgeKind::LocalReturnsTo {
+            return Err(StoreError::Message(format!(
+                "unauthorized mvp4.2 micro-edge relation for {}: {}",
+                candidate.micro_edge_id, candidate.micro_edge_kind
+            )));
+        }
+        let capability =
+            mvp4_micro_edge_language_capability(&candidate.language, candidate.micro_edge_kind);
+        if !capability.matches_frontend(&candidate.frontend)
+            || normalize_graph_path(&candidate.repo_relative_path) != file_id
+            || normalize_graph_path(&candidate.relation_source_span.repo_relative_path) != file_id
+            || normalize_graph_path(&candidate.head_source_span.repo_relative_path) != file_id
+            || normalize_graph_path(&candidate.tail_source_span.repo_relative_path) != file_id
+        {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO candidate {} has invalid file/language/source-role/frontend",
+                candidate.micro_edge_id
+            )));
+        }
+        if candidate.row_schema_version != MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION
+            || candidate.payload_version != MVP4_2_MICRO_EDGE_PAYLOAD_VERSION
+            || Some(candidate.extraction_version.as_str()) != capability.extraction_version
+        {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO version drift for {}",
+                candidate.micro_edge_id
+            )));
+        }
+        if !capability.supports_claimable_exact(
+            &candidate.frontend,
+            candidate.source_role,
+            candidate.exactness,
+            &candidate.claimability,
+            &candidate.extraction_version,
+        ) {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO candidate {} is not exact claimable containment",
+                candidate.micro_edge_id
+            )));
+        }
+        if candidate.provenance.derivation_kind != MicroDerivationKind::DirectAstExtraction {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO candidate {} lacks direct-AST provenance",
+                candidate.micro_edge_id
+            )));
+        }
+        validate_micro_fact_provenance(&candidate.provenance).map_err(|error| {
+            StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO candidate {} provenance invalid: {error}",
+                candidate.micro_edge_id
+            ))
+        })?;
+        if !source_span_is_bounded(&candidate.relation_source_span)
+            || !source_span_is_bounded(&candidate.head_source_span)
+            || !source_span_is_bounded(&candidate.tail_source_span)
+        {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO candidate {} is missing bounded spans",
+                candidate.micro_edge_id
+            )));
+        }
+        if !seen.insert(candidate.micro_edge_id.as_str()) {
+            return Err(StoreError::Message(format!(
+                "duplicate mvp4.2 LOCAL_RETURNS_TO candidate id {}",
+                candidate.micro_edge_id
+            )));
+        }
+
+        let head = retained_nodes
+            .get(candidate.head_micro_node_id.as_str())
+            .ok_or_else(|| {
+                StoreError::Message(format!(
+                    "mvp4.2 LOCAL_RETURNS_TO {} missing retained ReturnSite endpoint {}",
+                    candidate.micro_edge_id, candidate.head_micro_node_id
+                ))
+            })?;
+        let tail = retained_nodes
+            .get(candidate.tail_micro_node_id.as_str())
+            .ok_or_else(|| {
+                StoreError::Message(format!(
+                    "mvp4.2 LOCAL_RETURNS_TO {} missing retained FunctionFrame endpoint {}",
+                    candidate.micro_edge_id, candidate.tail_micro_node_id
+                ))
+            })?;
+        if head.node_kind != MicroNodeKind::ReturnSite
+            || tail.node_kind != MicroNodeKind::FunctionFrame
+            || head.parse_recovery
+            || tail.parse_recovery
+            || head.enclosing_function_identity != candidate.function_identity
+            || tail.enclosing_function_identity != candidate.function_identity
+            || head.repo_relative_path != tail.repo_relative_path
+            || normalize_graph_path(&head.repo_relative_path) != file_id
+            || normalize_graph_path(&tail.repo_relative_path) != file_id
+        {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO {} endpoint integrity failed",
+                candidate.micro_edge_id
+            )));
+        }
+        let head_function_link = head
+            .function_entity_id
+            .clone()
+            .or_else(|| Some(head.enclosing_function_identity.clone()));
+        let tail_function_link = tail
+            .function_entity_id
+            .clone()
+            .or_else(|| Some(tail.enclosing_function_identity.clone()));
+        if head_function_link != tail_function_link {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 LOCAL_RETURNS_TO {} endpoint function linkage mismatch",
+                candidate.micro_edge_id
+            )));
+        }
+
+        let span_start = Instant::now();
+        writer.insert_source_span_after_file_delete(
+            &candidate.micro_edge_id,
+            &candidate.relation_source_span,
+        )?;
+        profile.add_duration(
+            "mvp4_2_micro_edge_source_span_insert",
+            span_start.elapsed(),
+            1,
+            1,
+        );
+
+        let row = AstMicroEdgeRow {
+            micro_edge_id: candidate.micro_edge_id.clone(),
+            file_id: file_id.clone(),
+            function_entity_id: head_function_link,
+            scope_entity_id: Some(candidate.function_identity.clone()),
+            core_edge_id: None,
+            source_micro_node_id: candidate.head_micro_node_id.clone(),
+            target_micro_node_id: candidate.tail_micro_node_id.clone(),
+            relation_kind: candidate.micro_edge_kind.as_str().to_string(),
+            source_span_id: Some(candidate.micro_edge_id.clone()),
+            exactness: candidate.exactness.as_str().to_string(),
+            provenance_id: Some(candidate.micro_edge_id.clone()),
+            schema_version: candidate.row_schema_version,
+            extraction_version: candidate.extraction_version.clone(),
+            source_role: candidate.source_role.as_str().to_string(),
+            language: candidate.language.clone(),
+            frontend: candidate.frontend.clone(),
+            payload_version: candidate.payload_version,
+            claimability: capability
+                .claimability_label
+                .unwrap_or(MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY)
+                .to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+        let insert_start = Instant::now();
+        writer.insert_ast_micro_edge(&row)?;
+        profile.add_duration("mvp4_2_micro_edge_insert", insert_start.elapsed(), 1, 1);
+        inserted += 1;
+    }
+
+    persist_mvp4_2_micro_edge_cap_warning(
+        writer,
+        repo_relative_path,
+        file_hash,
+        omitted_count,
+        diagnostic_count,
+        completeness_label,
+        candidates,
+        profile,
+    )?;
+    Ok(inserted)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_mvp4_2_micro_edge_cap_warning(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    file_hash: Option<&str>,
+    omitted_count: u64,
+    diagnostic_count: u64,
+    completeness_label: &str,
+    candidates: &[MicroEdgeCandidate],
+    profile: &mut IndexPhaseRecorder,
+) -> Result<(), StoreError> {
+    let cap_states = candidates
+        .iter()
+        .filter_map(|candidate| candidate.cap_omission_state.as_ref())
+        .collect::<Vec<_>>();
+    if omitted_count == 0 && diagnostic_count == 0 && cap_states.is_empty() {
+        return Ok(());
+    }
+    let omitted_from_cap_state = cap_states
+        .iter()
+        .map(|state| state.omitted_count)
+        .max()
+        .unwrap_or(0);
+    let metadata = json!({
+        "fact_class": "extraction_warning",
+        "warning_kind": MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_KIND,
+        "repo_relative_path": normalize_graph_path(repo_relative_path),
+        "relation_kind": MicroEdgeKind::LocalReturnsTo.as_str(),
+        "omitted_edge_count": omitted_count,
+        "diagnostic_count": diagnostic_count,
+        "cap_state_count": cap_states.len(),
+        "cap_state_omitted_count": omitted_from_cap_state,
+        "completeness_label": completeness_label,
+        "not_local_flow_packet": true,
+        "not_mutation_proof": true,
+        "not_flow_proof": true,
+        "full_omitted_edge_bodies_stored": false,
+        "mutation_proof_activated": false,
+        "flow_proof_activated": false,
+    });
+    let start = Instant::now();
+    writer.insert_extraction_warning_after_file_delete(
+        repo_relative_path,
+        file_hash,
+        &format!(
+            "{MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_PREFIX} omitted {omitted_count} active LOCAL_RETURNS_TO candidates"
+        ),
+        &metadata,
+    )?;
+    profile.add_duration(
+        "mvp4_2_micro_edge_cap_warning_insert",
+        start.elapsed(),
+        1,
+        1,
+    );
+    Ok(())
+}
+
 fn refresh_stored_path_evidence_to_writer(
     writer: &SqliteGraphStore,
     max_rows: usize,
@@ -12509,6 +13519,17 @@ fn persist_local_fact_bundles(
             indexed.mvp4_micro_node_omitted_count,
             &indexed.mvp4_micro_node_cap_hits,
             &indexed.mvp4_micro_node_completeness_label,
+            profile,
+        )?;
+        persist_mvp4_2_ast_micro_edges_for_file(
+            store,
+            &indexed.repo_relative_path,
+            Some(&indexed.file_hash),
+            &indexed.mvp4_micro_edges,
+            indexed.mvp4_micro_edge_omitted_count,
+            indexed.mvp4_micro_edge_diagnostic_count,
+            &indexed.mvp4_micro_edge_completeness_label,
+            &indexed.mvp4_micro_nodes,
             profile,
         )?;
 
@@ -13555,6 +14576,10 @@ fn parse_extract_pending_files_with_progress(
                         0,
                         Vec::new(),
                         "not_applicable".to_string(),
+                        Vec::new(),
+                        0,
+                        0,
+                        "not_applicable".to_string(),
                     ));
                     let bundle_ms = bundle_start.elapsed().as_millis();
                     if emit_profile_json {
@@ -13663,6 +14688,10 @@ fn parse_extract_pending_files_with_progress(
                         0,
                         Vec::new(),
                         "not_applicable".to_string(),
+                        Vec::new(),
+                        0,
+                        0,
+                        "not_applicable".to_string(),
                     ));
                     let bundle_ms = bundle_start.elapsed().as_millis();
                     if emit_profile_json {
@@ -13750,6 +14779,11 @@ fn parse_extract_pending_files_with_progress(
                                 &parsed,
                                 &file.source,
                             );
+                        let mvp4_micro_edge_report =
+                            emit_mvp4_typescript_local_returns_to_in_memory_candidates(
+                                &parsed,
+                                &file.source,
+                            );
                         let bundle_start = Instant::now();
                         outputs.push(LocalFactBundle::new(
                             file.repo_relative_path,
@@ -13762,6 +14796,10 @@ fn parse_extract_pending_files_with_progress(
                             mvp4_micro_node_report.omitted_count,
                             mvp4_micro_node_report.cap_hits,
                             mvp4_micro_node_report.completeness_label,
+                            mvp4_micro_edge_report.candidates,
+                            mvp4_micro_edge_report.omitted_edge_count,
+                            mvp4_micro_edge_report.diagnostics.len() as u64,
+                            mvp4_micro_edge_report.completeness_label,
                         ));
                         let bundle_ms = bundle_start.elapsed().as_millis();
                         if emit_profile_json {
@@ -13878,6 +14916,10 @@ fn parse_extract_pending_files_with_progress(
                             Vec::new(),
                             0,
                             Vec::new(),
+                            "not_applicable".to_string(),
+                            Vec::new(),
+                            0,
+                            0,
                             "not_applicable".to_string(),
                         ));
                         let bundle_ms = bundle_start.elapsed().as_millis();
@@ -14667,6 +15709,8 @@ pub fn update_changed_files_with_cache_to_db(
             let mut extraction = extract_entities_and_relations(&parsed, &source);
             let mvp4_micro_node_report =
                 emit_mvp4_typescript_in_memory_first_slice_inventory(&parsed, &source);
+            let mvp4_micro_edge_report =
+                emit_mvp4_typescript_local_returns_to_in_memory_candidates(&parsed, &source);
             phase_profile.add_duration(
                 "extract_entities_and_relations",
                 extraction_start.elapsed(),
@@ -14746,6 +15790,24 @@ pub fn update_changed_files_with_cache_to_db(
                 &mvp4_micro_node_report.cap_hits,
                 &mvp4_micro_node_report.completeness_label,
                 &mut phase_profile,
+            )?;
+            write_path_chaos_failpoint("incremental_during_micro_edge_insert")?;
+            persist_mvp4_2_ast_micro_edges_for_file(
+                tx,
+                repo_relative_path,
+                Some(&hash),
+                &mvp4_micro_edge_report.candidates,
+                mvp4_micro_edge_report.omitted_edge_count,
+                mvp4_micro_edge_report.diagnostics.len() as u64,
+                &mvp4_micro_edge_report.completeness_label,
+                &mvp4_micro_node_report.candidates,
+                &mut phase_profile,
+            )?;
+            write_path_chaos_failpoint(
+                "incremental_after_micro_edge_insert_before_integrity_check",
+            )?;
+            write_path_chaos_failpoint(
+                "incremental_after_micro_edge_integrity_check_before_commit",
             )?;
 
             for edge in extraction
@@ -25869,7 +26931,10 @@ fn path_string(path: &Path) -> String {
 mod tests {
     use std::{process, time::Duration};
 
-    use codegraph_core::{EdgeClass, EdgeContext, EntityKind, Exactness, RelationKind};
+    use codegraph_core::{
+        EdgeClass, EdgeContext, EntityKind, Exactness, MicroExactness, RelationKind,
+        MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+    };
     use codegraph_query::{
         RetrievalFunnel, RetrievalFunnelConfig, RetrievalFunnelRequest, VectorCandidateBranchStatus,
     };
@@ -26529,6 +27594,10 @@ mod tests {
         rows.iter().map(|row| row.micro_node_id.clone()).collect()
     }
 
+    fn ast_micro_edge_ids(rows: &[AstMicroEdgeRow]) -> Vec<String> {
+        rows.iter().map(|row| row.micro_edge_id.clone()).collect()
+    }
+
     fn ast_micro_node_symbols(rows: &[AstMicroNodeRow]) -> BTreeSet<String> {
         rows.iter()
             .filter_map(|row| row.symbol.clone())
@@ -26570,11 +27639,127 @@ mod tests {
         }
     }
 
+    fn assert_mvp4_2_local_returns_to_integrity(
+        store: &SqliteGraphStore,
+        node_rows: &[AstMicroNodeRow],
+        edge_rows: &[AstMicroEdgeRow],
+    ) {
+        let nodes_by_id = node_rows
+            .iter()
+            .map(|row| (row.micro_node_id.as_str(), row))
+            .collect::<BTreeMap<_, _>>();
+        let return_count = ast_micro_node_kind_count(node_rows, "return_site");
+        assert_eq!(
+            edge_rows.len(),
+            return_count,
+            "one LOCAL_RETURNS_TO edge per persisted ReturnSite"
+        );
+        let mut seen = BTreeSet::new();
+        for row in edge_rows {
+            assert!(
+                seen.insert(row.micro_edge_id.as_str()),
+                "duplicate micro-edge id"
+            );
+            assert_eq!(row.relation_kind, MicroEdgeKind::LocalReturnsTo.as_str());
+            assert_eq!(row.schema_version, MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION);
+            assert_eq!(row.payload_version, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION);
+            assert_eq!(
+                row.extraction_version,
+                MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION
+            );
+            assert_eq!(row.exactness, MicroExactness::Exact.as_str());
+            assert_eq!(row.source_role, "production");
+            assert_eq!(row.language, "typescript");
+            assert!(!row.frontend.is_empty());
+            assert_eq!(row.lifecycle_binding, "db_passport");
+            assert_eq!(
+                row.claimability,
+                "claimable_source_spanned_local_return_containment"
+            );
+            assert!(row.source_span_id.is_some());
+            assert!(row.provenance_id.is_some());
+            assert!(
+                store
+                    .get_source_span(row.source_span_id.as_deref().unwrap())
+                    .expect("edge span lookup")
+                    .is_some(),
+                "missing source span for edge {}",
+                row.micro_edge_id
+            );
+            let head = nodes_by_id
+                .get(row.source_micro_node_id.as_str())
+                .expect("head endpoint");
+            let tail = nodes_by_id
+                .get(row.target_micro_node_id.as_str())
+                .expect("tail endpoint");
+            assert_eq!(head.micro_kind, "return_site");
+            assert_eq!(tail.micro_kind, "function_frame");
+            assert_eq!(head.file_id, row.file_id);
+            assert_eq!(tail.file_id, row.file_id);
+            assert_eq!(head.function_entity_id, tail.function_entity_id);
+            assert_eq!(row.function_entity_id, head.function_entity_id);
+        }
+    }
+
     fn assert_forbidden_mvp4_sidecars_empty(store: &SqliteGraphStore) {
         let counts = store.sparse_sidecar_counts().expect("sidecar counts");
-        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
         assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
         assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
+    }
+
+    fn assert_mvp4_2_file_edge_state(
+        store: &SqliteGraphStore,
+        repo_relative_path: &str,
+        expected_return_sites: usize,
+    ) -> (Vec<String>, Vec<String>) {
+        let rows = store
+            .ast_micro_nodes_for_file(repo_relative_path)
+            .unwrap_or_else(|error| panic!("{repo_relative_path}: micro-node rows: {error}"));
+        let edges = store
+            .ast_micro_edges_for_file(repo_relative_path)
+            .unwrap_or_else(|error| panic!("{repo_relative_path}: micro-edge rows: {error}"));
+        assert_mvp4_micro_node_integrity(store, &rows);
+        assert_mvp4_2_local_returns_to_integrity(store, &rows, &edges);
+        assert_eq!(
+            ast_micro_node_kind_count(&rows, "return_site"),
+            expected_return_sites,
+            "{repo_relative_path}: retained ReturnSite count"
+        );
+        assert_eq!(
+            edges.len(),
+            expected_return_sites,
+            "{repo_relative_path}: persisted LOCAL_RETURNS_TO count"
+        );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file(repo_relative_path)
+                .expect("micro-edge count"),
+            expected_return_sites as u64,
+            "{repo_relative_path}: counted LOCAL_RETURNS_TO rows"
+        );
+        assert_forbidden_mvp4_sidecars_empty(store);
+        (ast_micro_node_ids(&rows), ast_micro_edge_ids(&edges))
+    }
+
+    fn assert_mvp4_2_changed_file_summary(
+        summary: &IncrementalIndexSummary,
+        case_name: &str,
+        expected_changed_files: usize,
+    ) {
+        assert_eq!(
+            summary.changed_files.len(),
+            expected_changed_files,
+            "{case_name}: changed file count"
+        );
+        assert!(
+            summary.files_walked <= expected_changed_files,
+            "{case_name}: update walked more files than requested: {summary:?}"
+        );
+        assert_eq!(
+            summary.dependency_closure.closure_files_updated.len(),
+            expected_changed_files,
+            "{case_name}: fixture should not expand changed-file update scope"
+        );
     }
 
     #[test]
@@ -26692,6 +27877,13 @@ mod tests {
                 0,
                 "{forbidden} must not persist MVP4.1 production rows"
             );
+            assert_eq!(
+                store
+                    .ast_micro_edge_count_for_file(forbidden)
+                    .expect("edge count"),
+                0,
+                "{forbidden} must not persist MVP4.2 production edges"
+            );
         }
 
         let counts = store.sparse_sidecar_counts().expect("sidecar counts");
@@ -26699,7 +27891,14 @@ mod tests {
             counts.get("ast_micro_nodes").copied(),
             Some(rows.len() as u64)
         );
-        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
+        let edge_rows = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("micro edges");
+        assert_mvp4_2_local_returns_to_integrity(&store, &rows, &edge_rows);
+        assert_eq!(
+            counts.get("ast_micro_edges").copied(),
+            Some(edge_rows.len() as u64)
+        );
         assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
         assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
         assert!(!repo.join(".codegraph").exists());
@@ -26823,6 +28022,10 @@ mod tests {
         let other_after = store
             .ast_micro_nodes_for_file("src/other.ts")
             .expect("other after");
+        let service_after_edges = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("service edges after");
+        assert_mvp4_2_local_returns_to_integrity(&store, &service_after, &service_after_edges);
         assert_ne!(
             ast_micro_node_ids(&service_before),
             ast_micro_node_ids(&service_after)
@@ -26861,10 +28064,15 @@ mod tests {
         assert!(!service_preserved
             .iter()
             .any(|row| row.symbol.as_deref() == Some("leaked")));
-        let counts = store.sparse_sidecar_counts().expect("sidecar counts");
-        assert_eq!(counts.get("ast_micro_edges").copied(), Some(0));
-        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
-        assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
+        assert_eq!(
+            ast_micro_edge_ids(&service_after_edges),
+            ast_micro_edge_ids(
+                &store
+                    .ast_micro_edges_for_file("src/service.ts")
+                    .expect("service preserved edges")
+            )
+        );
+        assert_forbidden_mvp4_sidecars_empty(&store);
         assert!(!repo.join(".codegraph").exists());
 
         drop(store);
@@ -27003,7 +28211,11 @@ mod tests {
             let service_rows = store
                 .ast_micro_nodes_for_file("src/service.ts")
                 .expect("service rows");
+            let service_edges = store
+                .ast_micro_edges_for_file("src/service.ts")
+                .expect("service edges");
             assert_mvp4_micro_node_integrity(&store, &service_rows);
+            assert_mvp4_2_local_returns_to_integrity(&store, &service_rows, &service_edges);
             let symbols = ast_micro_node_symbols(&service_rows);
             for symbol in expected_symbols {
                 assert!(
@@ -27025,6 +28237,11 @@ mod tests {
                 ast_micro_node_kind_count(&service_rows, "return_site"),
                 expected_returns,
                 "{case_name}: return_site count"
+            );
+            assert_eq!(
+                service_edges.len(),
+                expected_returns,
+                "{case_name}: LOCAL_RETURNS_TO count"
             );
             assert_eq!(
                 ast_micro_node_kind_count(&service_rows, "property_access"),
@@ -27057,6 +28274,19 @@ mod tests {
                     .expect("cold rows")
             ),
             "cold and incremental cap-selected rows must match"
+        );
+        assert_eq!(
+            ast_micro_edge_ids(
+                &incremental_store
+                    .ast_micro_edges_for_file("src/service.ts")
+                    .expect("incremental edges")
+            ),
+            ast_micro_edge_ids(
+                &cold_store
+                    .ast_micro_edges_for_file("src/service.ts")
+                    .expect("cold edges")
+            ),
+            "cold and incremental LOCAL_RETURNS_TO rows must match"
         );
         drop(cold_store);
         drop(incremental_store);
@@ -27106,6 +28336,12 @@ mod tests {
                 .expect("old count"),
             0
         );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/lifecycle.ts")
+                .expect("old edge count"),
+            0
+        );
         assert!(store.get_file("src/lifecycle.ts").expect("file").is_none());
         drop(store);
 
@@ -27144,12 +28380,22 @@ mod tests {
                 .expect("old count"),
             0
         );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/lifecycle.ts")
+                .expect("old edge count"),
+            0
+        );
         let renamed_rows = store
             .ast_micro_nodes_for_file("src/renamed.ts")
             .expect("renamed rows");
+        let renamed_edges = store
+            .ast_micro_edges_for_file("src/renamed.ts")
+            .expect("renamed edges");
         assert!(!renamed_rows.is_empty());
         assert_ne!(lifecycle_before_ids, ast_micro_node_ids(&renamed_rows));
         assert_mvp4_micro_node_integrity(&store, &renamed_rows);
+        assert_mvp4_2_local_returns_to_integrity(&store, &renamed_rows, &renamed_edges);
         drop(store);
 
         fs::create_dir_all(repo.join("src").join("generated")).expect("generated dir");
@@ -27176,8 +28422,20 @@ mod tests {
         );
         assert_eq!(
             store
+                .ast_micro_edge_count_for_file("src/renamed.ts")
+                .expect("old edge count"),
+            0
+        );
+        assert_eq!(
+            store
                 .ast_micro_node_count_for_file("src/generated/renamed.ts")
                 .expect("generated count"),
+            0
+        );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/generated/renamed.ts")
+                .expect("generated edge count"),
             0
         );
         drop(store);
@@ -27199,6 +28457,12 @@ mod tests {
                 .expect("ignored count"),
             0
         );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/ignored_later.ts")
+                .expect("ignored edge count"),
+            0
+        );
         drop(store);
 
         write_test_file(
@@ -27213,6 +28477,12 @@ mod tests {
             store
                 .ast_micro_node_count_for_file("tests/renamed.test.ts")
                 .expect("test count"),
+            0
+        );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("tests/renamed.test.ts")
+                .expect("test edge count"),
             0
         );
         drop(store);
@@ -27238,6 +28508,12 @@ mod tests {
                     .any(|row| row.claimability == "non_claimable_recovery_candidate"),
             "parse-recovery rows must be non-claimable if retained"
         );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/recover.ts")
+                .expect("recovery edge count"),
+            0
+        );
         drop(store);
 
         write_test_file(
@@ -27259,6 +28535,493 @@ mod tests {
             .iter()
             .all(|row| row.claimability != "non_claimable_recovery_candidate"));
         assert_mvp4_micro_node_integrity(&store, &recovered_rows);
+        let recovered_edges = store
+            .ast_micro_edges_for_file("src/recover.ts")
+            .expect("recovered edges");
+        assert_mvp4_2_local_returns_to_integrity(&store, &recovered_rows, &recovered_edges);
+        assert_forbidden_mvp4_sidecars_empty(&store);
+        drop(store);
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mvp4_2_micro_edges_incremental_source_mutation_matrix_is_lifecycle_safe() {
+        let repo = temp_repo("mvp4-2-micro-edge-mutation-matrix");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+             }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/other.ts",
+            "export function other(input: string) {\n\
+                 const stable = input;\n\
+                 return stable;\n\
+             }\n",
+        );
+        let db = repo.join("target").join("mvp4-2-micro-edge-matrix.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let (_, other_node_ids) = {
+            let other_rows = store
+                .ast_micro_nodes_for_file("src/other.ts")
+                .expect("other rows");
+            let other_edges = store
+                .ast_micro_edges_for_file("src/other.ts")
+                .expect("other edges");
+            assert_mvp4_2_local_returns_to_integrity(&store, &other_rows, &other_edges);
+            (
+                ast_micro_edge_ids(&other_edges),
+                ast_micro_node_ids(&other_rows),
+            )
+        };
+        assert_mvp4_2_file_edge_state(&store, "src/service.ts", 0);
+        drop(store);
+
+        let update_one =
+            |relative: &str, source: &str, expected_returns: usize, case_name: &str| {
+                write_test_file(&repo, relative, source);
+                let summary = update_changed_files_to_db(&repo, &[PathBuf::from(relative)], &db)
+                    .unwrap_or_else(|error| panic!("{case_name}: update failed: {error}"));
+                assert_mvp4_2_changed_file_summary(&summary, case_name, 1);
+                let store = SqliteGraphStore::open(&db).expect("store");
+                let state = assert_mvp4_2_file_edge_state(&store, relative, expected_returns);
+                let other_after = store
+                    .ast_micro_nodes_for_file("src/other.ts")
+                    .expect("other rows after update");
+                assert_eq!(
+                    other_node_ids,
+                    ast_micro_node_ids(&other_after),
+                    "{case_name}: unrelated file must remain stable"
+                );
+                drop(store);
+                state
+            };
+
+        let (_, add_first_edge_ids) = update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+            1,
+            "add_first_return",
+        );
+        assert_eq!(add_first_edge_ids.len(), 1);
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 if (user.active) {\n\
+                     return stable;\n\
+                 }\n\
+                 return stable;\n\
+             }\n",
+            2,
+            "add_additional_return",
+        );
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 if (user.active) {\n\
+                     const branch = stable;\n\
+                 }\n\
+                 return stable;\n\
+             }\n",
+            1,
+            "remove_one_return",
+        );
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 const branch = stable;\n\
+             }\n",
+            0,
+            "remove_all_returns",
+        );
+
+        let (_, moved_before_ids) = update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 if (user.active) {\n\
+                     return stable;\n\
+                 }\n\
+                 const branch = stable;\n\
+             }\n",
+            1,
+            "return_before_move",
+        );
+        let (_, moved_after_ids) = update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 const branch = stable;\n\
+                 return branch;\n\
+             }\n",
+            1,
+            "move_return_within_same_function",
+        );
+        assert_ne!(
+            moved_before_ids, moved_after_ids,
+            "moving a ReturnSite changes the endpoint identity and intentionally rekeys the edge"
+        );
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 function inner() {\n\
+                     return stable;\n\
+                 }\n\
+                 const branch = stable;\n\
+             }\n",
+            1,
+            "move_return_into_nested_function",
+        );
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let nested_rows = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("nested rows");
+        let nested_edges = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("nested edges");
+        let nested_nodes = nested_rows
+            .iter()
+            .map(|row| (row.micro_node_id.as_str(), row))
+            .collect::<BTreeMap<_, _>>();
+        let nested_tail = nested_nodes
+            .get(nested_edges[0].target_micro_node_id.as_str())
+            .expect("nested edge tail");
+        assert_eq!(
+            nested_tail.symbol.as_deref(),
+            Some("inner"),
+            "return inside nested function must link to nearest FunctionFrame"
+        );
+        drop(store);
+
+        let (_, outer_edge_ids) = update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 function inner() {\n\
+                     const inside = stable;\n\
+                 }\n\
+                 return stable;\n\
+             }\n",
+            1,
+            "move_return_from_nested_to_outer_function",
+        );
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let outer_rows = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("outer rows");
+        let outer_edges = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("outer edges");
+        let outer_nodes = outer_rows
+            .iter()
+            .map(|row| (row.micro_node_id.as_str(), row))
+            .collect::<BTreeMap<_, _>>();
+        let outer_tail = outer_nodes
+            .get(outer_edges[0].target_micro_node_id.as_str())
+            .expect("outer edge tail");
+        assert_eq!(
+            outer_tail.symbol.as_deref(),
+            Some("handle"),
+            "outer return must link back to the outer FunctionFrame"
+        );
+        drop(store);
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 function inner() {\n\
+                     return stable;\n\
+                 }\n\
+                 return stable;\n\
+             }\n",
+            2,
+            "add_nested_function_with_return",
+        );
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+            1,
+            "delete_nested_function",
+        );
+
+        let (_, renamed_function_edge_ids) = update_one(
+            "src/service.ts",
+            "export function renamed(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+            1,
+            "rename_function",
+        );
+        assert_ne!(
+            outer_edge_ids, renamed_function_edge_ids,
+            "function rename intentionally rekeys function-scoped micro-edge identity"
+        );
+
+        update_one(
+            "src/service.ts",
+            "export const noFunction = 1;\n",
+            0,
+            "delete_function",
+        );
+
+        write_test_file(
+            &repo,
+            "src/added.ts",
+            "export function added(value: string) {\n\
+                 return value;\n\
+             }\n",
+        );
+        let add_file_summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/added.ts")], &db)
+                .expect("add file update");
+        assert_mvp4_2_changed_file_summary(&add_file_summary, "add_file", 1);
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_mvp4_2_file_edge_state(&store, "src/added.ts", 1);
+        drop(store);
+
+        fs::remove_file(repo.join("src").join("added.ts")).expect("delete added file");
+        let delete_file_summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("src/added.ts")], &db)
+                .expect("delete file update");
+        assert_eq!(delete_file_summary.files_deleted, 1);
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/added.ts")
+                .expect("deleted edge count"),
+            0
+        );
+        assert!(store
+            .get_file("src/added.ts")
+            .expect("deleted file")
+            .is_none());
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function renamed(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("restore before rename");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let (_, before_file_rename_edge_ids) =
+            assert_mvp4_2_file_edge_state(&store, "src/service.ts", 1);
+        drop(store);
+
+        fs::rename(
+            repo.join("src").join("service.ts"),
+            repo.join("src").join("renamed_service.ts"),
+        )
+        .expect("rename service file");
+        let rename_file_summary = update_changed_files_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/service.ts"),
+                PathBuf::from("src/renamed_service.ts"),
+            ],
+            &db,
+        )
+        .expect("rename file update");
+        assert_mvp4_2_changed_file_summary(&rename_file_summary, "rename_file", 2);
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/service.ts")
+                .expect("old renamed edge count"),
+            0
+        );
+        let (_, after_file_rename_edge_ids) =
+            assert_mvp4_2_file_edge_state(&store, "src/renamed_service.ts", 1);
+        assert_ne!(
+            before_file_rename_edge_ids, after_file_rename_edge_ids,
+            "file rename rekeys path-scoped micro-edge identity"
+        );
+        drop(store);
+
+        fs::create_dir_all(repo.join("tests")).expect("tests dir");
+        fs::rename(
+            repo.join("src").join("renamed_service.ts"),
+            repo.join("tests").join("renamed_service.test.ts"),
+        )
+        .expect("move to test role");
+        update_changed_files_to_db(
+            &repo,
+            &[
+                PathBuf::from("src/renamed_service.ts"),
+                PathBuf::from("tests/renamed_service.test.ts"),
+            ],
+            &db,
+        )
+        .expect("test role transition");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/renamed_service.ts")
+                .expect("old test role edge count"),
+            0
+        );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("tests/renamed_service.test.ts")
+                .expect("test edge count"),
+            0
+        );
+        drop(store);
+
+        fs::create_dir_all(repo.join("src").join("generated")).expect("generated dir");
+        fs::rename(
+            repo.join("tests").join("renamed_service.test.ts"),
+            repo.join("src")
+                .join("generated")
+                .join("renamed_service.ts"),
+        )
+        .expect("move to generated role");
+        update_changed_files_to_db(
+            &repo,
+            &[
+                PathBuf::from("tests/renamed_service.test.ts"),
+                PathBuf::from("src/generated/renamed_service.ts"),
+            ],
+            &db,
+        )
+        .expect("generated role transition");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/generated/renamed_service.ts")
+                .expect("generated edge count"),
+            0
+        );
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 return stable;\n\
+             }\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("restore production role");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        assert_mvp4_2_file_edge_state(&store, "src/service.ts", 1);
+        drop(store);
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const stable = user.name;\n\
+                 if (\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("parse error update");
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let recovery_rows = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("recovery rows");
+        assert!(
+            recovery_rows.is_empty()
+                || recovery_rows
+                    .iter()
+                    .all(|row| row.claimability != "claimable_source_spanned_local_fact"),
+            "parser recovery must not leave claimable production micro-node facts"
+        );
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/service.ts")
+                .expect("recovery edge count"),
+            0,
+            "parser recovery must not leave claimable LOCAL_RETURNS_TO rows"
+        );
+        drop(store);
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 const repaired = user.name;\n\
+                 return repaired;\n\
+             }\n",
+            1,
+            "repair_parse_error",
+        );
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 if (user.a) { return user.name; }\n\
+                 if (user.b) { return user.name; }\n\
+                 if (user.c) { return user.name; }\n\
+                 if (user.d) { return user.name; }\n\
+                 return user.name;\n\
+             }\n",
+            3,
+            "cross_return_cap_boundary_upward",
+        );
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let cap_warnings = store
+            .list_extraction_warnings_by_file("src/service.ts")
+            .expect("cap warnings");
+        assert!(
+            cap_warnings.iter().any(|(warning, metadata)| {
+                warning.starts_with(MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_PREFIX)
+                    && metadata.get("warning_kind").and_then(Value::as_str)
+                        == Some(MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_KIND)
+                    && metadata
+                        .get("omitted_edge_count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|count| count > 0)
+            }),
+            "cap pressure must persist bounded MVP4.2 omitted-edge metadata: {cap_warnings:?}"
+        );
+        drop(store);
+
+        update_one(
+            "src/service.ts",
+            "export function handle(user: User) {\n\
+                 return user.name;\n\
+             }\n",
+            1,
+            "cross_return_cap_boundary_downward",
+        );
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let cleared_warnings = store
+            .list_extraction_warnings_by_file("src/service.ts")
+            .expect("cleared warnings");
+        assert!(
+            !cleared_warnings
+                .iter()
+                .any(|(warning, _)| warning.starts_with(MVP4_2_MICRO_EDGE_CAP_HIT_WARNING_PREFIX)),
+            "cap warning must clear after dropping below cap: {cleared_warnings:?}"
+        );
         assert_forbidden_mvp4_sidecars_empty(&store);
         drop(store);
         assert!(!repo.join(".codegraph").exists());
@@ -27285,12 +29048,20 @@ mod tests {
             .ast_micro_nodes_for_file("src/service.ts")
             .expect("old rows");
         let old_ids = ast_micro_node_ids(&old_rows);
+        let old_edge_rows = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("old edge rows");
+        assert_mvp4_2_local_returns_to_integrity(&store, &old_rows, &old_edge_rows);
+        let old_edge_ids = ast_micro_edge_ids(&old_edge_rows);
         drop(store);
 
         for failpoint in [
             "incremental_before_stale_cleanup",
             "incremental_after_stale_cleanup_before_insert",
             "incremental_during_micro_node_insert",
+            "incremental_during_micro_edge_insert",
+            "incremental_after_micro_edge_insert_before_integrity_check",
+            "incremental_after_micro_edge_integrity_check_before_commit",
             "incremental_after_insert_before_commit",
             "incremental_before_commit",
         ] {
@@ -27320,6 +29091,15 @@ mod tests {
                 ),
                 "micro-node rows changed after {failpoint}"
             );
+            assert_eq!(
+                old_edge_ids,
+                ast_micro_edge_ids(
+                    &store
+                        .ast_micro_edges_for_file("src/service.ts")
+                        .expect("preserved edge rows")
+                ),
+                "micro-edge rows changed after {failpoint}"
+            );
             assert_forbidden_mvp4_sidecars_empty(&store);
             drop(store);
         }
@@ -27338,6 +29118,15 @@ mod tests {
                     .expect("reader rows")
             ),
             "read-only reader must see old-good micro-node rows during uncommitted delete"
+        );
+        assert_eq!(
+            old_edge_ids,
+            ast_micro_edge_ids(
+                &reader
+                    .ast_micro_edges_for_file("src/service.ts")
+                    .expect("reader edge rows")
+            ),
+            "read-only reader must see old-good micro-edge rows during uncommitted delete"
         );
         assert!(!reader
             .find_entities_by_exact_symbol("handle")
@@ -27366,6 +29155,10 @@ mod tests {
             .expect("updated rows");
         assert!(ast_micro_node_symbols(&rows).contains("committed"));
         assert_mvp4_micro_node_integrity(&store, &rows);
+        let edges = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("updated edge rows");
+        assert_mvp4_2_local_returns_to_integrity(&store, &rows, &edges);
         assert_forbidden_mvp4_sidecars_empty(&store);
         drop(store);
         assert!(!repo.join(".codegraph").exists());
@@ -36090,6 +37883,248 @@ pub fn caller() {
         index_repo_to_db(repo, db).expect("index edge delta seed");
         snapshot_normalized_changed_facts_to_db(repo, &[PathBuf::from(path)], db)
             .expect("seed snapshot")
+    }
+
+    fn micro_edge_delta_fact(
+        path: &str,
+        micro_edge_id: &str,
+        head_micro_node_id: &str,
+        tail_micro_node_id: &str,
+        line: u32,
+    ) -> NormalizedMicroEdgeFact {
+        NormalizedMicroEdgeFact::new(
+            micro_edge_id,
+            MicroEdgeKind::LocalReturnsTo.as_str(),
+            head_micro_node_id,
+            tail_micro_node_id,
+            path,
+            Some("function://service/handler".to_string()),
+            Some(format!("{micro_edge_id}:span")),
+            Some(SourceSpan::with_columns(path, line, 3, line, 18)),
+            Some(head_micro_node_id.to_string()),
+            Some(tail_micro_node_id.to_string()),
+            Some(format!("{micro_edge_id}:direct_ast_ownership")),
+            "exact",
+            "claimable_source_spanned_local_return_containment",
+            EvidenceRole::Production,
+            "typescript",
+            "tree-sitter-typescript",
+            MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
+            MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
+            MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+            "db_passport",
+        )
+    }
+
+    #[test]
+    fn micro_edge_delta_reports_graph_relation_proof_without_flow_or_error() {
+        let repo = temp_repo("micro-edge-delta-proof");
+        let db = repo.join("target").join("micro-edge-delta.sqlite");
+        let mut old_snapshot = edge_delta_seed_snapshot(&repo, &db, "src/service.ts");
+        let mut new_snapshot = old_snapshot.clone();
+        old_snapshot
+            .facts
+            .sidecar_freshness
+            .push(NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "ast_micro_edges",
+                Some("changed:src/service.ts".to_string()),
+                "ready",
+                None,
+            ));
+        new_snapshot
+            .facts
+            .sidecar_freshness
+            .push(NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "ast_micro_edges",
+                Some("changed:src/service.ts".to_string()),
+                "ready",
+                None,
+            ));
+        new_snapshot.facts.micro_edges.push(micro_edge_delta_fact(
+            "src/service.ts",
+            "micro-edge://returns-to/1",
+            "micro-node://return-site/1",
+            "micro-node://function-frame/handler",
+            1,
+        ));
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert_eq!(delta.micro_edges_added_count, 1, "{delta:?}");
+        assert_eq!(delta.micro_edges_removed_count, 0);
+        assert_eq!(delta.micro_edges_changed_count, 0);
+        let entry = delta
+            .micro_edges_added
+            .iter()
+            .find(|entry| entry.micro_edge_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+            .expect("LOCAL_RETURNS_TO micro-edge delta");
+        assert!(entry.graph_relation_proof_changed);
+        assert!(!entry.validation_error);
+        assert_eq!(entry.proof_strength, "graph_source_span_proof");
+        assert_eq!(entry.exactness, "exact");
+        assert_eq!(
+            delta.micro_edge_counts_by_kind.get("local_returns_to"),
+            Some(&1)
+        );
+        assert_eq!(delta.micro_edge_counts_by_exactness.get("exact"), Some(&1));
+        assert_eq!(
+            delta.micro_edge_counts_by_language.get("typescript"),
+            Some(&1)
+        );
+        assert!(delta.micro_edge_integrity_changes.is_empty(), "{delta:?}");
+        assert!(delta.normal_micro_edge_delta_not_validation_error);
+        assert_eq!(
+            delta
+                .proof_ladder_changes
+                .get("graph_relation_proof")
+                .map(|change| change.changed),
+            Some(true)
+        );
+        assert!(
+            !delta
+                .proof_ladder_changes
+                .get("mutation_proof")
+                .is_some_and(|change| change.changed),
+            "LOCAL_RETURNS_TO must not activate mutation proof"
+        );
+        assert!(
+            !delta
+                .proof_ladder_changes
+                .get("flow_proof")
+                .is_some_and(|change| change.changed),
+            "LOCAL_RETURNS_TO must not activate flow proof"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn micro_edge_snapshot_fields_are_legacy_deserialization_safe() {
+        let options: NormalizedFactSnapshotOptions = serde_json::from_value(json!({
+            "max_facts_per_path": 5,
+            "include_text_evidence": true,
+            "include_path_evidence": true,
+            "include_sidecar_freshness": true
+        }))
+        .expect("legacy options deserialize");
+        assert!(
+            !options.include_micro_edges,
+            "old serialized options default to pre-MVP4.2 no-micro-edge behavior"
+        );
+
+        let facts: NormalizedFactSnapshotFacts = serde_json::from_value(json!({
+            "files": [],
+            "entities": [],
+            "edges": [],
+            "source_spans": [],
+            "source_roles": [],
+            "text_evidence": [],
+            "path_evidence": [],
+            "sidecar_freshness": [],
+            "unresolved_references": [],
+            "envelopes": []
+        }))
+        .expect("legacy facts deserialize");
+        assert!(facts.micro_edges.is_empty());
+    }
+
+    #[test]
+    fn normalized_snapshot_delta_includes_file_scoped_local_returns_to_micro_edges() {
+        let repo = temp_repo("normalized-snapshot-local-returns-to");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handler() {\n  const value = 1;\n}\n",
+        );
+        let db = repo.join("target").join("micro-edge-snapshot.sqlite");
+        index_repo_to_db(&repo, &db).expect("index without returns");
+        let changed = [PathBuf::from("src/service.ts")];
+        let old_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &changed,
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("old snapshot");
+        assert!(
+            old_snapshot.facts.micro_edges.is_empty(),
+            "{old_snapshot:?}"
+        );
+
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handler() {\n  const value = 1;\n  return value;\n}\n",
+        );
+        update_changed_files_to_db(&repo, &changed, &db).expect("add return update");
+        let new_snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &changed,
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("new snapshot");
+        assert_eq!(new_snapshot.full_scan_count, 0);
+        assert_eq!(
+            new_snapshot.changed_files,
+            vec!["src/service.ts".to_string()]
+        );
+        let micro_edge = new_snapshot
+            .facts
+            .micro_edges
+            .iter()
+            .find(|fact| fact.micro_edge_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+            .expect("LOCAL_RETURNS_TO micro-edge in changed-file snapshot");
+        assert_eq!(micro_edge.repo_relative_path, "src/service.ts");
+        assert_eq!(micro_edge.exactness, "exact");
+        assert!(micro_edge.relation_source_span.is_some());
+        assert!(micro_edge.provenance_id.is_some());
+        assert!(micro_edge.claimability.graph_proof);
+        assert!(new_snapshot.facts.sidecar_freshness.iter().any(|fact| {
+            fact.sidecar_layer == "ast_micro_edges" && fact.freshness_status == "ready"
+        }));
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+        assert_eq!(delta.micro_edges_added_count, 1, "{delta:?}");
+        assert_eq!(delta.micro_edges_removed_count, 0);
+        assert_eq!(delta.micro_edges_changed_count, 0);
+        assert_eq!(delta.micro_edge_cap_omissions, 0);
+        assert!(delta.normal_micro_edge_delta_not_validation_error);
+        assert_eq!(delta.micro_edge_integrity_changes, Vec::<String>::new());
+        assert_eq!(
+            delta
+                .proof_ladder_changes
+                .get("graph_relation_proof")
+                .map(|change| change.changed),
+            Some(true)
+        );
+        assert!(delta
+            .micro_edges_added
+            .iter()
+            .all(|entry| entry.proof_strength == "graph_source_span_proof"
+                && !entry
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("flow_proof"))));
+        assert!(!repo.join(".codegraph").exists());
+
+        fs::remove_dir_all(repo).expect("cleanup");
     }
 
     #[test]

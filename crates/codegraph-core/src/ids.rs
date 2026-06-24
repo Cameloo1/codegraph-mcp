@@ -9,6 +9,8 @@ use crate::{
 
 pub const MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION: &str =
     "mvp4.2-typescript-local-returns-to-v1";
+pub const MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY: &str =
+    "claimable_source_spanned_local_return_containment";
 pub const MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION: u32 = 1;
 pub const MVP4_2_MICRO_EDGE_PAYLOAD_VERSION: u32 = 1;
 
@@ -215,12 +217,185 @@ impl MicroEdgeKind {
             Self::LocalBranchesTo => "local_branches_to",
         }
     }
+
+    pub fn from_storage_str(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "local_reads" => Some(Self::LocalReads),
+            "local_writes" => Some(Self::LocalWrites),
+            "local_flows_to" => Some(Self::LocalFlowsTo),
+            "local_calls" => Some(Self::LocalCalls),
+            "local_returns_to" => Some(Self::LocalReturnsTo),
+            "local_mutates" => Some(Self::LocalMutates),
+            "local_checks" => Some(Self::LocalChecks),
+            "local_sanitizes" => Some(Self::LocalSanitizes),
+            "local_guards" => Some(Self::LocalGuards),
+            "local_asserts" => Some(Self::LocalAsserts),
+            "local_branches_to" => Some(Self::LocalBranchesTo),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for MicroEdgeKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
+}
+
+impl std::str::FromStr for MicroEdgeKind {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_storage_str(value).ok_or(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicroEdgeSupportStatus {
+    ExactCapable,
+    DerivedWithProvenanceCapable,
+    RequiresLocalBindingResolver,
+    RequiresTypeResolver,
+    RequiresCompilerOrLsp,
+    RequiresMacroExpansion,
+    HeuristicOnly,
+    Unsupported,
+    Unknown,
+    NotImplemented,
+}
+
+impl MicroEdgeSupportStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactCapable => "exact_capable",
+            Self::DerivedWithProvenanceCapable => "derived_with_provenance_capable",
+            Self::RequiresLocalBindingResolver => "requires_local_binding_resolver",
+            Self::RequiresTypeResolver => "requires_type_resolver",
+            Self::RequiresCompilerOrLsp => "requires_compiler_or_lsp",
+            Self::RequiresMacroExpansion => "requires_macro_expansion",
+            Self::HeuristicOnly => "heuristic_only",
+            Self::Unsupported => "unsupported",
+            Self::Unknown => "unknown",
+            Self::NotImplemented => "not_implemented",
+        }
+    }
+
+    pub const fn default_exact_support(self) -> bool {
+        matches!(self, Self::ExactCapable)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MicroEdgeLanguageCapability {
+    pub language: &'static str,
+    pub frontend: Option<&'static str>,
+    pub micro_edge_kind: MicroEdgeKind,
+    pub activation_status: MicroEdgeSupportStatus,
+    pub endpoint_node_requirements: &'static [MicroNodeKind],
+    pub resolver_requirements: &'static [&'static str],
+    pub exactness_capability: MicroExactness,
+    pub provenance_builder: &'static str,
+    pub parser_recovery_behavior: &'static str,
+    pub source_role_behavior: &'static str,
+    pub claimability_label: Option<&'static str>,
+    pub fixture_ids: &'static [&'static str],
+    pub extraction_version: Option<&'static str>,
+    pub unsupported_reason: Option<&'static str>,
+}
+
+impl MicroEdgeLanguageCapability {
+    pub const fn not_implemented(kind: MicroEdgeKind) -> Self {
+        Self {
+            language: "any",
+            frontend: None,
+            micro_edge_kind: kind,
+            activation_status: MicroEdgeSupportStatus::NotImplemented,
+            endpoint_node_requirements: &[],
+            resolver_requirements: &[],
+            exactness_capability: MicroExactness::Unsupported,
+            provenance_builder: "none",
+            parser_recovery_behavior: "unsupported",
+            source_role_behavior: "not_applicable",
+            claimability_label: None,
+            fixture_ids: &[],
+            extraction_version: None,
+            unsupported_reason: Some(
+                "no micro-edge adapter is implemented for this language/relation",
+            ),
+        }
+    }
+
+    pub fn matches_frontend(self, frontend: &str) -> bool {
+        match self.frontend {
+            Some(expected) => frontend.trim() == expected,
+            None => true,
+        }
+    }
+
+    pub fn supports_claimable_exact(
+        self,
+        frontend: &str,
+        source_role: MicroSourceRole,
+        exactness: MicroExactness,
+        claimability: &str,
+        extraction_version: &str,
+    ) -> bool {
+        self.activation_status == MicroEdgeSupportStatus::ExactCapable
+            && self.matches_frontend(frontend)
+            && source_role == MicroSourceRole::Production
+            && exactness == MicroExactness::Exact
+            && self
+                .claimability_label
+                .is_some_and(|expected| claimability.trim() == expected)
+            && self
+                .extraction_version
+                .is_some_and(|expected| extraction_version.trim() == expected)
+    }
+}
+
+const LOCAL_RETURNS_TO_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] =
+    &[MicroNodeKind::ReturnSite, MicroNodeKind::FunctionFrame];
+const LOCAL_RETURNS_TO_RESOLVER_REQUIREMENTS: &[&str] =
+    &["nearest_enclosing_function_scope_ownership"];
+const LOCAL_RETURNS_TO_FIXTURE_IDS: &[&str] = &[
+    "ts_local_returns_to_simple_expression_return",
+    "ts_local_returns_to_bare_return",
+    "ts_local_returns_to_multiple_returns",
+    "ts_local_returns_to_nested_function_nearest_owner",
+];
+
+pub const MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY: MicroEdgeLanguageCapability =
+    MicroEdgeLanguageCapability {
+        language: "typescript",
+        frontend: Some("tree-sitter-typescript"),
+        micro_edge_kind: MicroEdgeKind::LocalReturnsTo,
+        activation_status: MicroEdgeSupportStatus::ExactCapable,
+        endpoint_node_requirements: LOCAL_RETURNS_TO_ENDPOINT_REQUIREMENTS,
+        resolver_requirements: LOCAL_RETURNS_TO_RESOLVER_REQUIREMENTS,
+        exactness_capability: MicroExactness::Exact,
+        provenance_builder: "direct_ast_nearest_enclosing_function_ownership",
+        parser_recovery_behavior: "omit_exact_edge_on_recovery_ambiguity",
+        source_role_behavior: "production_only",
+        claimability_label: Some(MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY),
+        fixture_ids: LOCAL_RETURNS_TO_FIXTURE_IDS,
+        extraction_version: Some(MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION),
+        unsupported_reason: None,
+    };
+
+pub const MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES: &[MicroEdgeLanguageCapability] =
+    &[MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY];
+
+pub fn mvp4_micro_edge_language_capability(
+    language: &str,
+    kind: MicroEdgeKind,
+) -> MicroEdgeLanguageCapability {
+    let normalized = language.trim().to_ascii_lowercase();
+    if normalized == "typescript" && kind == MicroEdgeKind::LocalReturnsTo {
+        return MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY;
+    }
+    MicroEdgeLanguageCapability::not_implemented(kind)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -241,6 +416,18 @@ impl MicroExactness {
             Self::Heuristic => "heuristic",
             Self::Unsupported => "unsupported",
             Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "exact" => Some(Self::Exact),
+            "derived_with_provenance" => Some(Self::DerivedWithProvenance),
+            "heuristic" => Some(Self::Heuristic),
+            "unsupported" => Some(Self::Unsupported),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
         }
     }
 }
@@ -385,6 +572,21 @@ impl MicroSourceRole {
             Self::Generated | Self::SourceText | Self::Unknown => EvidenceRole::Unknown,
         }
     }
+
+    pub fn from_storage_str(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "production" => Some(Self::Production),
+            "test" => Some(Self::Test),
+            "mock" => Some(Self::Mock),
+            "stub" => Some(Self::Stub),
+            "generated" => Some(Self::Generated),
+            "source_text" => Some(Self::SourceText),
+            "unknown" => Some(Self::Unknown),
+            "mixed" => Some(Self::Mixed),
+            _ => None,
+        }
+    }
 }
 
 pub fn micro_source_roles_allow_local_production_proof(roles: &[MicroSourceRole]) -> bool {
@@ -484,6 +686,36 @@ pub struct MicroFactProvenance {
     pub extractor_or_adapter_version: String,
     pub exactness: MicroExactness,
     pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MicroEdgeCandidateCapState {
+    pub omitted_count: u64,
+    pub reason: String,
+    pub completeness_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MicroEdgeCandidate {
+    pub micro_edge_id: String,
+    pub micro_edge_kind: MicroEdgeKind,
+    pub head_micro_node_id: String,
+    pub tail_micro_node_id: String,
+    pub repo_relative_path: String,
+    pub function_identity: String,
+    pub relation_source_span: SourceSpan,
+    pub head_source_span: SourceSpan,
+    pub tail_source_span: SourceSpan,
+    pub provenance: MicroFactProvenance,
+    pub exactness: MicroExactness,
+    pub claimability: String,
+    pub language: String,
+    pub frontend: String,
+    pub source_role: MicroSourceRole,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub cap_omission_state: Option<MicroEdgeCandidateCapState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1526,6 +1758,75 @@ mod tests {
         assert_ne!(
             LOCAL_RETURNS_TO_CONTRACT.proof_ladder_level_for_exact_edge,
             ProofLadderLevel::FlowProof
+        );
+    }
+
+    #[test]
+    fn micro_edge_language_capability_registry_defaults_to_not_implemented() {
+        let active = MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].micro_edge_kind, MicroEdgeKind::LocalReturnsTo);
+        assert_eq!(active[0].language, "typescript");
+        assert_eq!(
+            active[0].activation_status,
+            MicroEdgeSupportStatus::ExactCapable
+        );
+        assert_eq!(
+            active[0].endpoint_node_requirements,
+            &[MicroNodeKind::ReturnSite, MicroNodeKind::FunctionFrame]
+        );
+        assert_eq!(
+            active[0].claimability_label,
+            Some(MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY)
+        );
+        assert!(active[0].supports_claimable_exact(
+            "tree-sitter-typescript",
+            MicroSourceRole::Production,
+            MicroExactness::Exact,
+            MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY,
+            MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+        ));
+
+        for language in ["javascript", "rust", "python", "go", "java"] {
+            let capability =
+                mvp4_micro_edge_language_capability(language, MicroEdgeKind::LocalReturnsTo);
+            assert_eq!(
+                capability.activation_status,
+                MicroEdgeSupportStatus::NotImplemented,
+                "{language} should not inherit TypeScript exact support"
+            );
+            assert!(!capability.activation_status.default_exact_support());
+            assert!(!capability.supports_claimable_exact(
+                "tree-sitter-typescript",
+                MicroSourceRole::Production,
+                MicroExactness::Exact,
+                MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY,
+                MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+            ));
+        }
+    }
+
+    #[test]
+    fn micro_edge_identity_keeps_language_and_frontend_domains_distinct() {
+        let fixture = local_returns_to_identity_fixture();
+        let typescript = local_returns_to_identity_input(&fixture);
+        let mut javascript_fixture = fixture.clone();
+        javascript_fixture.language = "javascript@tree-sitter-javascript".to_string();
+        let javascript = local_returns_to_identity_input(&javascript_fixture);
+
+        assert_ne!(
+            stable_micro_edge_id(&typescript),
+            stable_micro_edge_id(&javascript),
+            "same path/span/endpoints must stay distinct across language adapters"
+        );
+
+        let mut alternate_frontend = fixture;
+        alternate_frontend.language = "typescript@future-typescript-frontend".to_string();
+        let alternate_frontend = local_returns_to_identity_input(&alternate_frontend);
+        assert_ne!(
+            stable_micro_edge_id(&typescript),
+            stable_micro_edge_id(&alternate_frontend),
+            "frontend identity participates in the language domain"
         );
     }
 

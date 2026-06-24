@@ -16,6 +16,7 @@ pub enum NormalizedFactKind {
     File,
     Entity,
     Edge,
+    MicroEdge,
     SourceSpan,
     SourceRole,
     TextEvidence,
@@ -30,6 +31,7 @@ impl NormalizedFactKind {
             Self::File => "file",
             Self::Entity => "entity",
             Self::Edge => "edge",
+            Self::MicroEdge => "micro_edge",
             Self::SourceSpan => "source_span",
             Self::SourceRole => "source_role",
             Self::TextEvidence => "text_evidence",
@@ -344,6 +346,167 @@ impl NormalizedEdgeFact {
             edge_context: edge.context,
             claimability,
             lifecycle: NormalizedLifecycleMetadata::current("normalized_edge_fact_v1"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedMicroEdgeFact {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub fact_kind: NormalizedFactKind,
+    pub repo_relative_path: String,
+    pub file_id: String,
+    pub micro_edge_id: String,
+    pub micro_edge_kind: String,
+    pub head_micro_node_id: String,
+    pub tail_micro_node_id: String,
+    pub function_identity: Option<String>,
+    pub relation_source_span_id: Option<String>,
+    pub relation_source_span: Option<SourceSpan>,
+    pub head_source_span_id: Option<String>,
+    pub tail_source_span_id: Option<String>,
+    pub provenance_id: Option<String>,
+    pub provenance_hash: Option<String>,
+    pub exactness: String,
+    pub claimability_label: String,
+    pub source_role: EvidenceRole,
+    pub language: String,
+    pub frontend: String,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub lifecycle_status: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub lifecycle: NormalizedLifecycleMetadata,
+}
+
+impl NormalizedMicroEdgeFact {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        micro_edge_id: impl Into<String>,
+        micro_edge_kind: impl Into<String>,
+        head_micro_node_id: impl Into<String>,
+        tail_micro_node_id: impl Into<String>,
+        repo_relative_path: impl AsRef<str>,
+        function_identity: Option<String>,
+        relation_source_span_id: Option<String>,
+        relation_source_span: Option<SourceSpan>,
+        head_source_span_id: Option<String>,
+        tail_source_span_id: Option<String>,
+        provenance_id: Option<String>,
+        exactness: impl Into<String>,
+        claimability_label: impl Into<String>,
+        source_role: EvidenceRole,
+        language: impl Into<String>,
+        frontend: impl Into<String>,
+        row_schema_version: u32,
+        payload_version: u32,
+        extraction_version: impl Into<String>,
+        lifecycle_status: impl Into<String>,
+    ) -> Self {
+        let micro_edge_id = micro_edge_id.into();
+        let micro_edge_kind = micro_edge_kind.into();
+        let head_micro_node_id = head_micro_node_id.into();
+        let tail_micro_node_id = tail_micro_node_id.into();
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let file_id = repo_relative_path.clone();
+        let exactness = exactness.into();
+        let claimability_label = claimability_label.into();
+        let language = language.into();
+        let frontend = frontend.into();
+        let extraction_version = extraction_version.into();
+        let lifecycle_status = lifecycle_status.into();
+        let provenance_hash = provenance_id
+            .as_ref()
+            .map(|value| stable_fact_hash("micro_edge_provenance_id", [value.as_str()]));
+        let relation_span_key = relation_source_span
+            .as_ref()
+            .map(span_key)
+            .unwrap_or_else(|| "missing_relation_source_span".to_string());
+        let function_key = function_identity.clone().unwrap_or_default();
+        let provenance_key = provenance_id.clone().unwrap_or_default();
+        let schema_key = row_schema_version.to_string();
+        let payload_key = payload_version.to_string();
+        let source_role_key = source_role.as_str().to_string();
+        let identity_values = [
+            repo_relative_path.clone(),
+            language.clone(),
+            frontend.clone(),
+            micro_edge_kind.clone(),
+            micro_edge_id.clone(),
+            head_micro_node_id.clone(),
+            tail_micro_node_id.clone(),
+            function_key.clone(),
+            relation_span_key.clone(),
+            source_role_key.clone(),
+            schema_key.clone(),
+            payload_key.clone(),
+            extraction_version.clone(),
+        ];
+        let hash_values = [
+            micro_edge_id.clone(),
+            micro_edge_kind.clone(),
+            head_micro_node_id.clone(),
+            tail_micro_node_id.clone(),
+            repo_relative_path.clone(),
+            function_key,
+            relation_source_span_id.clone().unwrap_or_default(),
+            relation_span_key,
+            head_source_span_id.clone().unwrap_or_default(),
+            tail_source_span_id.clone().unwrap_or_default(),
+            provenance_key,
+            exactness.clone(),
+            claimability_label.clone(),
+            source_role_key,
+            language.clone(),
+            frontend.clone(),
+            schema_key,
+            payload_key,
+            extraction_version.clone(),
+            lifecycle_status.clone(),
+        ];
+        let claimability = micro_edge_claimability(
+            exactness.as_str(),
+            claimability_label.as_str(),
+            relation_source_span.as_ref(),
+            provenance_id.as_deref(),
+            lifecycle_status.as_str(),
+        );
+        Self {
+            stable_identity_key: stable_fact_identity_key(
+                NormalizedFactKind::MicroEdge.as_str(),
+                identity_values.iter().map(String::as_str),
+            ),
+            fact_hash: stable_fact_hash(
+                NormalizedFactKind::MicroEdge.as_str(),
+                hash_values.iter().map(String::as_str),
+            ),
+            fact_kind: NormalizedFactKind::MicroEdge,
+            repo_relative_path,
+            file_id,
+            micro_edge_id,
+            micro_edge_kind,
+            head_micro_node_id,
+            tail_micro_node_id,
+            function_identity,
+            relation_source_span_id,
+            relation_source_span,
+            head_source_span_id,
+            tail_source_span_id,
+            provenance_id,
+            provenance_hash,
+            exactness,
+            claimability_label,
+            source_role,
+            language,
+            frontend,
+            row_schema_version,
+            payload_version,
+            extraction_version: extraction_version.clone(),
+            lifecycle_status,
+            claimability,
+            lifecycle: NormalizedLifecycleMetadata::current(extraction_version),
         }
     }
 }
@@ -810,6 +973,7 @@ macro_rules! impl_envelope_from_fact {
 impl_envelope_from_fact!(NormalizedFileFact);
 impl_envelope_from_fact!(NormalizedEntityFact);
 impl_envelope_from_fact!(NormalizedEdgeFact);
+impl_envelope_from_fact!(NormalizedMicroEdgeFact);
 impl_envelope_from_fact!(NormalizedSourceSpanFact);
 impl_envelope_from_fact!(NormalizedSourceRoleFact);
 impl_envelope_from_fact!(NormalizedTextEvidenceFact);
@@ -937,6 +1101,27 @@ fn edge_claimability(edge: &Edge, provenance_status: &str) -> NormalizedClaimabi
     NormalizedClaimabilityMetadata::graph_diagnostic(
         "edge exactness is heuristic/inferred/dynamic and not blocking graph proof",
     )
+}
+
+fn micro_edge_claimability(
+    exactness: &str,
+    claimability_label: &str,
+    relation_source_span: Option<&SourceSpan>,
+    provenance_id: Option<&str>,
+    lifecycle_status: &str,
+) -> NormalizedClaimabilityMetadata {
+    let exact = exactness.eq_ignore_ascii_case("exact");
+    let claimable = claimability_label.starts_with("claimable_");
+    let current = matches!(lifecycle_status, "db_passport" | "current" | "ready");
+    if exact && claimable && relation_source_span.is_some() && provenance_id.is_some() && current {
+        NormalizedClaimabilityMetadata::graph_source_proof(
+            "exact micro-edge has source span, provenance, and current lifecycle binding",
+        )
+    } else {
+        NormalizedClaimabilityMetadata::graph_diagnostic(
+            "micro-edge lacks an exact/source-spanned/provenance/current prerequisite and is diagnostic, not graph relation proof",
+        )
+    }
 }
 
 fn edge_exactness_is_proof_grade(exactness: Exactness) -> bool {

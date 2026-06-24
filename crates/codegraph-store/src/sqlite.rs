@@ -8,15 +8,16 @@ use std::{
 };
 
 use codegraph_core::{
-    normalize_edge_classification, normalize_repo_relative_path, stable_edge_id,
-    stable_entity_id_for_kind, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
-    EntityKind, Exactness, FileRecord, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+    mvp4_micro_edge_language_capability, normalize_edge_classification,
+    normalize_repo_relative_path, stable_edge_id, stable_entity_id_for_kind, DerivedClosureEdge,
+    Edge, EdgeClass, EdgeContext, Entity, EntityKind, Exactness, FileRecord, MicroEdgeKind,
+    MicroExactness, MicroSourceRole, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
 };
 use rusqlite::{
     functions::FunctionFlags, params, types::Type, Connection, OpenFlags, OptionalExtension, Row,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::{
     GraphStore, RetrievalTraceRecord, StoreError, StoreResult, TextSearchHit, TextSearchKind,
@@ -288,6 +289,53 @@ pub struct AstMicroNodeVisibilitySummary {
     pub full_source_body_output: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AstMicroEdgeVisibilitySample {
+    pub micro_edge_id: String,
+    pub kind: String,
+    pub file: String,
+    pub function_entity_id: Option<String>,
+    pub scope_entity_id: Option<String>,
+    pub head_micro_node_id: String,
+    pub head_micro_node_kind: Option<String>,
+    pub tail_micro_node_id: String,
+    pub tail_micro_node_kind: Option<String>,
+    pub source_span_id: Option<String>,
+    pub source_span: Option<SourceSpan>,
+    pub exactness: String,
+    pub claimability: String,
+    pub provenance_summary: Value,
+    pub schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub source_role: String,
+    pub language: String,
+    pub frontend: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AstMicroEdgeVisibilitySummary {
+    pub total_rows: u64,
+    pub rows_by_edge_kind: BTreeMap<String, u64>,
+    pub rows_by_language: BTreeMap<String, u64>,
+    pub rows_by_source_role: BTreeMap<String, u64>,
+    pub files_represented: u64,
+    pub functions_represented: u64,
+    pub row_schema_versions: Vec<u32>,
+    pub payload_versions: Vec<u32>,
+    pub extraction_versions: Vec<String>,
+    pub exactness_counts: BTreeMap<String, u64>,
+    pub claimability_counts: BTreeMap<String, u64>,
+    pub cap_hit_count: u64,
+    pub omitted_count: u64,
+    pub estimated_payload_bytes: u64,
+    pub sample_limit: usize,
+    pub sample: Vec<AstMicroEdgeVisibilitySample>,
+    pub query_plan: Vec<String>,
+    pub default_full_table_scan: bool,
+    pub full_source_body_output: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AstMicroEdgeRow {
     pub micro_edge_id: String,
@@ -305,6 +353,7 @@ pub struct AstMicroEdgeRow {
     pub extraction_version: String,
     pub source_role: String,
     pub language: String,
+    pub frontend: String,
     pub payload_version: u32,
     pub claimability: String,
     pub lifecycle_binding: String,
@@ -2219,15 +2268,238 @@ impl SqliteGraphStore {
         collect_rows(rows)
     }
 
+    pub fn ast_micro_edge_count(&self) -> StoreResult<u64> {
+        if !exists_in_sqlite_master(&self.connection, "table", "ast_micro_edges")? {
+            return Ok(0);
+        }
+        count_rows(&self.connection, "ast_micro_edges")
+    }
+
+    pub fn ast_micro_edge_count_for_file(&self, file_id: &str) -> StoreResult<u64> {
+        if !exists_in_sqlite_master(&self.connection, "table", "ast_micro_edges")? {
+            return Ok(0);
+        }
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM ast_micro_edges WHERE file_id = ?1",
+                [normalize_repo_relative_path(file_id)],
+                |row| row.get::<_, u64>(0),
+            )
+            .map_err(StoreError::from)
+    }
+
+    pub fn ast_micro_edges_for_file(&self, file_id: &str) -> StoreResult<Vec<AstMicroEdgeRow>> {
+        if !exists_in_sqlite_master(&self.connection, "table", "ast_micro_edges")? {
+            return Ok(Vec::new());
+        }
+        let frontend_select = if table_has_column(&self.connection, "ast_micro_edges", "frontend")?
+        {
+            "frontend"
+        } else {
+            "'unknown' AS frontend"
+        };
+        let sql = format!(
+            "
+            SELECT
+                micro_edge_id, file_id, function_entity_id, scope_entity_id,
+                core_edge_id, source_micro_node_id, target_micro_node_id,
+                relation_kind, source_span_id, exactness, provenance_id,
+                schema_version, extraction_version, source_role, language,
+                {frontend_select}, payload_version, claimability, lifecycle_binding
+            FROM ast_micro_edges
+            WHERE file_id = ?1
+            ORDER BY micro_edge_id
+            "
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let rows = statement.query_map([normalize_repo_relative_path(file_id)], |row| {
+            Ok(AstMicroEdgeRow {
+                micro_edge_id: row.get("micro_edge_id")?,
+                file_id: row.get("file_id")?,
+                function_entity_id: row.get("function_entity_id")?,
+                scope_entity_id: row.get("scope_entity_id")?,
+                core_edge_id: row.get("core_edge_id")?,
+                source_micro_node_id: row.get("source_micro_node_id")?,
+                target_micro_node_id: row.get("target_micro_node_id")?,
+                relation_kind: row.get("relation_kind")?,
+                source_span_id: row.get("source_span_id")?,
+                exactness: row.get("exactness")?,
+                provenance_id: row.get("provenance_id")?,
+                schema_version: row.get::<_, u32>("schema_version")?,
+                extraction_version: row.get("extraction_version")?,
+                source_role: row.get("source_role")?,
+                language: row.get("language")?,
+                frontend: row.get("frontend")?,
+                payload_version: row.get::<_, u32>("payload_version")?,
+                claimability: row.get("claimability")?,
+                lifecycle_binding: row.get("lifecycle_binding")?,
+            })
+        })?;
+        collect_rows(rows)
+    }
+
+    pub fn ast_micro_edge_visibility_summary(
+        &self,
+        sample_limit: usize,
+    ) -> StoreResult<AstMicroEdgeVisibilitySummary> {
+        let sample_limit = sample_limit.min(100);
+        if !exists_in_sqlite_master(&self.connection, "table", "ast_micro_edges")? {
+            return Ok(AstMicroEdgeVisibilitySummary {
+                total_rows: 0,
+                rows_by_edge_kind: BTreeMap::new(),
+                rows_by_language: BTreeMap::new(),
+                rows_by_source_role: BTreeMap::new(),
+                files_represented: 0,
+                functions_represented: 0,
+                row_schema_versions: Vec::new(),
+                payload_versions: Vec::new(),
+                extraction_versions: Vec::new(),
+                exactness_counts: BTreeMap::new(),
+                claimability_counts: BTreeMap::new(),
+                cap_hit_count: 0,
+                omitted_count: 0,
+                estimated_payload_bytes: 0,
+                sample_limit,
+                sample: Vec::new(),
+                query_plan: Vec::new(),
+                default_full_table_scan: false,
+                full_source_body_output: false,
+            });
+        }
+
+        let total_rows = self.ast_micro_edge_count()?;
+        let query_plan = explain_query_plan_details(
+            &self.connection,
+            "SELECT relation_kind, COUNT(*) FROM ast_micro_edges GROUP BY relation_kind",
+        )?;
+        let mut statement = self.connection.prepare_cached(
+            "
+            SELECT
+                micro_edge_id, file_id, function_entity_id, scope_entity_id,
+                core_edge_id, source_micro_node_id, target_micro_node_id,
+                relation_kind, source_span_id, exactness, provenance_id,
+                schema_version, extraction_version, source_role, language,
+                frontend, payload_version, claimability, lifecycle_binding
+            FROM ast_micro_edges
+            ORDER BY file_id, function_entity_id, relation_kind, micro_edge_id
+            LIMIT ?1
+            ",
+        )?;
+        let rows = statement.query_map([sample_limit as i64], |row| {
+            Ok(AstMicroEdgeRow {
+                micro_edge_id: row.get("micro_edge_id")?,
+                file_id: row.get("file_id")?,
+                function_entity_id: row.get("function_entity_id")?,
+                scope_entity_id: row.get("scope_entity_id")?,
+                core_edge_id: row.get("core_edge_id")?,
+                source_micro_node_id: row.get("source_micro_node_id")?,
+                target_micro_node_id: row.get("target_micro_node_id")?,
+                relation_kind: row.get("relation_kind")?,
+                source_span_id: row.get("source_span_id")?,
+                exactness: row.get("exactness")?,
+                provenance_id: row.get("provenance_id")?,
+                schema_version: row.get::<_, u32>("schema_version")?,
+                extraction_version: row.get("extraction_version")?,
+                source_role: row.get("source_role")?,
+                language: row.get("language")?,
+                frontend: row.get("frontend")?,
+                payload_version: row.get::<_, u32>("payload_version")?,
+                claimability: row.get("claimability")?,
+                lifecycle_binding: row.get("lifecycle_binding")?,
+            })
+        })?;
+        let mut sample = Vec::new();
+        for row in collect_rows(rows)? {
+            let source_span = row.source_span_id.as_deref().and_then(|span_id| {
+                <Self as GraphStore>::get_source_span(self, span_id)
+                    .ok()
+                    .flatten()
+            });
+            let head = ast_micro_node_endpoint(&self.connection, &row.source_micro_node_id)?;
+            let tail = ast_micro_node_endpoint(&self.connection, &row.target_micro_node_id)?;
+            sample.push(AstMicroEdgeVisibilitySample {
+                micro_edge_id: row.micro_edge_id,
+                kind: row.relation_kind,
+                file: row.file_id,
+                function_entity_id: row.function_entity_id,
+                scope_entity_id: row.scope_entity_id,
+                head_micro_node_id: row.source_micro_node_id,
+                head_micro_node_kind: head.as_ref().map(|node| node.micro_kind.clone()),
+                tail_micro_node_id: row.target_micro_node_id,
+                tail_micro_node_kind: tail.as_ref().map(|node| node.micro_kind.clone()),
+                source_span_id: row.source_span_id,
+                source_span,
+                exactness: row.exactness,
+                claimability: row.claimability,
+                provenance_summary: json!({
+                    "present": row.provenance_id.is_some(),
+                    "provenance_id": row.provenance_id,
+                    "derivation_kind": "direct_ast_ownership",
+                    "full_provenance_blob_inline": false,
+                }),
+                schema_version: row.schema_version,
+                payload_version: row.payload_version,
+                extraction_version: row.extraction_version,
+                source_role: row.source_role,
+                language: row.language,
+                frontend: row.frontend,
+            });
+        }
+
+        Ok(AstMicroEdgeVisibilitySummary {
+            total_rows,
+            rows_by_edge_kind: count_ast_micro_edges_by_text_column(
+                &self.connection,
+                "relation_kind",
+            )?,
+            rows_by_language: count_ast_micro_edges_by_text_column(&self.connection, "language")?,
+            rows_by_source_role: count_ast_micro_edges_by_text_column(
+                &self.connection,
+                "source_role",
+            )?,
+            files_represented: count_ast_micro_edges_distinct(&self.connection, "file_id")?,
+            functions_represented: count_ast_micro_edges_distinct_non_null(
+                &self.connection,
+                "function_entity_id",
+            )?,
+            row_schema_versions: distinct_ast_micro_edge_u32_values(
+                &self.connection,
+                "schema_version",
+            )?,
+            payload_versions: distinct_ast_micro_edge_u32_values(
+                &self.connection,
+                "payload_version",
+            )?,
+            extraction_versions: distinct_ast_micro_edge_text_values(
+                &self.connection,
+                "extraction_version",
+            )?,
+            exactness_counts: count_ast_micro_edges_by_text_column(&self.connection, "exactness")?,
+            claimability_counts: count_ast_micro_edges_by_text_column(
+                &self.connection,
+                "claimability",
+            )?,
+            cap_hit_count: 0,
+            omitted_count: 0,
+            estimated_payload_bytes: ast_micro_edge_estimated_payload_bytes(&self.connection)?,
+            sample_limit,
+            sample,
+            query_plan,
+            default_full_table_scan: false,
+            full_source_body_output: false,
+        })
+    }
+
     pub fn insert_ast_micro_edge(&self, row: &AstMicroEdgeRow) -> StoreResult<()> {
+        self.validate_ast_micro_edge_row(row)?;
         self.connection.execute(
             "INSERT INTO ast_micro_edges (
                 micro_edge_id, file_id, function_entity_id, scope_entity_id,
                 core_edge_id, source_micro_node_id, target_micro_node_id,
                 relation_kind, source_span_id, exactness, provenance_id,
                 schema_version, extraction_version, source_role, language,
-                payload_version, claimability, lifecycle_binding
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                frontend, payload_version, claimability, lifecycle_binding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 row.micro_edge_id,
                 row.file_id,
@@ -2244,12 +2516,132 @@ impl SqliteGraphStore {
                 row.extraction_version,
                 row.source_role,
                 row.language,
+                row.frontend,
                 i64::from(row.payload_version),
                 row.claimability,
                 row.lifecycle_binding
             ],
         )?;
         Ok(())
+    }
+
+    fn validate_ast_micro_edge_row(&self, row: &AstMicroEdgeRow) -> StoreResult<()> {
+        if row.exactness == "exact" && row.source_span_id.is_none() {
+            return Err(StoreError::Message(format!(
+                "exact ast_micro_edge {} is missing source_span_id",
+                row.micro_edge_id
+            )));
+        }
+        if row.exactness == "derived_with_provenance" && row.provenance_id.is_none() {
+            return Err(StoreError::Message(format!(
+                "derived ast_micro_edge {} is missing provenance_id",
+                row.micro_edge_id
+            )));
+        }
+        if row.provenance_id.is_none() && row.relation_kind == "local_returns_to" {
+            return Err(StoreError::Message(format!(
+                "local_returns_to ast_micro_edge {} is missing provenance_id",
+                row.micro_edge_id
+            )));
+        }
+        if let Some(span_id) = row.source_span_id.as_deref() {
+            if <Self as GraphStore>::get_source_span(self, span_id)?.is_none() {
+                return Err(StoreError::Message(format!(
+                    "ast_micro_edge {} references missing source_span_id {}",
+                    row.micro_edge_id, span_id
+                )));
+            }
+        }
+        let Some(relation_kind) = MicroEdgeKind::from_storage_str(&row.relation_kind) else {
+            return Ok(());
+        };
+        if relation_kind != MicroEdgeKind::LocalReturnsTo {
+            return Ok(());
+        }
+
+        let head = self.required_ast_micro_node_endpoint(
+            &row.micro_edge_id,
+            "head",
+            &row.source_micro_node_id,
+        )?;
+        let tail = self.required_ast_micro_node_endpoint(
+            &row.micro_edge_id,
+            "tail",
+            &row.target_micro_node_id,
+        )?;
+        if head.micro_kind != "return_site" {
+            return Err(StoreError::Message(format!(
+                "local_returns_to ast_micro_edge {} head must be return_site, got {}",
+                row.micro_edge_id, head.micro_kind
+            )));
+        }
+        if tail.micro_kind != "function_frame" {
+            return Err(StoreError::Message(format!(
+                "local_returns_to ast_micro_edge {} tail must be function_frame, got {}",
+                row.micro_edge_id, tail.micro_kind
+            )));
+        }
+        if head.file_id != row.file_id || tail.file_id != row.file_id {
+            return Err(StoreError::Message(format!(
+                "local_returns_to ast_micro_edge {} endpoint file mismatch",
+                row.micro_edge_id
+            )));
+        }
+        if head.function_entity_id != tail.function_entity_id
+            || row.function_entity_id != head.function_entity_id
+        {
+            return Err(StoreError::Message(format!(
+                "local_returns_to ast_micro_edge {} endpoint function mismatch",
+                row.micro_edge_id
+            )));
+        }
+        let capability = mvp4_micro_edge_language_capability(&row.language, relation_kind);
+        let source_role =
+            MicroSourceRole::from_storage_str(&row.source_role).unwrap_or(MicroSourceRole::Unknown);
+        let exactness =
+            MicroExactness::from_storage_str(&row.exactness).unwrap_or(MicroExactness::Unknown);
+        if !capability.supports_claimable_exact(
+            &row.frontend,
+            source_role,
+            exactness,
+            &row.claimability,
+            &row.extraction_version,
+        ) {
+            return Err(StoreError::Message(format!(
+                "local_returns_to ast_micro_edge {} is not enabled by the active micro-edge language capability",
+                row.micro_edge_id
+            )));
+        }
+        if head.schema_version != row.schema_version
+            || tail.schema_version != row.schema_version
+            || head.payload_version != row.payload_version
+            || tail.payload_version != row.payload_version
+            || head.source_role != row.source_role
+            || tail.source_role != row.source_role
+            || head.language != row.language
+            || tail.language != row.language
+            || !head.claimability.starts_with("claimable_")
+            || !tail.claimability.starts_with("claimable_")
+        {
+            return Err(StoreError::Message(format!(
+                "local_returns_to ast_micro_edge {} endpoint versions or claimability mismatch",
+                row.micro_edge_id
+            )));
+        }
+        Ok(())
+    }
+
+    fn required_ast_micro_node_endpoint(
+        &self,
+        edge_id: &str,
+        role: &str,
+        micro_node_id: &str,
+    ) -> StoreResult<AstMicroNodeEndpoint> {
+        ast_micro_node_endpoint(&self.connection, micro_node_id)?.ok_or_else(|| {
+            StoreError::Message(format!(
+                "ast_micro_edge {edge_id} missing {role} micro-node endpoint {micro_node_id}"
+            ))
+        })
     }
 
     pub fn insert_local_flow_packet(&self, row: &LocalFlowPacketRow) -> StoreResult<()> {
@@ -2498,7 +2890,7 @@ impl SqliteGraphStore {
             ),
             (
                 "ast_micro_edges",
-                "SELECT COALESCE(SUM(length(micro_edge_id) + length(file_id) + length(source_micro_node_id) + length(target_micro_node_id) + length(relation_kind) + COALESCE(length(source_span_id), 0) + length(exactness) + COALESCE(length(provenance_id), 0) + length(extraction_version) + length(claimability) + 24), 0) FROM ast_micro_edges",
+                "SELECT COALESCE(SUM(length(micro_edge_id) + length(file_id) + length(source_micro_node_id) + length(target_micro_node_id) + length(relation_kind) + COALESCE(length(source_span_id), 0) + length(exactness) + COALESCE(length(provenance_id), 0) + length(extraction_version) + length(language) + length(frontend) + length(claimability) + 24), 0) FROM ast_micro_edges",
             ),
             (
                 "local_flow_packets",
@@ -3941,6 +4333,51 @@ fn exists_in_sqlite_master(
     Ok(exists)
 }
 
+#[derive(Debug, Clone)]
+struct AstMicroNodeEndpoint {
+    file_id: String,
+    function_entity_id: Option<String>,
+    micro_kind: String,
+    schema_version: u32,
+    source_role: String,
+    language: String,
+    payload_version: u32,
+    claimability: String,
+}
+
+fn ast_micro_node_endpoint(
+    connection: &Connection,
+    micro_node_id: &str,
+) -> StoreResult<Option<AstMicroNodeEndpoint>> {
+    if !exists_in_sqlite_master(connection, "table", "ast_micro_nodes")? {
+        return Ok(None);
+    }
+    connection
+        .query_row(
+            "
+            SELECT file_id, function_entity_id, micro_kind, schema_version,
+                   source_role, language, payload_version, claimability
+            FROM ast_micro_nodes
+            WHERE micro_node_id = ?1
+            ",
+            [micro_node_id],
+            |row| {
+                Ok(AstMicroNodeEndpoint {
+                    file_id: row.get("file_id")?,
+                    function_entity_id: row.get("function_entity_id")?,
+                    micro_kind: row.get("micro_kind")?,
+                    schema_version: row.get::<_, u32>("schema_version")?,
+                    source_role: row.get("source_role")?,
+                    language: row.get("language")?,
+                    payload_version: row.get::<_, u32>("payload_version")?,
+                    claimability: row.get("claimability")?,
+                })
+            },
+        )
+        .optional()
+        .map_err(StoreError::from)
+}
+
 fn sparse_sidecar_schema_ready(connection: &Connection) -> StoreResult<bool> {
     for table in SPARSE_SIDECAR_TABLES {
         if !exists_in_sqlite_master(connection, "table", table)? {
@@ -4057,6 +4494,7 @@ const SPARSE_SIDECAR_CONTRACT_COLUMNS: &[(&str, &str, &str)] = &[
         "TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown'))",
     ),
     ("ast_micro_edges", "language", "TEXT NOT NULL DEFAULT 'unknown'"),
+    ("ast_micro_edges", "frontend", "TEXT NOT NULL DEFAULT 'unknown'"),
     (
         "ast_micro_edges",
         "lifecycle_binding",
@@ -6224,6 +6662,24 @@ fn count_ast_micro_nodes_by_text_column(
     Ok(collect_rows(rows)?.into_iter().collect())
 }
 
+fn count_ast_micro_edges_by_text_column(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<BTreeMap<String, u64>> {
+    let sql = format!(
+        "SELECT {column}, COUNT(*) FROM ast_micro_edges GROUP BY {column} ORDER BY {column}"
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?
+                .unwrap_or_else(|| "absent".to_string()),
+            row.get::<_, i64>(1)?.max(0) as u64,
+        ))
+    })?;
+    Ok(collect_rows(rows)?.into_iter().collect())
+}
+
 #[derive(Debug, Default)]
 struct AstMicroNodeCapHitVisibilityAggregate {
     truncated_file_count: u64,
@@ -6361,6 +6817,12 @@ fn count_ast_micro_nodes_distinct(connection: &Connection, column: &str) -> Stor
     Ok(count.max(0) as u64)
 }
 
+fn count_ast_micro_edges_distinct(connection: &Connection, column: &str) -> StoreResult<u64> {
+    let sql = format!("SELECT COUNT(DISTINCT {column}) FROM ast_micro_edges");
+    let count: i64 = connection.query_row(&sql, [], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
 fn count_ast_micro_nodes_distinct_non_null(
     connection: &Connection,
     column: &str,
@@ -6371,11 +6833,31 @@ fn count_ast_micro_nodes_distinct_non_null(
     Ok(count.max(0) as u64)
 }
 
+fn count_ast_micro_edges_distinct_non_null(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<u64> {
+    let sql =
+        format!("SELECT COUNT(DISTINCT {column}) FROM ast_micro_edges WHERE {column} IS NOT NULL");
+    let count: i64 = connection.query_row(&sql, [], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
 fn distinct_ast_micro_node_u32_values(
     connection: &Connection,
     column: &str,
 ) -> StoreResult<Vec<u32>> {
     let sql = format!("SELECT DISTINCT {column} FROM ast_micro_nodes ORDER BY {column}");
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, u32>(0))?;
+    collect_rows(rows)
+}
+
+fn distinct_ast_micro_edge_u32_values(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<Vec<u32>> {
+    let sql = format!("SELECT DISTINCT {column} FROM ast_micro_edges ORDER BY {column}");
     let mut statement = connection.prepare_cached(&sql)?;
     let rows = statement.query_map([], |row| row.get::<_, u32>(0))?;
     collect_rows(rows)
@@ -6391,9 +6873,28 @@ fn distinct_ast_micro_node_text_values(
     collect_rows(rows)
 }
 
+fn distinct_ast_micro_edge_text_values(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<Vec<String>> {
+    let sql = format!("SELECT DISTINCT {column} FROM ast_micro_edges ORDER BY {column}");
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    collect_rows(rows)
+}
+
 fn ast_micro_node_estimated_payload_bytes(connection: &Connection) -> StoreResult<u64> {
     let bytes: i64 = connection.query_row(
         "SELECT COALESCE(SUM(length(micro_node_id) + length(file_id) + COALESCE(length(function_entity_id), 0) + COALESCE(length(scope_entity_id), 0) + length(micro_kind) + COALESCE(length(symbol), 0) + length(source_span_id) + length(extraction_version) + length(exactness) + length(source_role) + length(language) + length(claimability) + length(lifecycle_binding) + 32), 0) FROM ast_micro_nodes",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(bytes.max(0) as u64)
+}
+
+fn ast_micro_edge_estimated_payload_bytes(connection: &Connection) -> StoreResult<u64> {
+    let bytes: i64 = connection.query_row(
+        "SELECT COALESCE(SUM(length(micro_edge_id) + length(file_id) + COALESCE(length(function_entity_id), 0) + COALESCE(length(scope_entity_id), 0) + COALESCE(length(core_edge_id), 0) + length(source_micro_node_id) + length(target_micro_node_id) + length(relation_kind) + COALESCE(length(source_span_id), 0) + length(exactness) + COALESCE(length(provenance_id), 0) + length(extraction_version) + length(source_role) + length(language) + length(frontend) + length(claimability) + length(lifecycle_binding) + 40), 0) FROM ast_micro_edges",
         [],
         |row| row.get(0),
     )?;
@@ -11836,6 +12337,7 @@ CREATE TABLE IF NOT EXISTS ast_micro_edges (
     extraction_version TEXT NOT NULL,
     source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
     language TEXT NOT NULL DEFAULT 'unknown',
+    frontend TEXT NOT NULL DEFAULT 'unknown',
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
     claimability TEXT NOT NULL DEFAULT 'candidate_only',
     lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport',
@@ -12595,6 +13097,16 @@ mod tests {
             claimability: "source_spanned".to_string(),
             lifecycle_binding: "passport:test".to_string(),
         }));
+        ok(store.insert_source_span_after_file_delete(
+            "span-auth-flow",
+            &SourceSpan {
+                repo_relative_path: "src/auth.ts".to_string(),
+                start_line: 3,
+                start_column: Some(2),
+                end_line: 3,
+                end_column: Some(14),
+            },
+        ));
         ok(store.insert_ast_micro_edge(&AstMicroEdgeRow {
             micro_edge_id: "micro-edge-token-return".to_string(),
             file_id: "src/auth.ts".to_string(),
@@ -12611,6 +13123,7 @@ mod tests {
             extraction_version: "sidecar-test-v1".to_string(),
             source_role: "production".to_string(),
             language: "typescript".to_string(),
+            frontend: "test-frontend".to_string(),
             payload_version: 1,
             claimability: "source_spanned".to_string(),
             lifecycle_binding: "passport:test".to_string(),
@@ -12737,6 +13250,7 @@ mod tests {
                 extraction_version: "sidecar-test-v1".to_string(),
                 source_role: "production".to_string(),
                 language: "typescript".to_string(),
+                frontend: "test-frontend".to_string(),
                 payload_version: 1,
                 claimability: "source_spanned".to_string(),
                 lifecycle_binding: "passport:test".to_string(),
@@ -12803,6 +13317,179 @@ mod tests {
                 lifecycle_binding: "passport:test".to_string(),
             })
             .is_err());
+    }
+
+    #[test]
+    fn local_returns_to_micro_edges_enforce_endpoint_integrity() {
+        let store = store();
+        let span = |line: u32, file: &str| SourceSpan {
+            repo_relative_path: file.to_string(),
+            start_line: line,
+            start_column: Some(2),
+            end_line: line,
+            end_column: Some(14),
+        };
+        for (id, source_span) in [
+            ("return-span", span(2, "src/service.ts")),
+            ("function-span", span(1, "src/service.ts")),
+            ("edge-span", span(2, "src/service.ts")),
+            ("other-span", span(1, "src/other.ts")),
+        ] {
+            ok(store.insert_source_span_after_file_delete(id, &source_span));
+        }
+        let function_id = "repo://e/service.handle".to_string();
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "return-node".to_string(),
+            file_id: "src/service.ts".to_string(),
+            function_entity_id: Some(function_id.clone()),
+            scope_entity_id: None,
+            micro_kind: "return_site".to_string(),
+            symbol: None,
+            source_span_id: "return-span".to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some("return-node".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_return_statement_existence".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "function-node".to_string(),
+            file_id: "src/service.ts".to_string(),
+            function_entity_id: Some(function_id.clone()),
+            scope_entity_id: None,
+            micro_kind: "function_frame".to_string(),
+            symbol: Some("handle".to_string()),
+            source_span_id: "function-span".to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some("function-node".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_function_body_existence".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "local-node".to_string(),
+            file_id: "src/service.ts".to_string(),
+            function_entity_id: Some(function_id.clone()),
+            scope_entity_id: None,
+            micro_kind: "local_binding".to_string(),
+            symbol: Some("value".to_string()),
+            source_span_id: "return-span".to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some("local-node".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_local_binding_existence".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "other-function-node".to_string(),
+            file_id: "src/other.ts".to_string(),
+            function_entity_id: Some("repo://e/other.handle".to_string()),
+            scope_entity_id: None,
+            micro_kind: "function_frame".to_string(),
+            symbol: Some("handle".to_string()),
+            source_span_id: "other-span".to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some("other-function-node".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_function_body_existence".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+
+        let valid_edge = AstMicroEdgeRow {
+            micro_edge_id: "edge-return-to-function".to_string(),
+            file_id: "src/service.ts".to_string(),
+            function_entity_id: Some(function_id),
+            scope_entity_id: Some("local-function-identity".to_string()),
+            core_edge_id: None,
+            source_micro_node_id: "return-node".to_string(),
+            target_micro_node_id: "function-node".to_string(),
+            relation_kind: "local_returns_to".to_string(),
+            source_span_id: Some("edge-span".to_string()),
+            exactness: "exact".to_string(),
+            provenance_id: Some("edge-return-to-function".to_string()),
+            schema_version: 1,
+            extraction_version: "mvp4.2-typescript-local-returns-to-v1".to_string(),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            frontend: "tree-sitter-typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_local_return_containment".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+        ok(store.insert_ast_micro_edge(&valid_edge));
+        assert_eq!(ok(store.ast_micro_edge_count_for_file("src/service.ts")), 1);
+        let rows = ok(store.ast_micro_edges_for_file("src/service.ts"));
+        assert_eq!(rows[0].frontend, "tree-sitter-typescript");
+        let summary = ok(store.ast_micro_edge_visibility_summary(10));
+        assert_eq!(summary.total_rows, 1);
+        assert_eq!(
+            summary.rows_by_edge_kind.get("local_returns_to").copied(),
+            Some(1)
+        );
+        assert_eq!(summary.files_represented, 1);
+        assert_eq!(summary.functions_represented, 1);
+        assert_eq!(summary.sample.len(), 1);
+        assert_eq!(summary.sample[0].micro_edge_id, "edge-return-to-function");
+        assert_eq!(
+            summary.sample[0].head_micro_node_kind.as_deref(),
+            Some("return_site")
+        );
+        assert_eq!(
+            summary.sample[0].tail_micro_node_kind.as_deref(),
+            Some("function_frame")
+        );
+        assert_eq!(
+            summary.sample[0].source_span_id.as_deref(),
+            Some("edge-span")
+        );
+        assert!(summary.sample[0].source_span.is_some());
+        assert_eq!(
+            summary.sample[0].extraction_version,
+            "mvp4.2-typescript-local-returns-to-v1"
+        );
+        assert_eq!(
+            summary.sample[0].provenance_summary["full_provenance_blob_inline"].as_bool(),
+            Some(false)
+        );
+        assert!(!summary.full_source_body_output);
+
+        assert!(store.insert_ast_micro_edge(&valid_edge).is_err());
+
+        let mut wrong_tail = valid_edge.clone();
+        wrong_tail.micro_edge_id = "edge-wrong-tail".to_string();
+        wrong_tail.target_micro_node_id = "local-node".to_string();
+        assert!(store.insert_ast_micro_edge(&wrong_tail).is_err());
+
+        let mut cross_file = valid_edge.clone();
+        cross_file.micro_edge_id = "edge-cross-file".to_string();
+        cross_file.target_micro_node_id = "other-function-node".to_string();
+        assert!(store.insert_ast_micro_edge(&cross_file).is_err());
+
+        let mut missing_span = valid_edge.clone();
+        missing_span.micro_edge_id = "edge-missing-span".to_string();
+        missing_span.source_span_id = None;
+        assert!(store.insert_ast_micro_edge(&missing_span).is_err());
+
+        let mut missing_provenance = valid_edge.clone();
+        missing_provenance.micro_edge_id = "edge-missing-provenance".to_string();
+        missing_provenance.provenance_id = None;
+        assert!(store.insert_ast_micro_edge(&missing_provenance).is_err());
     }
 
     #[test]

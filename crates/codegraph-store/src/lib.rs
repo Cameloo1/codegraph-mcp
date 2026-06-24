@@ -13,7 +13,8 @@ mod traits;
 pub use error::{StoreError, StoreResult};
 pub use sqlite::{
     classify_sqlite_access_problem, inspect_db_preflight, reset_sqlite_profile,
-    take_sqlite_profile, AstMicroNodeRow, AstMicroNodeVisibilitySample,
+    take_sqlite_profile, AstMicroEdgeRow, AstMicroEdgeVisibilitySample,
+    AstMicroEdgeVisibilitySummary, AstMicroNodeRow, AstMicroNodeVisibilitySample,
     AstMicroNodeVisibilitySummary, DbPassport, DbPreflightReport, EntityFeatureRow,
     ExpectedDbPassport, RoutingPacketHandleRow, SqliteAccessProblem, SqliteGraphStore,
     SqliteProfileSpan, StorageAccountingRow, UnresolvedReferenceRecord, DB_PASSPORT_VERSION,
