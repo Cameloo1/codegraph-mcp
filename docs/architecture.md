@@ -60,35 +60,45 @@ Three practical layers, one funnel:
 
 ```text
                          +----------------------+
-                         |       Codex/agent    |
-                         |  CLI / IDE / app UI  |
+                         |     coding agent     |
+                         | search / edit / test |
                          +----------+-----------+
                                     |
-                                    | MCP
+                                    | CLI / MCP
                                     v
                          +----------------------+
-                         |   codegraph-mcp      |
-                         |  context_pack API    |
+                         | agent-use status     |
+                         | index / watch        |
                          +----------+-----------+
+                                    |
         +---------------------------+---------------------------+
         v                           v                           v
 +-----------------+       +---------------------+      +------------------+
-| Exact graph     |       | Compressed retrieval |      | Ranker           |
-| AST/CFG/DFG/    |       | binary/int8/PQ/MRL   |      | + uncertainty    |
-| types/auth/test |       |                      |      |                  |
+| Typed graph     |       | Candidate lanes      |      | MVP3 validator   |
+| entities/edges  |       | text/vector/path/    |      | validate-edit    |
+| spans/provenance|       | binary/nuance/spool  |      | blockers/unknown |
 +--------+--------+       +----------+----------+      +--------+---------+
-         +---------------------------+---------------------------+
+         |                           |                          |
+         +---------------------------+--------------------------+
                                      v
                          +----------------------+
-                         |  Exact verification  |
-                         |  paths + spans       |
+                         | graph/source verify  |
+                         | proof or no proof    |
                          +----------+-----------+
                                     v
-                         +----------------------+
-                         |  Compact context     |
-                         |  proof packet        |
-                         +----------------------+
+                 +------------------+------------------+
+                 v                                     v
+      +----------------------+              +----------------------+
+      | compact context      |              | MVP4.2 micro-edge    |
+      | micro-flow packets*  |              | MVP3 linter signal   |
+      | planning packet      |              | containment only     |
+      +----------------------+              | no value-flow proof  |
+                                            +----------------------+
 ```
+
+`*` Micro-flow packets are a future packet lane in this chart. Current MVP4.2
+data is `LOCAL_RETURNS_TO` structural containment only, surfaced through MVP3
+validation/status/watch/MCP paths without activating `flow_proof`.
 
 ## What Ships Today
 
