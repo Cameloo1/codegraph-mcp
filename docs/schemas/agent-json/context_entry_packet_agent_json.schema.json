@@ -564,6 +564,9 @@
           },
           {
             "required": ["full_packet_body"]
+          },
+          {
+            "required": ["packet_body"]
           }
         ]
       },

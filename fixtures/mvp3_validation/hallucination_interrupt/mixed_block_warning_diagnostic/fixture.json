@@ -1,0 +1,362 @@
+{
+  "fixture_id": "mvp3_9_hallucination_mixed_block_warning_diagnostic",
+  "fixture_family": "hallucination_interrupt_mixed_packet",
+  "fixture_title": "Mixed blocking, warning, and diagnostic packet keeps blocking precedence",
+  "description": "A validation packet contains one exact source-spanned blocking graph error, one text-only warning, and one diagnostic-only sidecar note. The gate asserts blocking precedence without promoting non-proof evidence.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "Only the exact graph/source-spanned CALLS finding may block; warning and diagnostic evidence remain non-proof and cannot create a hard interrupt.",
+  "required_support_status": "degraded",
+  "unsupported_or_not_applicable_reason": "Mixed-packet assertion is a fixture-contract case; release runtime currently exercises the compact surface but does not claim to synthesize this exact mixed packet from one edit.",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "mvp3_9_gate",
+    "hallucination_interrupt",
+    "exact_blocking",
+    "warning_unknown",
+    "diagnostic_only",
+    "mixed_packet",
+    "hard_interrupt"
+  ],
+  "expected_mvp_phase": "mvp3_9_gates",
+  "initial_files": [
+    {
+      "path": "src/mixed.ts",
+      "contents": "export function okTarget(): string {\n  return 'ok';\n}\n\nexport function run(): string {\n  return okTarget();\n}\n",
+      "source_role": "production"
+    },
+    {
+      "path": "README.md",
+      "contents": "Baseline operational note.\n",
+      "source_role": "source_text"
+    }
+  ],
+  "initial_graph_expectations": {
+    "entities_present": [
+      "src/mixed.run",
+      "src/mixed.okTarget"
+    ],
+    "edges_present": [
+      "src/mixed.run CALLS src/mixed.okTarget"
+    ],
+    "source_spans_required": true
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": true
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_callees",
+      "query": "run",
+      "expected_symbol": "okTarget"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "proof_path_required": true
+  },
+  "mutation_steps": [
+    {
+      "type": "replace_text",
+      "path": "src/mixed.ts",
+      "find": "okTarget();",
+      "replace": "missingTarget();",
+      "reason": "Create an exact dangling CALLS blocker."
+    },
+    {
+      "type": "replace_text",
+      "path": "README.md",
+      "find": "Baseline operational note.",
+      "replace": "Updated operational note mentioning missingTarget as text only.",
+      "reason": "Create a text-evidence-only warning in the same fixture."
+    }
+  ],
+  "changed_files": [
+    "src/mixed.ts",
+    "README.md"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/mixed.ts",
+      "README.md"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 1,
+    "entities_removed": 0,
+    "entities_changed": 1,
+    "edges_added": 1,
+    "edges_removed": 1,
+    "edges_changed": 1,
+    "source_spans_added": 1,
+    "source_spans_removed": 1,
+    "source_spans_changed": 1,
+    "text_evidence_changed": 1
+  },
+  "expected_blocking_errors": [
+    {
+      "validation_rule_id": "CG_MVP3_CALLS_DANGLING_TARGET",
+      "proof_ladder_level": "graph_relation_proof",
+      "severity": "blocking",
+      "message_contains": "missingTarget",
+      "source_file": "src/mixed.ts"
+    }
+  ],
+  "expected_warnings": [
+    {
+      "validation_rule_id": "CG_MVP3_TEXT_EVIDENCE_ONLY_CHANGED",
+      "proof_ladder_level": "text_evidence",
+      "severity": "warning",
+      "message_contains": "README.md text evidence changed",
+      "source_file": "README.md"
+    }
+  ],
+  "expected_unknowns": [],
+  "expected_diagnostics": [
+    {
+      "validation_rule_id": "CG_MVP3_DIAGNOSTIC_ONLY_SIDECAR_NOTE",
+      "proof_ladder_level": "diagnostic_only",
+      "severity": "diagnostic",
+      "message_contains": "sidecar note is diagnostic only",
+      "source_file": "src/mixed.ts"
+    }
+  ],
+  "expected_hard_interrupt": true,
+  "expected_severity": "blocking",
+  "expected_must_fix_before_continuing": true,
+  "expected_recommended_fix": "Define missingTarget or restore the exact CALLS edge target; treat README and sidecar diagnostics as non-proof context only.",
+  "expected_suggested_next_steps": [
+    "Fix the exact CALLS blocker, then rerun validate-edit."
+  ],
+  "expected_source_spans": [
+    {
+      "source_file": "src/mixed.ts",
+      "start_line": 6,
+      "start_column": 10,
+      "end_line": 6,
+      "end_column": 25,
+      "expected_text": "missingTarget()",
+      "required_for_graph_proof": true
+    },
+    {
+      "source_file": "README.md",
+      "start_line": 1,
+      "start_column": 1,
+      "end_line": 1,
+      "end_column": 64,
+      "expected_text": "Updated operational note",
+      "required_for_graph_proof": false
+    }
+  ],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "graph_relation_proof": {
+      "invalidated": 1,
+      "refreshed": 1
+    },
+    "text_evidence": {
+      "invalidated": 1,
+      "refreshed": 1
+    },
+    "diagnostic_only": {
+      "invalidated": 0,
+      "refreshed": 1
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 2,
+    "refreshed_count": 3,
+    "stale_count": 0,
+    "levels": [
+      "graph_relation_proof",
+      "text_evidence",
+      "diagnostic_only"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable",
+    "diagnostic_sidecar_status": "diagnostic_only"
+  },
+  "forbidden_claimable_outputs": [
+    "README.md text evidence as graph proof",
+    "diagnostic sidecar as graph proof"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "text_evidence_as_blocking_source",
+    "diagnostic_only_as_blocking_source",
+    "candidate_evidence_as_blocking_source"
+  ],
+  "forbidden_hard_interrupts": [
+    "text_evidence_hard_interrupt",
+    "diagnostic_only_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [
+    "test_missingTarget_as_production"
+  ],
+  "expected_cli_validate_edit_behavior": {
+    "status": "blocked",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "validation_rule_id",
+      "proof_reason",
+      "source_spans",
+      "recommended_fix",
+      "suggested_next_steps",
+      "hard_interrupt",
+      "dirty_evidence_summary",
+      "proof_ladder_changes",
+      "severity"
+    ],
+    "forbidden_fields": [
+      "text_evidence_as_graph_proof",
+      "diagnostic_only_as_graph_proof"
+    ],
+    "notes": [
+      "Default blocking validation exits 0 with JSON; fail-on-blocking exits 2 with JSON."
+    ]
+  },
+  "expected_watch_once_behavior": {
+    "status": "blocked",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "hard_interrupt",
+      "proof_ladder_changes",
+      "severity"
+    ],
+    "forbidden_fields": [
+      "diagnostic_only_as_graph_proof"
+    ],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "Release MCP process smoke remains not_applicable in this fixture runner; MCP structured-success semantics are covered by targeted MCP validate_edit tests."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "blocked",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_relation_proof",
+      "source_spans",
+      "stale_non_proof_reasons"
+    ],
+    "forbidden_fields": [
+      "text_evidence_as_graph_proof",
+      "diagnostic_only_as_graph_proof"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state",
+      "sidecar_statuses"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "blocking_count": 1,
+    "warning_count": 1,
+    "diagnostic_count": 1,
+    "omitted_count_present": true
+  },
+  "expected_explain_output": {
+    "source_span_detail": true,
+    "proof_ladder_change_detail": true,
+    "mixed_packet_detail": true
+  },
+  "expected_audit_output": {
+    "validation_rule_id_detail": true,
+    "exact_proof_reason": true,
+    "non_proof_reason_detail": true
+  },
+  "fix_mutation_if_any": [
+    {
+      "type": "replace_text",
+      "path": "src/mixed.ts",
+      "find": "missingTarget();",
+      "replace": "okTarget();",
+      "reason": "Restore the exact source-spanned callee."
+    }
+  ],
+  "fix_steps": [],
+  "post_fix_changed_files": [
+    "src/mixed.ts"
+  ],
+  "post_fix_expected_status": "warning",
+  "post_fix_expected_severity": "warning",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [
+    {
+      "validation_rule_id": "CG_MVP3_TEXT_EVIDENCE_ONLY_CHANGED",
+      "proof_ladder_level": "text_evidence",
+      "severity": "warning",
+      "message_contains": "README.md text evidence changed",
+      "source_file": "README.md"
+    }
+  ],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [
+    {
+      "validation_rule_id": "CG_MVP3_DIAGNOSTIC_ONLY_SIDECAR_NOTE",
+      "proof_ladder_level": "diagnostic_only",
+      "severity": "diagnostic",
+      "message_contains": "sidecar note is diagnostic only",
+      "source_file": "src/mixed.ts"
+    }
+  ],
+  "post_fix_expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 0,
+    "entities_changed": 1,
+    "edges_added": 1,
+    "edges_removed": 1,
+    "edges_changed": 1,
+    "source_spans_changed": 1,
+    "full_repo_fallback_count": 0
+  },
+  "post_fix_forbidden_stale_outputs": [
+    "missingTarget as fresh",
+    "diagnostic_only_as_graph_proof"
+  ],
+  "recovery_commands_expected": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

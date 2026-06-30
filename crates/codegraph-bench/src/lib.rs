@@ -6,6 +6,7 @@
 //! vector crates; it does not change retrieval behavior.
 
 #![forbid(unsafe_code)]
+#![recursion_limit = "256"]
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,8 +41,16 @@ use serde_json::{json, Value};
 
 pub mod competitors;
 pub mod graph_truth;
+pub mod mvp3_validation_fixtures;
+pub mod mvp4_fixture_oracles;
+pub mod mvp4_measurement;
 pub mod retrieval_ablation;
 pub mod two_layer;
+pub mod v1_ab_harness;
+pub mod v1_context_injection;
+pub mod v1_local_fixture_gate;
+pub mod v1_registry;
+pub mod v1_scoring;
 
 pub use graph_truth::{
     default_context_packet_gate_options, default_graph_truth_gate_options,
@@ -49,6 +58,59 @@ pub use graph_truth::{
     run_graph_truth_gate, write_context_packet_gate_report, write_graph_truth_gate_report,
     ContextPacketCaseResult, ContextPacketGateMetrics, ContextPacketGateOptions,
     ContextPacketGateReport, GraphTruthCaseResult, GraphTruthGateOptions, GraphTruthGateReport,
+};
+pub use mvp3_validation_fixtures::{
+    default_mvp3_10_minimal_route_bridge_gate_options,
+    default_mvp3_9_cross_phase_regression_gate_options, default_mvp3_9_graph_delta_gate_options,
+    default_mvp3_9_hallucination_interrupt_gate_options,
+    default_mvp3_9_hot_path_reindex_gate_options,
+    default_mvp3_9_release_final_gate_orchestrator_options,
+    default_mvp3_9_route_bridge_inert_contract_gate_options, default_mvp3_gate_runner_options,
+    default_mvp3_validation_fixture_runner_options, discover_mvp3_validation_fixture_paths,
+    evaluate_mvp3_validation_fixture_assertions, list_mvp3_validation_fixture_manifests,
+    load_mvp3_validation_fixture_manifest, mvp3_gate_effective_fixture_tags,
+    mvp3_gate_failure_taxonomy_value, mvp3_gate_result_schema_value,
+    mvp3_validation_fixture_manifest_schema_value, render_mvp3_gate_result_markdown,
+    run_mvp3_10_minimal_route_bridge_gate, run_mvp3_9_cross_phase_regression_gate,
+    run_mvp3_9_graph_delta_gate, run_mvp3_9_hallucination_interrupt_gate,
+    run_mvp3_9_hot_path_reindex_gate, run_mvp3_9_release_final_gate_orchestrator,
+    run_mvp3_9_route_bridge_inert_contract_gate, run_mvp3_9_sample_gate, run_mvp3_gate,
+    run_mvp3_validation_fixture_by_id, run_mvp3_validation_fixture_family,
+    run_mvp3_validation_fixtures, validate_mvp3_gate_result_value,
+    validate_mvp3_validation_fixture_manifest_value, write_mvp3_gate_result_artifacts,
+    Mvp3FixtureAssertionReport, Mvp3FixtureCommandRecord, Mvp3FixtureResult, Mvp3FixtureSurfaceRun,
+    Mvp3GateFailure, Mvp3GateInvariantCounters, Mvp3GateResult, Mvp3GateResultArtifacts,
+    Mvp3GateRunnerOptions, Mvp3SurfaceSupport, Mvp3ValidationFixtureManifest,
+    Mvp3ValidationFixtureRunReport, Mvp3ValidationFixtureRunnerMode,
+    Mvp3ValidationFixtureRunnerOptions, MVP3_10_MINIMAL_ROUTE_BRIDGE_FIXTURE_IDS,
+    MVP3_10_MINIMAL_ROUTE_BRIDGE_GATE_ID, MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS,
+    MVP3_9_CROSS_PHASE_REGRESSION_GATE_ID, MVP3_9_FAILURE_TAXONOMY,
+    MVP3_9_GATE_RESULT_SCHEMA_VERSION, MVP3_9_GRAPH_DELTA_FIXTURE_IDS, MVP3_9_GRAPH_DELTA_GATE_ID,
+    MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS, MVP3_9_HALLUCINATION_INTERRUPT_GATE_ID,
+    MVP3_9_HOT_PATH_REINDEX_FIXTURE_IDS, MVP3_9_HOT_PATH_REINDEX_GATE_ID,
+    MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_FIXTURE_IDS, MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_ID,
+    MVP3_9_RELEASE_FINAL_SUBGATE_IDS, MVP3_9_REQUIRED_GATE_TAGS, MVP3_9_REQUIRED_INVARIANTS,
+    MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS, MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_GATE_ID,
+    MVP3_9_SAMPLE_GATE_ID, MVP3_VALIDATION_FIXTURE_SCHEMA_VERSION,
+};
+pub use mvp4_fixture_oracles::{
+    default_mvp4_fixture_runner_options, list_mvp4_fixture_oracles, load_mvp4_fixture_manifest,
+    mvp4_fixture_manifest_schema_value, run_mvp4_fixture_oracle_by_id,
+    run_mvp4_fixture_oracle_feature, run_mvp4_fixture_oracle_harness,
+    validate_mvp4_fixture_manifest_value, Mvp4ExpectedMicroEdge, Mvp4ExpectedMicroEdgeDelta,
+    Mvp4ExpectedMicroNode, Mvp4ExpectedPacket, Mvp4ExpectedValidation, Mvp4FixtureCommandRecord,
+    Mvp4FixtureManifest, Mvp4FixtureOracle, Mvp4FixtureResult, Mvp4FixtureRunReport,
+    Mvp4FixtureRunnerMode, Mvp4FixtureRunnerOptions, Mvp4ForbiddenMicroEdge, Mvp4InitialSource,
+    Mvp4MutationUpdate, Mvp4NegativeOracle, Mvp4SourceFile, Mvp4StorageExpectation,
+    MVP4_FIXTURE_MANIFEST_SCHEMA_VERSION, MVP4_FIXTURE_ORACLE_GATE,
+    MVP4_FIXTURE_ROOT_MANIFEST_FILE,
+};
+pub use mvp4_measurement::{
+    measure_mvp4_sparse_sidecar_projection, mvp4_firehose_guards, run_mvp4_ast_census,
+    Mvp4AstCensusAggregate, Mvp4AstCensusFile, Mvp4AstCensusOptions, Mvp4AstCensusReport,
+    Mvp4CandidateCounts, Mvp4FirehoseGuard, Mvp4FunctionDensity, Mvp4ProposedCaps,
+    Mvp4StorageProjection, Mvp4StorageProjectionOptions, Mvp4StorageTableProjection,
+    MVP4_MEASUREMENT_SCHEMA_VERSION,
 };
 pub use retrieval_ablation::{
     default_retrieval_ablation_options, render_retrieval_ablation_markdown, run_retrieval_ablation,
@@ -60,6 +122,43 @@ pub use two_layer::{
     default_two_layer_bench_options, run_agent_quality_benchmark, run_retrieval_quality_benchmark,
     validate_jsonl_file, validate_two_layer_manifest, TwoLayerBenchArtifacts, TwoLayerBenchOptions,
     MAX_BENCH_TASK_MS,
+};
+pub use v1_ab_harness::{
+    assert_v1_same_agent_invariants, check_v1_same_agent_invariants,
+    default_v1_same_agent_ab_harness_options, run_v1_same_agent_ab_harness,
+    validate_v1_same_agent_ab_artifacts, V1AgentMode, V1ArmArtifacts, V1ArmRunPlan,
+    V1CommandRecord, V1SameAgentAbHarnessArtifacts, V1SameAgentAbHarnessOptions,
+    V1SameAgentInvariantCheck, CODEGRAPH_BENCH_EXTERNAL_AGENT_COMMAND_ENV, REQUIRED_V1_AGENT_MODES,
+    V1_AB_HARNESS_NAME, V1_AB_HARNESS_SCHEMA_VERSION,
+};
+pub use v1_context_injection::{
+    build_v1_codegraph_context_injection, default_v1_codegraph_context_budget,
+    evaluate_v1_codegraph_attribution, render_v1_codegraph_context_prompt,
+    v1_context_injection_to_value, validate_v1_codegraph_packet_budget, V1CodeGraphAttribution,
+    V1CodeGraphContextBudget, V1CodeGraphContextInjection, V1CodeGraphContextPacket,
+    V1CodeGraphContextScenario, V1EvidenceItem, V1ProofPath, V1_CONTEXT_INJECTION_NAME,
+    V1_CONTEXT_INJECTION_SCHEMA_VERSION,
+};
+pub use v1_local_fixture_gate::{
+    default_v1_local_fixture_gate_options, run_v1_local_fixture_gate,
+    v1_local_fixture_gate_to_value, validate_v1_local_fixture_gate_report,
+    V1ExpectedEvidenceSummary, V1LocalFixtureArmMetrics, V1LocalFixtureBImprovement,
+    V1LocalFixtureGateOptions, V1LocalFixtureGateReport, V1LocalFixtureTaskGateResult,
+    REQUIRED_LOCAL_FIXTURE_TASK_COUNT, V1_LOCAL_FIXTURE_GATE_NAME,
+    V1_LOCAL_FIXTURE_GATE_SCHEMA_VERSION,
+};
+pub use v1_registry::{
+    load_v1_patch_task_registry, validate_v1_patch_task_registry_json, V1AgentVisibleTask,
+    V1LeakageAudit, V1PatchTask, V1PatchTaskRegistry, V1PinnedDataset, V1PinnedDatasetManifest,
+    REQUIRED_V1_TASK_FAMILIES, V1_TASK_REGISTRY_SCHEMA_VERSION,
+};
+pub use v1_scoring::{
+    score_v1_patch_outcome_evidence, score_v1_patch_outcome_evidence_value,
+    validate_v1_patch_outcome_evidence_score_json, V1CodeGraphAttributionScore,
+    V1CostPerformanceScore, V1EvidenceAlignmentScore, V1PatchOutcomeEvidenceScore,
+    V1PatchOutcomeScore, V1PatchOutcomeScoringInput, V1PlanAccuracyScore, V1ProofDisciplineScore,
+    V1WrongContextHallucinationScore, V1_PATCH_OUTCOME_SCORING_NAME,
+    V1_PATCH_OUTCOME_SCORING_SCHEMA_VERSION,
 };
 
 pub const BENCH_SCHEMA_VERSION: u32 = 1;
@@ -5171,8 +5270,9 @@ mod tests {
             "admin_user_middleware_role_separation",
             "derived_closure_edge_requires_provenance",
             "stale_graph_cache_after_edit_delete",
+            "source_span_exact_callsite",
         ];
-        assert_eq!(expected_cases.len(), 10);
+        assert_eq!(expected_cases.len(), 11);
 
         let mut cases_with_source_spans = 0usize;
         let mut security_or_test_cases = 0usize;
@@ -5196,7 +5296,7 @@ mod tests {
             );
             assert_eq!(
                 string_field(&case, "repo_fixture_path").expect("repo_fixture_path"),
-                format!("benchmarks/graph_truth/fixtures/{case_id}/repo"),
+                format!("benchmarks/tracks/graph_truth/fixtures/{case_id}/repo"),
                 "repo_fixture_path should point at the fixture repo"
             );
             assert!(
@@ -5282,6 +5382,7 @@ mod tests {
             .join("..")
             .join("..")
             .join("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("schemas")
             .join("graph_truth_case.schema.json");
@@ -5301,6 +5402,7 @@ mod tests {
             .join("..")
             .join("..")
             .join("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures")
     }
@@ -5412,7 +5514,7 @@ mod tests {
             "schema_version": 1,
             "case_id": "auth.role-check.strict",
             "description": "Login must call the production role checker and must not prove through a mock.",
-            "repo_fixture_path": "benchmarks/graph_truth/fixtures/auth_role_check",
+            "repo_fixture_path": "benchmarks/tracks/graph_truth/fixtures/auth_role_check",
             "task_prompt": "Change login authorization behavior.",
             "expected_entities": [
                 {

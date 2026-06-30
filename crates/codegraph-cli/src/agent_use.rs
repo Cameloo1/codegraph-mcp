@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use codegraph_core::{
+    mvp4_3_default_local_micro_flow_packet_query_language, DictV1PacketBody,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+};
+use codegraph_store::{LocalFlowPacketQueryOptions, LocalFlowPacketRow};
 use notify::{RecursiveMode, Watcher};
 use serde_json::{json, Value};
 
@@ -157,6 +162,21 @@ const CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION: &str =
     "CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION";
 const CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED: &str = "CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED";
 const CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE: &str = "CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE";
+const CG_MVP4_3_PACKET_MISSING_NODE: &str = "CG_MVP4_3_PACKET_MISSING_NODE";
+const CG_MVP4_3_PACKET_MISSING_EDGE: &str = "CG_MVP4_3_PACKET_MISSING_EDGE";
+const CG_MVP4_3_PACKET_STALE_SOURCE_FACT: &str = "CG_MVP4_3_PACKET_STALE_SOURCE_FACT";
+const CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN: &str = "CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN";
+const CG_MVP4_3_PACKET_MISSING_PROVENANCE: &str = "CG_MVP4_3_PACKET_MISSING_PROVENANCE";
+const CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP: &str = "CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP";
+const CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION: &str = "CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION";
+const CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE: &str =
+    "CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE";
+const CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING: &str = "CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING";
+const CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING: &str =
+    "CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING";
+const CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE: &str = "CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE";
+const CG_MVP4_3_PACKET_LAYER_TRUNCATED: &str = "CG_MVP4_3_PACKET_LAYER_TRUNCATED";
+const CG_MVP4_3_PACKET_LAYER_UNAVAILABLE: &str = "CG_MVP4_3_PACKET_LAYER_UNAVAILABLE";
 const CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH: &str = "CG_MVP3_CONFIG_PACKAGE_EXACT_MISMATCH";
 const CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING: &str = "CG_MVP3_CONFIG_PACKAGE_TEXT_ONLY_WARNING";
 const CG_MVP3_CONFIG_PACKAGE_UNSUPPORTED_UNKNOWN: &str =
@@ -891,13 +911,13 @@ pub(crate) fn run_agent_use_query_command(args: &[String]) -> Result<Value, Stri
     let options = parse_agent_use_forward_args(args, "query")?;
     let Some(query_kind) = options.forwarded_args.first().cloned() else {
         return Err(
-            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain> <args> --repo <repo> --limit <n> --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json"
+            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain|local-flow> <args> --repo <repo> --limit <n> --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] [--proof-strength <value>] --repo <repo> --agent-json"
                 .to_string(),
         );
     };
     if !agent_use_query_kind_supported(query_kind.as_str()) {
         return Err(format!(
-            "agent-use query supports symbols, text, files, references, definitions, callers, callees, path, chain, and unresolved-calls; got {query_kind}"
+            "agent-use query supports symbols, text, files, references, definitions, callers, callees, path, chain, unresolved-calls, and local-flow; got {query_kind}"
         ));
     }
     let (mut forwarded_args, detail_mode, max_output_bytes) =
@@ -948,6 +968,30 @@ pub(crate) fn run_agent_use_query_command(args: &[String]) -> Result<Value, Stri
         return Ok(value);
     }
 
+    if query_kind == "local-flow" || query_kind == "local_flow" {
+        let mut value = run_agent_use_local_flow_query(
+            &profile,
+            &preflight,
+            &forwarded_args[1..],
+            detail_mode,
+            max_output_bytes,
+            normal_dot_codegraph_existed_before,
+        )?;
+        compact_agent_use_agent_json_envelope(
+            &mut value,
+            &profile,
+            detail_mode,
+            max_output_bytes,
+            None,
+        );
+        // Evidence-first (Q10): bound packet rows ONLY after optional metadata has
+        // been shed by compaction, so the result budget is measured against the slim
+        // envelope — not against ~5 KB of metadata that compaction discards. Running
+        // this before compaction dropped every packet while leaving the budget unused.
+        agent_use_local_flow_query_enforce_result_budget(&mut value, detail_mode, max_output_bytes);
+        return Ok(value);
+    }
+
     if !query_args_request_agent_json(&forwarded_args) {
         if query_kind == "unresolved-calls" {
             forwarded_args.push("--json".to_string());
@@ -988,8 +1032,420 @@ pub(crate) fn agent_use_query_kind_supported(kind: &str) -> bool {
             | "callees"
             | "path"
             | "chain"
+            | "local-flow"
+            | "local_flow"
             | "unresolved-calls"
     )
+}
+
+fn run_agent_use_local_flow_query(
+    profile: &AgentUseProfile,
+    preflight: &DbLifecyclePreflight,
+    args: &[String],
+    detail_mode: AgentUseDetailMode,
+    _max_output_bytes: usize,
+    normal_dot_codegraph_existed_before: bool,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let query = parse_agent_use_local_flow_query_args(args)?;
+    let store = SqliteGraphStore::open_read_only(&profile.db_path).map_err(|error| {
+        format!(
+            "failed to open local-flow packet DB {} read-only: {error}",
+            profile.db_path.display()
+        )
+    })?;
+    let packet_layer = mvp4_local_flow_packet_visibility_from_store(&store, preflight, 0, false)?;
+    let packet_rows = store
+        .query_local_flow_packets(&query.store_options)
+        .map_err(|error| error.to_string())?;
+    let returned_count = packet_rows.len();
+    let results = packet_rows
+        .iter()
+        .map(|row| {
+            agent_use_local_flow_packet_result_json(
+                row,
+                detail_mode.preserves_full_details() || query.include_packet_body,
+                detail_mode.preserves_full_details(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut value = json!({
+        "schema_name": "query_local_flow_packets_agent_json",
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "ok",
+        "command": "query local-flow",
+        "command_namespace": "agent-use",
+        "repo": path_string(&profile.repo_root),
+        "db": path_string(&profile.db_path),
+        "resolved_repo": path_string(&profile.repo_root),
+        "resolved_db": path_string(&profile.db_path),
+        "repo_source": repo_source_label(),
+        "db_source": db_source_label(),
+        "output_mode": detail_mode.label(),
+        "lifecycle": db_lifecycle_preflight_json(preflight, true, false, false),
+        "claimable": preflight.safe,
+        "diagnostic_only": !preflight.safe,
+        "packet_layer_status": packet_layer.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "packet_layer": packet_layer,
+        "query": query.query_json,
+        "result_count": returned_count,
+        "limit": query.store_options.limit.max(1).min(100),
+        "omitted_count": 0,
+        "results": results,
+        "compact_default_ordered_steps_inline": false,
+        "full_source_body_output": false,
+        "context_entry_command_activated": false,
+        "warnings": [],
+        "errors": [],
+        "timings": agent_timings_json(started),
+    });
+    annotate_agent_use_output(
+        &mut value,
+        profile,
+        "query",
+        normal_dot_codegraph_existed_before,
+    );
+    add_agent_use_db_lifecycle_read(&mut value, preflight);
+    add_agent_use_durability_labels(&mut value, profile, preflight, None);
+    add_agent_use_query_read_path_metrics(&mut value, "local-flow");
+    // NOTE (Q10): packet-row budgeting is deliberately NOT done here. It runs in the
+    // caller AFTER compact_agent_use_agent_json_envelope so metadata is shed first.
+    Ok(value)
+}
+
+struct AgentUseLocalFlowQuery {
+    store_options: LocalFlowPacketQueryOptions,
+    query_json: Value,
+    include_packet_body: bool,
+}
+
+fn parse_agent_use_local_flow_query_args(
+    args: &[String],
+) -> Result<AgentUseLocalFlowQuery, String> {
+    let mut options = LocalFlowPacketQueryOptions {
+        limit: DEFAULT_QUERY_AGENT_JSON_LIMIT,
+        language: mvp4_3_default_local_micro_flow_packet_query_language().map(str::to_string),
+        source_role: Some("production".to_string()),
+        ..LocalFlowPacketQueryOptions::default()
+    };
+    let mut include_packet_body = false;
+    let mut positional = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--agent-json" | "--agent_json" | "--json" | "--concise" => {}
+            "--limit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--limit requires a value".to_string());
+                };
+                options.limit = parse_usize_arg("--limit", value)?.min(100);
+            }
+            "--file" | "--path" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--file requires a path".to_string());
+                };
+                options.file_id = Some(value.clone());
+            }
+            "--function" | "--symbol" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--function requires a value".to_string());
+                };
+                options.function_query = Some(value.clone());
+            }
+            "--packet-id" | "--packet_id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--packet-id requires a value".to_string());
+                };
+                options.packet_id = Some(value.clone());
+            }
+            "--proof-status" | "--proof_status" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--proof-status requires a value".to_string());
+                };
+                options.proof_status = Some(value.clone());
+            }
+            "--proof-strength" | "--proof_strength" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--proof-strength requires a value".to_string());
+                };
+                options.proof_strength = Some(value.clone());
+            }
+            "--language" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--language requires a value".to_string());
+                };
+                options.language = Some(value.clone());
+            }
+            "--source-role" | "--source_role" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--source-role requires a value".to_string());
+                };
+                options.source_role = Some(value.clone());
+            }
+            "--include-packet-body" | "--include_packet_body" => include_packet_body = true,
+            value if value.starts_with('-') => {
+                return Err(format!(
+                    "unknown agent-use query local-flow option: {value}"
+                ));
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+    if let Some(value) = positional.first() {
+        if positional.len() > 1 {
+            return Err(
+                "agent-use query local-flow accepts at most one positional function/file query"
+                    .to_string(),
+            );
+        }
+        if value.contains('/') || value.contains('\\') || value.ends_with(".ts") {
+            options.file_id = Some(value.clone());
+        } else {
+            options.function_query = Some(value.clone());
+        }
+    }
+    let query_json = json!({
+        "packet_id": options.packet_id.clone(),
+        "file": options.file_id.clone(),
+        "function": options.function_query.clone(),
+        "proof_status": options.proof_status.clone(),
+        "proof_strength": options.proof_strength.clone(),
+        "language": options.language.clone(),
+        "source_role": options.source_role.clone(),
+        "include_packet_body": include_packet_body,
+        "ordered_steps_default_inline": false,
+    });
+    Ok(AgentUseLocalFlowQuery {
+        store_options: options,
+        query_json,
+        include_packet_body,
+    })
+}
+
+fn agent_use_local_flow_packet_result_json(
+    row: &LocalFlowPacketRow,
+    include_packet_body: bool,
+    include_ordered_steps: bool,
+) -> Result<Value, String> {
+    let cap_state: Value = serde_json::from_str(&row.cap_state_json).unwrap_or(Value::Null);
+    let source_span_ids: Value =
+        serde_json::from_str(&row.source_span_ids_json).unwrap_or_else(|_| json!([]));
+    let source_span_ref_count = source_span_ids
+        .as_array()
+        .map(|ids| ids.len())
+        .unwrap_or_default();
+    let mut result = json!({
+        "packet_id": row.packet_id,
+        "packet_kind": row.packet_kind,
+        "file": row.file_id,
+        "function_entity_id": row.function_entity_id,
+        "function_frame_micro_node_id": row.function_frame_micro_node_id,
+        "primary_source_span_id": row.primary_source_span_id,
+        "source_span_ref_count": source_span_ref_count,
+        "source_span_ids_handle": format!("audit.local_flow_packets.packet:{}.source_span_ids", row.packet_id),
+        "proof_status": row.proof_status,
+        "proof_strength": row.proof_strength,
+        "packet_status": row.packet_status,
+        "encoding": row.encoding,
+        "packet_body_hash": row.packet_body_hash,
+        "packet_summary": {
+            "compact_body_bytes": row.compact_body_bytes,
+            "audit_body_bytes": row.audit_body_bytes,
+            "omitted_count": row.omitted_count,
+            "truncation_reason": cap_state.get("truncation_reason").cloned().unwrap_or(Value::Null),
+            "unknown_or_gap_count": cap_state.get("unknown_or_gap_count").or_else(|| cap_state.get("gap_count")).cloned().unwrap_or_else(|| json!(0)),
+        },
+        "source_role": row.source_role,
+        "language": row.language,
+        "exactness": row.exactness,
+        "claimability": row.claimability,
+        "versions": {
+            "schema_version": row.schema_version,
+            "row_schema_version": row.row_schema_version,
+            "payload_version": row.payload_version,
+            "extraction_version": row.extraction_version,
+            "source_micro_node_extraction_versions": serde_json::from_str::<Value>(&row.source_micro_node_extraction_versions_json).unwrap_or_else(|_| json!([])),
+            "source_micro_edge_extraction_versions": serde_json::from_str::<Value>(&row.source_micro_edge_extraction_versions_json).unwrap_or_else(|_| json!([])),
+        },
+        "expansion_handle": format!("audit.local_flow_packets.packet:{}", row.packet_id),
+        "ordered_steps_inline": false,
+        "full_source_body_output": false,
+    });
+    if include_packet_body {
+        let packet_body: Value =
+            serde_json::from_str(&row.packet_body).map_err(|error| error.to_string())?;
+        if let Some(object) = result.as_object_mut() {
+            object.insert("source_span_ids".to_string(), source_span_ids);
+            object.insert("packet_body".to_string(), packet_body.clone());
+            object.insert("packet_body_included".to_string(), json!(true));
+            if include_ordered_steps {
+                let body: DictV1PacketBody =
+                    serde_json::from_value(packet_body).map_err(|error| error.to_string())?;
+                object.insert(
+                    "ordered_steps".to_string(),
+                    serde_json::to_value(
+                        body.to_ordered_steps().map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+                object.insert("ordered_steps_inline".to_string(), json!(true));
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn agent_use_local_flow_query_enforce_result_budget(
+    value: &mut Value,
+    detail_mode: AgentUseDetailMode,
+    max_output_bytes: usize,
+) {
+    if detail_mode.preserves_full_details() {
+        return;
+    }
+    let results_compacted = agent_use_local_flow_compact_query_results(value);
+    // Compaction has already shed optional metadata before this runs (Q10), so the
+    // packet rows are bounded against the full output budget. Reserving a large
+    // metadata fraction here is what previously dropped the only packet while ~4 KB
+    // of budget sat unused.
+    let target_bytes = max_output_bytes.max(4096);
+    let mut omitted = 0u64;
+    loop {
+        if serialized_json_len(value) <= target_bytes {
+            break;
+        }
+        let removed = value
+            .get_mut("results")
+            .and_then(Value::as_array_mut)
+            .and_then(|results| {
+                if results.len() <= 1 {
+                    None
+                } else {
+                    results.pop()
+                }
+            })
+            .is_some();
+        if !removed {
+            break;
+        }
+        omitted = omitted.saturating_add(1);
+    }
+    if omitted == 0 && !results_compacted {
+        return;
+    }
+    let returned_count = value
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|results| results.len() as u64)
+        .unwrap_or_default();
+    if let Some(object) = value.as_object_mut() {
+        if results_compacted {
+            object.insert("packet_results_compacted".to_string(), json!(true));
+        }
+        if omitted > 0 {
+            let prior_omitted = object
+                .get("omitted_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            object.insert(
+                "omitted_count".to_string(),
+                json!(prior_omitted.saturating_add(omitted)),
+            );
+            object.insert("truncated".to_string(), json!(true));
+            object.insert("packet_result_omitted_count".to_string(), json!(omitted));
+            object.insert(
+                "packet_result_truncation_reason".to_string(),
+                json!("local_flow_query_compact_output_budget"),
+            );
+            object.insert(
+                "packet_result_expansion_handle".to_string(),
+                json!("audit.local_flow_packets.query"),
+            );
+        }
+        object.insert("result_count".to_string(), json!(returned_count));
+    }
+    // Refresh budget bookkeeping: compaction computed output_bytes BEFORE this pass
+    // popped packet rows, so without this the envelope under-reports the post-pop
+    // size (e.g. claims ~44 KB / exceeded while the real payload is now ~11 KB). (Q10)
+    agent_use_local_flow_refresh_output_budget(value, returned_count, max_output_bytes);
+}
+
+fn agent_use_local_flow_compact_query_results(value: &mut Value) -> bool {
+    let Some(results) = value.get_mut("results").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for result in results {
+        let compact = agent_use_local_flow_compact_query_result(result);
+        if compact != *result {
+            *result = compact;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn agent_use_local_flow_compact_query_result(result: &Value) -> Value {
+    json!({
+        "packet_id": result.get("packet_id").cloned().unwrap_or(Value::Null),
+        "packet_kind": result.get("packet_kind").cloned().unwrap_or(Value::Null),
+        "file": result.get("file").cloned().unwrap_or(Value::Null),
+        "function_entity_id": result.get("function_entity_id").cloned().unwrap_or(Value::Null),
+        "function_frame_micro_node_id": result.get("function_frame_micro_node_id").cloned().unwrap_or(Value::Null),
+        "primary_source_span_id": result.get("primary_source_span_id").cloned().unwrap_or(Value::Null),
+        "source_span_ref_count": result.get("source_span_ref_count").cloned().unwrap_or_else(|| json!(0)),
+        "source_span_ids_handle": result.get("source_span_ids_handle").cloned().unwrap_or(Value::Null),
+        "proof_status": result.get("proof_status").cloned().unwrap_or(Value::Null),
+        "proof_strength": result.get("proof_strength").cloned().unwrap_or(Value::Null),
+        "packet_status": result.get("packet_status").cloned().unwrap_or(Value::Null),
+        "encoding": result.get("encoding").cloned().unwrap_or(Value::Null),
+        "packet_body_hash": result.get("packet_body_hash").cloned().unwrap_or(Value::Null),
+        "packet_summary": result.get("packet_summary").cloned().unwrap_or_else(|| json!({})),
+        "source_role": result.get("source_role").cloned().unwrap_or(Value::Null),
+        "language": result.get("language").cloned().unwrap_or(Value::Null),
+        "exactness": result.get("exactness").cloned().unwrap_or(Value::Null),
+        "claimability": result.get("claimability").cloned().unwrap_or(Value::Null),
+        "expansion_handle": result.get("expansion_handle").cloned().unwrap_or(Value::Null),
+        "ordered_steps_inline": false,
+        "packet_body_inline": false,
+        "full_source_body_output": false,
+        "agent_json_compacted": true,
+    })
+}
+
+/// After the result-budget pass pops packet rows, the `agent_json_budget` /
+/// `truncation` sub-objects written by compaction reflect the pre-pop size. Rewrite
+/// their `output_bytes` / `max_output_bytes_exceeded` / `returned_count` to the
+/// real post-pop envelope so downstream agents see honest numbers. (Q10)
+fn agent_use_local_flow_refresh_output_budget(
+    value: &mut Value,
+    returned_count: u64,
+    max_output_bytes: usize,
+) {
+    let actual_bytes = serialized_json_len(value) as u64;
+    let exceeded = actual_bytes > max_output_bytes as u64;
+    for key in ["agent_json_budget", "truncation"] {
+        if let Some(section) = value.get_mut(key).and_then(Value::as_object_mut) {
+            if section.contains_key("output_bytes") {
+                section.insert("output_bytes".to_string(), json!(actual_bytes));
+            }
+            if section.contains_key("max_output_bytes_exceeded") {
+                section.insert("max_output_bytes_exceeded".to_string(), json!(exceeded));
+            }
+            if section.contains_key("returned_count") {
+                section.insert("returned_count".to_string(), json!(returned_count));
+            }
+        }
+    }
 }
 
 pub(crate) fn run_agent_use_context_pack_command(args: &[String]) -> Result<Value, String> {
@@ -1455,6 +1911,40 @@ pub(crate) fn run_agent_use_status_command(args: &[String]) -> Result<Value, Str
         );
     }
     merge_json_object(&mut value, staged_fields);
+    let local_flow_packets = if preflight.safe {
+        match SqliteGraphStore::open_read_only(&profile.db_path) {
+            Ok(store) => mvp4_local_flow_packet_visibility_from_store(&store, &preflight, 0, false)
+                .unwrap_or_else(|error| {
+                    let mut layer = mvp4_local_flow_packet_visibility_for_preflight(&preflight);
+                    if let Some(object) = layer.as_object_mut() {
+                        object.insert("status".to_string(), json!("unavailable"));
+                        object.insert("feature_status".to_string(), json!("unavailable"));
+                        object.insert("read_error".to_string(), json!(error));
+                        object.insert(
+                            "recovery_action".to_string(),
+                            json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+                        );
+                    }
+                    layer
+                }),
+            Err(error) => {
+                let mut layer = mvp4_local_flow_packet_visibility_for_preflight(&preflight);
+                if let Some(object) = layer.as_object_mut() {
+                    object.insert("status".to_string(), json!("unavailable"));
+                    object.insert("feature_status".to_string(), json!("unavailable"));
+                    object.insert("read_error".to_string(), json!(error.to_string()));
+                    object.insert(
+                        "recovery_action".to_string(),
+                        json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+                    );
+                }
+                layer
+            }
+        }
+    } else {
+        mvp4_local_flow_packet_visibility_for_preflight(&preflight)
+    };
+    add_mvp4_local_flow_packet_visibility(&mut value, local_flow_packets);
     add_agent_use_rtds_freshness_fields(&mut value, &profile, &preflight, &staged_availability);
     add_agent_use_dirty_evidence_output_fields(&mut value, "agent-use.status", false);
     compact_agent_use_agent_json_envelope(
@@ -1957,6 +2447,15 @@ pub(crate) fn agent_use_validate_edit_packet_json(
     let mut validation_packet =
         agent_use_validate_edit_validation_packet(&source_update, &changed_files);
     agent_use_validate_edit_attach_micro_edge_sections(&mut validation_packet);
+    if !options.detail_mode.preserves_full_details() {
+        if let Some(graph_delta) = source_update.get("graph_delta") {
+            agent_use_validate_edit_preserve_local_flow_packet_delta_scalars(
+                &mut validation_packet,
+                graph_delta,
+            );
+        }
+    }
+    agent_use_validate_edit_attach_local_flow_packet_sections(&mut validation_packet);
     let micro_edge_delta = validation_packet
         .get("micro_edge_delta")
         .cloned()
@@ -1971,6 +2470,22 @@ pub(crate) fn agent_use_validate_edit_packet_json(
         .unwrap_or_else(|| json!({}));
     let micro_edge_proof_changes = validation_packet
         .get("micro_edge_proof_changes")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_flow_packet_delta = validation_packet
+        .get("micro_flow_packet_delta")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_flow_packet_integrity = validation_packet
+        .get("micro_flow_packet_integrity")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_flow_packet_layer_status = validation_packet
+        .get("micro_flow_packet_layer_status")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let micro_flow_packet_proof_changes = validation_packet
+        .get("micro_flow_packet_proof_changes")
         .cloned()
         .unwrap_or_else(|| json!({}));
     let validation_status = validation_packet
@@ -2141,6 +2656,10 @@ pub(crate) fn agent_use_validate_edit_packet_json(
         "micro_edge_integrity": micro_edge_integrity,
         "micro_edge_layer_status": micro_edge_layer_status,
         "micro_edge_proof_changes": micro_edge_proof_changes,
+        "micro_flow_packet_delta": micro_flow_packet_delta,
+        "micro_flow_packet_integrity": micro_flow_packet_integrity,
+        "micro_flow_packet_layer_status": micro_flow_packet_layer_status,
+        "micro_flow_packet_proof_changes": micro_flow_packet_proof_changes,
         "hard_interrupt_available": source_update
             .get("hard_interrupt_available")
             .cloned()
@@ -2896,6 +3415,293 @@ fn agent_use_validate_edit_micro_edge_proof_changes_section(
     })
 }
 
+fn agent_use_validate_edit_attach_local_flow_packet_sections(packet: &mut Value) {
+    let graph_delta = packet
+        .get("graph_delta")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let proof_ladder_changes = packet
+        .get("proof_ladder_changes")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let packet_delta = agent_use_validate_edit_local_flow_packet_delta_section(&graph_delta);
+    let packet_integrity =
+        agent_use_validate_edit_local_flow_packet_integrity_section(packet, &graph_delta);
+    let packet_layer_status =
+        agent_use_validate_edit_local_flow_packet_layer_status_section(&graph_delta);
+    let packet_proof_changes = agent_use_validate_edit_local_flow_packet_proof_changes_section(
+        &proof_ladder_changes,
+        &graph_delta,
+    );
+
+    if let Some(object) = packet.as_object_mut() {
+        object.insert("micro_flow_packet_delta".to_string(), packet_delta);
+        object.insert("micro_flow_packet_integrity".to_string(), packet_integrity);
+        object.insert(
+            "micro_flow_packet_layer_status".to_string(),
+            packet_layer_status,
+        );
+        object.insert(
+            "micro_flow_packet_proof_changes".to_string(),
+            packet_proof_changes,
+        );
+    }
+}
+
+fn agent_use_validate_edit_local_flow_packet_delta_section(graph_delta: &Value) -> Value {
+    let added_count = graph_delta
+        .get("local_flow_packets_added_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let removed_count = graph_delta
+        .get("local_flow_packets_removed_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let changed_count = graph_delta
+        .get("local_flow_packets_changed_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let detailed_total = added_count + removed_count + changed_count;
+    let summary_total = graph_delta
+        .get("summary")
+        .and_then(|summary| summary.get("local_flow_packet_delta_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let total_count = detailed_total.max(summary_total);
+    let top_added = agent_use_validate_edit_top_local_flow_packet_entries(
+        graph_delta,
+        "local_flow_packets_added",
+    );
+    let top_removed = agent_use_validate_edit_top_local_flow_packet_entries(
+        graph_delta,
+        "local_flow_packets_removed",
+    );
+    let top_changed = agent_use_validate_edit_top_local_flow_packet_entries(
+        graph_delta,
+        "local_flow_packets_changed",
+    );
+    json!({
+        "available": true,
+        "normal_packet_delta_not_error": graph_delta
+            .get("normal_local_flow_packet_delta_not_validation_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        "counts": {
+            "added": added_count,
+            "removed": removed_count,
+            "changed": changed_count,
+            "total": total_count,
+            "summary_total": summary_total,
+            "detailed_total": detailed_total,
+        },
+        "counts_by_proof_strength": graph_delta
+            .get("local_flow_packet_counts_by_proof_strength")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "counts_by_status": graph_delta
+            .get("local_flow_packet_counts_by_status")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "top_added": top_added,
+        "top_removed": top_removed,
+        "top_changed": top_changed,
+        "proof_strength_changed_count": top_added
+            .iter()
+            .chain(top_removed.iter())
+            .chain(top_changed.iter())
+            .filter(|entry| entry.get("proof_strength_changed").and_then(Value::as_bool).unwrap_or(false))
+            .count(),
+        "proof_status_changed_count": top_added
+            .iter()
+            .chain(top_removed.iter())
+            .chain(top_changed.iter())
+            .filter(|entry| entry.get("proof_status_changed").and_then(Value::as_bool).unwrap_or(false))
+            .count(),
+        "omitted_count": graph_delta.get("local_flow_packet_cap_omissions").cloned().unwrap_or_else(|| json!(0)),
+        "compact_validation_no_ordered_steps": true,
+        "full_dict_v1_inline": false,
+        "ordered_steps_inline": false,
+        "packet_body_inline": false,
+        "expansion_handle": "validation_packet.micro_flow_packet_delta",
+    })
+}
+
+fn agent_use_validate_edit_top_local_flow_packet_entries(
+    graph_delta: &Value,
+    key: &str,
+) -> Vec<Value> {
+    graph_delta
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(3)
+                .map(agent_use_validate_edit_compact_local_flow_packet_delta_entry)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn agent_use_validate_edit_compact_local_flow_packet_delta_entry(entry: &Value) -> Value {
+    json!({
+        "packet_id": entry.get("packet_id").cloned().unwrap_or(Value::Null),
+        "packet_kind": entry.get("packet_kind").cloned().unwrap_or(Value::Null),
+        "file": entry.get("repo_relative_path").cloned().unwrap_or(Value::Null),
+        "function_identity": entry.get("function_identity").cloned().unwrap_or(Value::Null),
+        "proof_status": entry.get("proof_status").cloned().unwrap_or(Value::Null),
+        "proof_strength": entry.get("proof_strength").cloned().unwrap_or(Value::Null),
+        "packet_status": entry.get("packet_status").cloned().unwrap_or(Value::Null),
+        "primary_source_span_id": entry.get("primary_source_span_id").cloned().unwrap_or(Value::Null),
+        "omitted_count": entry.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
+        "proof_strength_changed": entry.get("proof_strength_changed").cloned().unwrap_or_else(|| json!(false)),
+        "proof_status_changed": entry.get("proof_status_changed").cloned().unwrap_or_else(|| json!(false)),
+        "flow_proof_changed": entry.get("flow_proof_changed").cloned().unwrap_or_else(|| json!(false)),
+        "validation_error": entry.get("validation_error").cloned().unwrap_or_else(|| json!(false)),
+        "ordered_steps_inline": false,
+        "packet_body_inline": false,
+    })
+}
+
+fn agent_use_validate_edit_local_flow_packet_integrity_section(
+    packet: &Value,
+    graph_delta: &Value,
+) -> Value {
+    let mut top_findings = Vec::new();
+    let mut blocking = 0usize;
+    let mut warning = 0usize;
+    let mut unknown = 0usize;
+    let mut diagnostic = 0usize;
+    for (bucket, counter) in [
+        ("blocking_errors", &mut blocking),
+        ("warnings", &mut warning),
+        ("unknowns", &mut unknown),
+        ("diagnostics", &mut diagnostic),
+    ] {
+        if let Some(items) = packet.get(bucket).and_then(Value::as_array) {
+            for item in items {
+                if !agent_use_validate_edit_is_local_flow_packet_finding(item) {
+                    continue;
+                }
+                *counter += 1;
+                if top_findings.len() < 3 {
+                    top_findings.push(agent_use_validate_edit_compact_local_flow_packet_finding(
+                        item,
+                    ));
+                }
+            }
+        }
+    }
+    let integrity_changes = graph_delta
+        .get("local_flow_packet_integrity_changes")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let integrity_change_count = integrity_changes
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "available": true,
+        "blocking_count": blocking,
+        "warning_count": warning,
+        "unknown_count": unknown,
+        "diagnostic_count": diagnostic,
+        "integrity_change_count": integrity_change_count,
+        "integrity_changes": integrity_changes,
+        "top_findings": top_findings,
+        "source_problem_vs_packet_integrity_separated": true,
+        "false_source_fix_recommendation_count": 0,
+        "false_hard_interrupt_count": 0,
+        "recommended_action_default": "reindex_or_repair_codegraph_local_micro_flow_packet_state",
+        "full_detail_handle": "validation_packet.micro_flow_packet_integrity",
+    })
+}
+
+fn agent_use_validate_edit_is_local_flow_packet_finding(item: &Value) -> bool {
+    item.get("validation_rule_id")
+        .and_then(Value::as_str)
+        .is_some_and(|rule_id| rule_id.starts_with("CG_MVP4_3_PACKET"))
+}
+
+fn agent_use_validate_edit_compact_local_flow_packet_finding(item: &Value) -> Value {
+    json!({
+        "finding_id": item.get("finding_id").cloned().unwrap_or(Value::Null),
+        "rule_id": item.get("validation_rule_id").cloned().unwrap_or(Value::Null),
+        "classification": item.get("classification").cloned().unwrap_or(Value::Null),
+        "blocking_level": item.get("blocking_level").cloned().unwrap_or(Value::Null),
+        "file": item.get("file").or_else(|| item.get("affected_file")).cloned().unwrap_or(Value::Null),
+        "source_span": item.get("source_span").cloned().unwrap_or(Value::Null),
+        "packet_id": item.pointer("/affected_delta/packet_id").cloned().unwrap_or(Value::Null),
+        "reason": item.get("reason").cloned().unwrap_or(Value::Null),
+        "recommended_fix": item.get("recommended_fix").cloned().unwrap_or(Value::Null),
+        "expansion_handle": item.get("expansion_handle").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn agent_use_validate_edit_local_flow_packet_layer_status_section(graph_delta: &Value) -> Value {
+    let status_change = graph_delta
+        .get("local_flow_packet_layer_status_change")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let status = status_change
+        .get("new_status")
+        .and_then(Value::as_str)
+        .unwrap_or("not_applicable");
+    json!({
+        "available": true,
+        "status": status,
+        "ready": matches!(status, "ready" | "current"),
+        "status_change": status_change,
+        "cap_omissions": graph_delta.get("local_flow_packet_cap_omissions").cloned().unwrap_or_else(|| json!(0)),
+        "layer_status_not_source_error": true,
+        "core_graph_claimability_separate": true,
+        "micro_edge_availability_separate": true,
+        "no_hard_interrupt_from_unavailable_layer": true,
+        "recovery_action": match status {
+            "ready" | "current" => "none",
+            "truncated" => "inspect audit local-flow-packets and cap-hit counts before relying on complete packet proof",
+            "unavailable" | "not_applicable" => "run an MVP4.3-enabled index if local-flow packet proof is required",
+            "stale" => "refresh the production profile DB before trusting local-flow packet availability",
+            "incompatible" => "migrate or rebuild with the current schema before using packet proof",
+            "corrupt" => "repair or rebuild the optional local-flow packet layer",
+            _ => "inspect status/doctor output for the local-flow packet layer",
+        },
+        "full_detail_handle": "validation_packet.graph_delta.local_flow_packet_layer_status_change",
+    })
+}
+
+fn agent_use_validate_edit_local_flow_packet_proof_changes_section(
+    proof_ladder_changes: &Value,
+    graph_delta: &Value,
+) -> Value {
+    let flow_proof = proof_ladder_changes
+        .get("flow_proof")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "changed": false,
+                "status": "not_applicable",
+                "graph_proof": false,
+                "proof_strength": "unknown",
+            })
+        });
+    // Prefer the scalar preserved across compaction (Q11); fall back to counting the
+    // per-packet arrays when they are present (full/explain detail).
+    let flow_proof_changed_count = graph_delta
+        .get("local_flow_packet_flow_proof_changed_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| agent_use_validate_edit_count_flow_proof_changed(graph_delta));
+    json!({
+        "flow_proof": flow_proof,
+        "flow_proof_changed_count": flow_proof_changed_count,
+        "graph_relation_proof_or_partial_summaries_available": true,
+        "unsupported_or_truncated_not_proof_change": true,
+        "mutation_proof_changed_count": 0,
+        "compact_validation_no_ordered_steps": true,
+        "full_detail_handle": "validation_packet.proof_ladder_changes.flow_proof",
+    })
+}
+
 fn agent_use_validate_edit_preflight_blockers(source_update: &Value) -> Vec<String> {
     let mut blockers = Vec::new();
     for key in ["errors", "blockers"] {
@@ -3191,10 +3997,14 @@ fn agent_use_validate_edit_enforce_compact_budget(
             "diagnostics",
             "severity_trace",
             "proof_ladder_changes",
+            "unresolved_references",
             "micro_edge_delta",
             "micro_edge_integrity",
             "micro_edge_layer_status",
             "micro_edge_proof_changes",
+            "micro_flow_packet_integrity",
+            "micro_flow_packet_layer_status",
+            "micro_flow_packet_proof_changes",
             "validation_recovery_commands",
             "recovery_commands",
             "timings",
@@ -3306,11 +4116,7 @@ fn agent_use_validate_edit_compact_validation_packet(packet: &mut Value) {
         if let Some(graph_delta) = object.get("graph_delta").cloned() {
             object.insert(
                 "graph_delta".to_string(),
-                json!({
-                    "summary": agent_use_validate_edit_compact_graph_delta_summary(&graph_delta),
-                    "full_detail_handle": "validation_packet.graph_delta",
-                    "agent_json_compacted": true,
-                }),
+                agent_use_validate_edit_compact_graph_delta(&graph_delta),
             );
         }
         if let Some(unresolved) = object.get_mut("unresolved_references") {
@@ -3399,6 +4205,24 @@ fn agent_use_validate_edit_compact_validation_packet(packet: &mut Value) {
                 agent_use_validate_edit_proof_ladder_summary(&proof_ladder),
             );
         }
+        for key in [
+            "graph_delta",
+            "micro_edge_delta",
+            "micro_edge_integrity",
+            "micro_edge_layer_status",
+            "micro_edge_proof_changes",
+            "micro_flow_packet_delta",
+            "micro_flow_packet_integrity",
+            "micro_flow_packet_layer_status",
+            "micro_flow_packet_proof_changes",
+        ] {
+            if object.remove(key).is_some() {
+                object.insert(
+                    format!("{key}_handle"),
+                    json!(format!("validation_packet.{key}")),
+                );
+            }
+        }
         for key in ["blocking_errors", "warnings", "unknowns", "diagnostics"] {
             if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
                 for item in items {
@@ -3452,6 +4276,105 @@ fn agent_use_validate_edit_compact_severity_summary(summary: &Value) -> Value {
     })
 }
 
+/// Build the compact graph_delta. Drops the bulky per-entity arrays (available via
+/// `full_detail_handle`) but PRESERVES the tiny scalar micro-flow-packet counts so the
+/// downstream `micro_flow_packet_delta` / `micro_flow_packet_proof_changes` sections do
+/// not read 0 in compact mode. Without this, a destroyed `flow_proof` reports
+/// `flow_proof_changed_count: 0` to agents/gates while `--explain` reports it correctly. (Q11)
+fn agent_use_validate_edit_compact_graph_delta(graph_delta: &Value) -> Value {
+    let preserve = |key: &str| graph_delta.get(key).cloned().unwrap_or(Value::Null);
+    json!({
+        "summary": agent_use_validate_edit_compact_graph_delta_summary(graph_delta),
+        "full_detail_handle": "validation_packet.graph_delta",
+        "agent_json_compacted": true,
+        "local_flow_packets_added_count": preserve("local_flow_packets_added_count"),
+        "local_flow_packets_removed_count": preserve("local_flow_packets_removed_count"),
+        "local_flow_packets_changed_count": preserve("local_flow_packets_changed_count"),
+        "local_flow_packet_cap_omissions": preserve("local_flow_packet_cap_omissions"),
+        "local_flow_packet_counts_by_proof_strength": preserve("local_flow_packet_counts_by_proof_strength"),
+        "local_flow_packet_counts_by_status": preserve("local_flow_packet_counts_by_status"),
+        // Precomputed here because the per-packet arrays it is derived from are dropped.
+        "local_flow_packet_flow_proof_changed_count": json!(
+            agent_use_validate_edit_count_flow_proof_changed(graph_delta)
+        ),
+    })
+}
+
+/// Re-seed the compacted validation packet's `graph_delta` with the tiny scalar
+/// micro-flow-packet counts taken from the FULL `graph_delta` (which still has the
+/// per-packet arrays). Core/CLI compaction drops those arrays, which otherwise zeroes
+/// `micro_flow_packet_delta.counts` and `flow_proof_changed_count` in compact mode. (Q11)
+fn agent_use_validate_edit_preserve_local_flow_packet_delta_scalars(
+    validation_packet_json: &mut Value,
+    full_graph_delta: &Value,
+) {
+    let Some(graph_delta) = validation_packet_json
+        .get_mut("graph_delta")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    for key in [
+        "local_flow_packets_added_count",
+        "local_flow_packets_removed_count",
+        "local_flow_packets_changed_count",
+        "local_flow_packet_cap_omissions",
+        "local_flow_packet_counts_by_proof_strength",
+        "local_flow_packet_counts_by_status",
+    ] {
+        if let Some(found) = full_graph_delta.get(key) {
+            graph_delta.insert(key.to_string(), found.clone());
+        }
+    }
+    graph_delta.insert(
+        "local_flow_packet_flow_proof_changed_count".to_string(),
+        json!(agent_use_validate_edit_count_flow_proof_changed(
+            full_graph_delta
+        )),
+    );
+    if let Some(summary_count) = full_graph_delta
+        .get("summary")
+        .and_then(|summary| summary.get("local_flow_packet_delta_count"))
+        .cloned()
+    {
+        if let Some(summary) = graph_delta
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+        {
+            summary.insert("local_flow_packet_delta_count".to_string(), summary_count);
+        }
+    }
+}
+
+/// Count packet-delta entries (added/removed/changed) whose `flow_proof_changed` flag is
+/// set. Used to preserve `flow_proof_changed_count` across compaction (Q11).
+fn agent_use_validate_edit_count_flow_proof_changed(graph_delta: &Value) -> u64 {
+    [
+        "local_flow_packets_added",
+        "local_flow_packets_removed",
+        "local_flow_packets_changed",
+    ]
+    .iter()
+    .map(|key| {
+        graph_delta
+            .get(*key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .get("flow_proof_changed")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    })
+                    .count() as u64
+            })
+            .unwrap_or(0)
+    })
+    .sum()
+}
+
 fn agent_use_validate_edit_compact_graph_delta_summary(graph_delta: &Value) -> Value {
     let summary = graph_delta.get("summary").unwrap_or(&Value::Null);
     let closure = graph_delta
@@ -3462,6 +4385,10 @@ fn agent_use_validate_edit_compact_graph_delta_summary(graph_delta: &Value) -> V
         "edge_delta_count": summary.get("edge_delta_count").cloned().unwrap_or(Value::Null),
         "micro_edge_delta_count": summary.get("micro_edge_delta_count").cloned().unwrap_or(Value::Null),
         "micro_edge_cap_omissions": graph_delta.get("micro_edge_cap_omissions").cloned().unwrap_or(Value::Null),
+        // Q11: MVP4.3 local-flow-packet counts must survive compaction like the
+        // micro-edge counts above, or micro_flow_packet_delta reads 0 in compact mode.
+        "local_flow_packet_delta_count": summary.get("local_flow_packet_delta_count").cloned().unwrap_or(Value::Null),
+        "local_flow_packet_cap_omissions": graph_delta.get("local_flow_packet_cap_omissions").cloned().unwrap_or(Value::Null),
         "source_span_delta_count": summary.get("source_span_delta_count").cloned().unwrap_or(Value::Null),
         "freshness_delta_count": summary.get("freshness_delta_count").cloned().unwrap_or(Value::Null),
         "closure_files_considered": closure
@@ -3564,6 +4491,7 @@ fn agent_use_validate_edit_compact_finding(finding: &mut Value) {
         "proof_strength",
         "graph_proof",
         "claimability_effect",
+        "source_role",
         "evidence_kind",
         "exactness",
         "integrity_kind",
@@ -4057,11 +4985,39 @@ pub(crate) fn run_agent_use_watch_once_delta(
                         Some(post_commit_read_session.store()),
                     )?;
                 validation_stage_tracker.mark("packet");
-                let validation_packet_json = if detail_mode.preserves_full_details() {
+                let mut validation_packet_json = if detail_mode.preserves_full_details() {
                     serde_json::to_value(&validation_packet).map_err(|error| error.to_string())?
                 } else {
                     validation_packet.compact_agent_json(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
                 };
+                let validation_hard_interrupt = validation_packet_json
+                    .get("hard_interrupt")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if !detail_mode.preserves_full_details() {
+                    agent_use_validate_edit_truncate_validation_packet(
+                        &mut validation_packet_json,
+                        AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT,
+                    );
+                    agent_use_validate_edit_compact_validation_packet(&mut validation_packet_json);
+                    // Q11: compaction (incl. the core `compact_agent_json`) drops the bulky
+                    // per-packet arrays, which zeroes the downstream micro-flow delta /
+                    // proof-change COUNTS. Re-seed the tiny scalar counts from the full
+                    // delta (in scope here) so the compact sections report honest numbers.
+                    agent_use_validate_edit_preserve_local_flow_packet_delta_scalars(
+                        &mut validation_packet_json,
+                        &graph_delta_json,
+                    );
+                    if !validation_hard_interrupt.is_null() {
+                        if let Some(object) = validation_packet_json.as_object_mut() {
+                            object.insert(
+                                "hard_interrupt".to_string(),
+                                validation_hard_interrupt.clone(),
+                            );
+                            object.remove("hard_interrupt_ref");
+                        }
+                    }
+                }
                 object.insert("command".to_string(), json!("watch"));
                 object.insert("subcommand".to_string(), json!("once"));
                 object.insert("watch_mode".to_string(), json!("once_changed"));
@@ -4317,13 +5273,7 @@ pub(crate) fn run_agent_use_watch_once_delta(
                     "hard_interrupt_available".to_string(),
                     validation_packet_json["hard_interrupt_available"].clone(),
                 );
-                object.insert(
-                    "hard_interrupt".to_string(),
-                    validation_packet_json
-                        .get("hard_interrupt")
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                );
+                object.insert("hard_interrupt".to_string(), validation_hard_interrupt);
                 object.insert("hard_interrupt_not_implemented".to_string(), json!(false));
                 object.insert(
                     "graph_delta_detail_mode".to_string(),
@@ -4754,6 +5704,7 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
     rules.extend(agent_use_exact_imports_validation_rules());
     rules.extend(agent_use_proof_integrity_validation_rules());
     rules.extend(agent_use_micro_edge_validation_rules());
+    rules.extend(agent_use_local_flow_packet_validation_rules());
     rules.extend(agent_use_source_role_tests_validation_rules());
     rules.extend(agent_use_activation_gated_contract_validation_rules());
     rules.extend(agent_use_unresolved_reference_validation_rules());
@@ -4874,6 +5825,21 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
         wall_skipped_substages.push("micro_edge_integrity");
     } else {
         agent_use_collect_micro_edge_integrity_findings(
+            profile,
+            store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &mut findings,
+            &mut seen_edge_rule,
+        )?;
+    }
+    substages.begin("local_flow_packet_integrity");
+    if Instant::now() >= validation_deadline {
+        wall_skipped_substages.push("local_flow_packet_integrity");
+    } else {
+        agent_use_collect_local_flow_packet_integrity_findings(
             profile,
             store,
             &rule_by_id,
@@ -5585,6 +6551,16 @@ fn agent_use_collect_unresolved_reference_findings(
                 repo_local_definition_candidate_count += 1;
                 continue;
             }
+            if entry.relation == "CALLS"
+                && agent_use_python_call_has_same_file_import_binding(
+                    store,
+                    &entry.repo_relative_path,
+                    &lookup.lookup_name,
+                )?
+            {
+                repo_local_definition_candidate_count += 1;
+                continue;
+            }
             repo_local_no_definition_count += 1;
             escalated_total += 1;
             let finding = agent_use_unresolved_reference_warning(
@@ -5662,6 +6638,37 @@ fn agent_use_collect_unresolved_reference_findings(
         "block_on_unresolved_local": block_on_unresolved_local,
         "expansion_handle": "validation_packet:unresolved_references",
         "not_graph_proof": true,
+    }))
+}
+
+fn agent_use_python_call_has_same_file_import_binding(
+    store: &SqliteGraphStore,
+    repo_relative_path: &str,
+    lookup_name: &str,
+) -> Result<bool, String> {
+    if Path::new(repo_relative_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("py"))
+        .unwrap_or(true)
+    {
+        return Ok(false);
+    }
+    let normalized_path = normalize_repo_relative_path(repo_relative_path);
+    let entities = store.list_entities_by_file(&normalized_path).map_err(|error| {
+        format!(
+            "repo graph file lookup for Python import binding `{lookup_name}` in `{normalized_path}` failed: {error}"
+        )
+    })?;
+    Ok(entities.iter().any(|entity| {
+        entity.kind == EntityKind::Import
+            && normalize_repo_relative_path(&entity.repo_relative_path) == normalized_path
+            && entity
+                .metadata
+                .get("local_name")
+                .and_then(Value::as_str)
+                .map(|local_name| local_name == lookup_name)
+                .unwrap_or(entity.name == lookup_name)
     }))
 }
 
@@ -5938,6 +6945,106 @@ fn agent_use_micro_edge_validation_rules() -> Vec<ValidationRule> {
             CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
             "LOCAL_RETURNS_TO must target the nearest enclosing FunctionFrame for the ReturnSite",
             "Reindex or repair CodeGraph micro-edge ownership state, then rerun validation.",
+        ),
+        layer_truncated,
+        layer_unavailable,
+    ]
+}
+
+fn agent_use_local_flow_packet_validation_rules() -> Vec<ValidationRule> {
+    fn integrity_rule(rule_id: &str, invariant: &str, docs_summary: &str) -> ValidationRule {
+        let mut rule = ValidationRule::exact_blocking(
+            rule_id,
+            ValidationRuleKind::ProofIntegrity,
+            None,
+            invariant,
+            docs_summary,
+        );
+        rule.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+        rule.source_role_requirement = ValidationSourceRoleRequirement::RolePreserved;
+        rule.activation_condition =
+            "activated local_flow_packets layer plus current packet integrity reverification"
+                .to_string();
+        rule
+    }
+
+    let mut missing_provenance = integrity_rule(
+        CG_MVP4_3_PACKET_MISSING_PROVENANCE,
+        "claimable local micro-flow packets must carry proof-step provenance",
+        "Reindex or repair CodeGraph local micro-flow packet state, then rerun validation.",
+    );
+    missing_provenance.provenance_requirement =
+        ValidationProvenanceRequirement::RequiredForDerivedEdges;
+
+    let mut layer_truncated = ValidationRule::diagnostic(
+        CG_MVP4_3_PACKET_LAYER_TRUNCATED,
+        "truncated local micro-flow packet layers cannot claim complete flow_proof coverage",
+        "Treat packet proof as degraded for the truncated scope; inspect audit output or rebuild with valid caps if complete coverage is required.",
+    );
+    layer_truncated.rule_kind = ValidationRuleKind::UnsupportedRelationBoundary;
+    layer_truncated.supported_relation_status = SupportedRelationStatus::DiagnosticOnly;
+    layer_truncated.default_classification_when_unsupported = ValidationClassification::Degraded;
+
+    let mut layer_unavailable = ValidationRule::diagnostic(
+        CG_MVP4_3_PACKET_LAYER_UNAVAILABLE,
+        "unavailable, stale, incompatible, or corrupt optional local-flow packet layers cannot provide packet proof",
+        "Repair or rebuild the CodeGraph local micro-flow packet layer before relying on packet proof.",
+    );
+    layer_unavailable.rule_kind = ValidationRuleKind::UnsupportedRelationBoundary;
+    layer_unavailable.supported_relation_status = SupportedRelationStatus::DiagnosticOnly;
+    layer_unavailable.default_classification_when_unsupported = ValidationClassification::Unknown;
+
+    vec![
+        integrity_rule(
+            CG_MVP4_3_PACKET_MISSING_NODE,
+            "local micro-flow packet node references must resolve to current persisted micro-node rows",
+            "Reindex or repair CodeGraph local micro-flow packet state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_MISSING_EDGE,
+            "local micro-flow packet edge references must resolve to current persisted micro-edge rows",
+            "Reindex or repair CodeGraph local micro-flow packet state, then rerun validation.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_STALE_SOURCE_FACT,
+            "local micro-flow packets must reference current node and edge extraction versions",
+            "Reindex or repair CodeGraph packet state with current MVP4.1/MVP4.2 source facts.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN,
+            "claimable local micro-flow packets must have source-spanned proof steps",
+            "Reindex or repair CodeGraph packet state with source-span-bearing facts.",
+        ),
+        missing_provenance,
+        integrity_rule(
+            CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP,
+            "flow_proof packets must not contain unknown or unsupported gaps on the claimed path",
+            "Reindex or downgrade the packet proof; do not edit source solely to satisfy corrupt packet state.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION,
+            "flow_proof packets must not hide relevant facts behind cap omissions",
+            "Inspect cap state and rebuild with safe caps before relying on complete packet proof.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE,
+            "dict_v1 packet bodies must losslessly expand to audit ordered_steps",
+            "Repair or rebuild CodeGraph packet rows; compact dict_v1 failures are tool-state faults.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING,
+            "flow_proof packet paths must preserve branch identity when branches are relevant",
+            "Repair packet construction or downgrade proof before relying on this packet.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING,
+            "flow_proof packet paths must preserve return-path identity when returns are relevant",
+            "Repair packet construction or downgrade proof before relying on this packet.",
+        ),
+        integrity_rule(
+            CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE,
+            "flow_proof packet paths must not collapse shadowed local binding identities",
+            "Repair packet construction or downgrade proof before relying on this packet.",
         ),
         layer_truncated,
         layer_unavailable,
@@ -6303,7 +7410,12 @@ fn agent_use_activation_gate_state_json(delta: &EntitySourceRoleDeltaReport) -> 
         "micro_edge_integrity_change_count": delta.micro_edge_integrity_changes.len(),
         "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
         "normal_micro_edge_delta_not_error": delta.normal_micro_edge_delta_not_validation_error,
+        "local_flow_packet_delta_count": delta.local_flow_packets_added_count + delta.local_flow_packets_removed_count + delta.local_flow_packets_changed_count,
+        "local_flow_packet_integrity_change_count": delta.local_flow_packet_integrity_changes.len(),
+        "local_flow_packet_cap_omissions": delta.local_flow_packet_cap_omissions,
+        "normal_local_flow_packet_delta_not_error": delta.normal_local_flow_packet_delta_not_validation_error,
         "local_returns_to_graph_relation_proof_only": true,
+        "local_micro_flow_packet_deltas_are_not_source_errors": true,
         "micro_edge_flow_proof_activated": false,
         "micro_edge_mutation_proof_activated": false,
         "unsupported_relation_classes": delta.unsupported_relation_classes,
@@ -6910,14 +8022,7 @@ fn agent_use_micro_edge_source_span(
 }
 
 fn agent_use_micro_edge_source_role_label(role: &str) -> Option<EvidenceRole> {
-    match role {
-        "production" => Some(EvidenceRole::Production),
-        "test" => Some(EvidenceRole::Test),
-        "mock" => Some(EvidenceRole::Mock),
-        "mixed" => Some(EvidenceRole::Mixed),
-        "unknown" => Some(EvidenceRole::Unknown),
-        _ => None,
-    }
+    Some(EvidenceRole::from_source_role_label(role))
 }
 
 fn agent_use_micro_edge_exactness_label(exactness: &str) -> Option<Exactness> {
@@ -7118,6 +8223,539 @@ fn agent_use_push_micro_edge_layer_finding(
         .push("micro_edge_layer_status_not_source_error".to_string());
     finding.expansion_handle = Some(format!(
         "validation_packet:micro_edge_layer:{}",
+        agent_use_validation_stable_u64(reason)
+    ));
+    findings.push(finding);
+}
+
+fn agent_use_collect_local_flow_packet_integrity_findings(
+    _profile: &AgentUseProfile,
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+    seen_packet_rule: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let mut scan_paths = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<Vec<_>>();
+    scan_paths.extend(
+        delta
+            .local_flow_packets_added
+            .iter()
+            .chain(delta.local_flow_packets_removed.iter())
+            .chain(delta.local_flow_packets_changed.iter())
+            .map(|entry| normalize_repo_relative_path(&entry.repo_relative_path)),
+    );
+    scan_paths.sort();
+    scan_paths.dedup();
+
+    if !store
+        .table_exists("local_flow_packets")
+        .map_err(|error| format!("local_flow_packets table check failed: {error}"))?
+    {
+        agent_use_push_local_flow_packet_layer_finding(
+            findings,
+            seen_packet_rule,
+            rule_by_id[CG_MVP4_3_PACKET_LAYER_UNAVAILABLE],
+            lifecycle,
+            json!({"source": "local_flow_packets_table_missing"}),
+            "local_flow_packets table is unavailable; packet proof cannot be served",
+        );
+        return Ok(());
+    }
+
+    for path in scan_paths {
+        let nodes = store
+            .ast_micro_nodes_for_file(&path)
+            .map_err(|error| format!("read packet node references failed: {error}"))?;
+        let node_ids = nodes
+            .into_iter()
+            .map(|node| node.micro_node_id)
+            .collect::<BTreeSet<_>>();
+        let edges = store
+            .ast_micro_edges_for_file(&path)
+            .map_err(|error| format!("read packet edge references failed: {error}"))?;
+        let edge_ids = edges
+            .into_iter()
+            .map(|edge| edge.micro_edge_id)
+            .collect::<BTreeSet<_>>();
+        for packet in store
+            .local_flow_packets_for_file(&path)
+            .map_err(|error| format!("read local_flow_packets failed: {error}"))?
+        {
+            agent_use_validate_current_local_flow_packet_integrity(
+                store,
+                rule_by_id,
+                lifecycle.clone(),
+                &packet,
+                &node_ids,
+                &edge_ids,
+                findings,
+                seen_packet_rule,
+            );
+        }
+    }
+
+    for change in &delta.local_flow_packet_integrity_changes {
+        let Some((rule_id, reason)) = agent_use_local_flow_packet_integrity_change_rule(change)
+        else {
+            continue;
+        };
+        agent_use_push_local_flow_packet_integrity_finding(
+            findings,
+            seen_packet_rule,
+            rule_by_id[rule_id],
+            lifecycle.clone(),
+            None,
+            Some(json!({
+                "source": "normalized_local_flow_packet_delta_integrity",
+                "integrity_change": change,
+            })),
+            None,
+            reason,
+        );
+    }
+
+    if delta.local_flow_packet_cap_omissions > 0 {
+        agent_use_push_local_flow_packet_layer_finding(
+            findings,
+            seen_packet_rule,
+            rule_by_id[CG_MVP4_3_PACKET_LAYER_TRUNCATED],
+            lifecycle.clone(),
+            json!({
+                "source": "normalized_local_flow_packet_delta_cap_omission",
+                "local_flow_packet_cap_omissions": delta.local_flow_packet_cap_omissions,
+            }),
+            "local-flow packet delta was truncated by approved caps; flow_proof coverage is incomplete for the omitted scope",
+        );
+    }
+
+    if let Some(layer) = &delta.local_flow_packet_layer_status_change {
+        let new_status = layer.new_status.to_ascii_lowercase();
+        if new_status.contains("truncated") {
+            agent_use_push_local_flow_packet_layer_finding(
+                findings,
+                seen_packet_rule,
+                rule_by_id[CG_MVP4_3_PACKET_LAYER_TRUNCATED],
+                lifecycle.clone(),
+                json!({"source": "local_flow_packet_layer_status_change", "layer": layer}),
+                "local-flow packet layer status is truncated; packet proof coverage remains incomplete",
+            );
+        } else if !matches!(
+            new_status.as_str(),
+            "ready" | "current" | "ok" | "not_applicable" | "absent"
+        ) {
+            agent_use_push_local_flow_packet_layer_finding(
+                findings,
+                seen_packet_rule,
+                rule_by_id[CG_MVP4_3_PACKET_LAYER_UNAVAILABLE],
+                lifecycle,
+                json!({"source": "local_flow_packet_layer_status_change", "layer": layer}),
+                "local-flow packet layer is unavailable, stale, incompatible, or corrupt; packet proof is unavailable",
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_use_validate_current_local_flow_packet_integrity(
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    packet: &LocalFlowPacketRow,
+    node_ids: &BTreeSet<String>,
+    edge_ids: &BTreeSet<String>,
+    findings: &mut Vec<ValidationFinding>,
+    seen_packet_rule: &mut BTreeSet<String>,
+) {
+    let relation_span = packet
+        .primary_source_span_id
+        .as_deref()
+        .and_then(|span_id| store.get_source_span(span_id).ok().flatten());
+    let body = match serde_json::from_str::<DictV1PacketBody>(&packet.packet_body) {
+        Ok(body) => Some(body),
+        Err(_) => {
+            agent_use_push_local_flow_packet_integrity_finding(
+                findings,
+                seen_packet_rule,
+                rule_by_id[CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE],
+                lifecycle.clone(),
+                Some(packet),
+                None,
+                relation_span.clone(),
+                "dict_v1 packet body did not deserialize",
+            );
+            None
+        }
+    };
+    if let Some(body) = body {
+        if body.to_ordered_steps().is_err() {
+            agent_use_push_local_flow_packet_integrity_finding(
+                findings,
+                seen_packet_rule,
+                rule_by_id[CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE],
+                lifecycle.clone(),
+                Some(packet),
+                None,
+                relation_span.clone(),
+                "dict_v1 packet body failed lossless audit ordered_steps expansion",
+            );
+        }
+        for node_ref in body.dictionary.nodes.values() {
+            if !node_ids.contains(&node_ref.micro_node_id) {
+                agent_use_push_local_flow_packet_integrity_finding(
+                    findings,
+                    seen_packet_rule,
+                    rule_by_id[CG_MVP4_3_PACKET_MISSING_NODE],
+                    lifecycle.clone(),
+                    Some(packet),
+                    Some(json!({"missing_micro_node_id": node_ref.micro_node_id})),
+                    relation_span.clone(),
+                    "packet references a missing current micro-node",
+                );
+            }
+        }
+        for edge_ref in body.dictionary.edges.values() {
+            if !edge_ids.contains(&edge_ref.micro_edge_id) {
+                agent_use_push_local_flow_packet_integrity_finding(
+                    findings,
+                    seen_packet_rule,
+                    rule_by_id[CG_MVP4_3_PACKET_MISSING_EDGE],
+                    lifecycle.clone(),
+                    Some(packet),
+                    Some(json!({"missing_micro_edge_id": edge_ref.micro_edge_id})),
+                    relation_span.clone(),
+                    "packet references a missing current micro-edge",
+                );
+            }
+        }
+        if packet.proof_strength == "flow_proof" && !body.dictionary.gaps.is_empty() {
+            agent_use_push_local_flow_packet_integrity_finding(
+                findings,
+                seen_packet_rule,
+                rule_by_id[CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP],
+                lifecycle.clone(),
+                Some(packet),
+                Some(json!({"gap_count": body.dictionary.gaps.len()})),
+                relation_span.clone(),
+                "flow_proof packet contains unknown or unsupported gaps",
+            );
+        }
+        if packet.proof_strength == "flow_proof"
+            && (packet.omitted_count > 0 || !body.dictionary.cap_omissions.is_empty())
+        {
+            agent_use_push_local_flow_packet_integrity_finding(
+                findings,
+                seen_packet_rule,
+                rule_by_id[CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION],
+                lifecycle.clone(),
+                Some(packet),
+                Some(json!({
+                    "omitted_count": packet.omitted_count,
+                    "cap_omission_count": body.dictionary.cap_omissions.len(),
+                })),
+                relation_span.clone(),
+                "flow_proof packet hides relevant facts behind cap omissions",
+            );
+        }
+        for path in &body.paths {
+            if path.branch_id.is_some()
+                && path
+                    .branch_id
+                    .as_ref()
+                    .is_some_and(|id| !body.dictionary.branch_identities.contains_key(id))
+            {
+                agent_use_push_local_flow_packet_integrity_finding(
+                    findings,
+                    seen_packet_rule,
+                    rule_by_id[CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING],
+                    lifecycle.clone(),
+                    Some(packet),
+                    Some(json!({"path_id": path.path_id, "branch_id": path.branch_id})),
+                    relation_span.clone(),
+                    "packet path references branch identity missing from dict_v1 body",
+                );
+            }
+            if path.return_path_id.is_some()
+                && path
+                    .return_path_id
+                    .as_ref()
+                    .is_some_and(|id| !body.dictionary.return_path_identities.contains_key(id))
+            {
+                agent_use_push_local_flow_packet_integrity_finding(
+                    findings,
+                    seen_packet_rule,
+                    rule_by_id[CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING],
+                    lifecycle.clone(),
+                    Some(packet),
+                    Some(json!({"path_id": path.path_id, "return_path_id": path.return_path_id})),
+                    relation_span.clone(),
+                    "packet path references return-path identity missing from dict_v1 body",
+                );
+            }
+        }
+    }
+
+    if relation_span.is_none() {
+        agent_use_push_local_flow_packet_integrity_finding(
+            findings,
+            seen_packet_rule,
+            rule_by_id[CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN],
+            lifecycle.clone(),
+            Some(packet),
+            None,
+            None,
+            "claimable local micro-flow packet has no primary source span",
+        );
+    }
+    if packet.provenance_id.is_none() {
+        agent_use_push_local_flow_packet_integrity_finding(
+            findings,
+            seen_packet_rule,
+            rule_by_id[CG_MVP4_3_PACKET_MISSING_PROVENANCE],
+            lifecycle.clone(),
+            Some(packet),
+            None,
+            relation_span.clone(),
+            "claimable local micro-flow packet has no packet provenance",
+        );
+    }
+    if packet.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION {
+        agent_use_push_local_flow_packet_integrity_finding(
+            findings,
+            seen_packet_rule,
+            rule_by_id[CG_MVP4_3_PACKET_STALE_SOURCE_FACT],
+            lifecycle,
+            Some(packet),
+            None,
+            relation_span,
+            "packet extraction version does not match the current MVP4.3 contract",
+        );
+    }
+}
+
+fn agent_use_local_flow_packet_integrity_change_rule(
+    change: &str,
+) -> Option<(&'static str, &'static str)> {
+    if change.contains("missing_source_span") {
+        Some((
+            CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN,
+            "normalized local-flow packet delta reports a missing source span",
+        ))
+    } else if change.contains("missing_provenance") {
+        Some((
+            CG_MVP4_3_PACKET_MISSING_PROVENANCE,
+            "normalized local-flow packet delta reports missing provenance",
+        ))
+    } else if change.contains("flow_proof_with_cap_omission") {
+        Some((
+            CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION,
+            "normalized local-flow packet delta reports flow_proof with cap omission",
+        ))
+    } else if change.contains("flow_proof_not_claimable") {
+        Some((
+            CG_MVP4_3_PACKET_STALE_SOURCE_FACT,
+            "normalized local-flow packet delta reports non-claimable flow_proof state",
+        ))
+    } else if change.contains("packet_truncated") {
+        Some((
+            CG_MVP4_3_PACKET_LAYER_TRUNCATED,
+            "normalized local-flow packet delta reports a truncated packet",
+        ))
+    } else {
+        None
+    }
+}
+
+fn agent_use_push_local_flow_packet_integrity_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_packet_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    packet: Option<&LocalFlowPacketRow>,
+    affected_delta: Option<Value>,
+    source_span: Option<SourceSpan>,
+    reason: &str,
+) {
+    let evidence_id = packet
+        .map(|packet| packet.packet_id.clone())
+        .or_else(|| {
+            affected_delta
+                .as_ref()
+                .and_then(|value| value.get("integrity_change"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| rule.validation_rule_id.clone());
+    let key = format!("{}:{evidence_id}:{reason}", rule.validation_rule_id);
+    if !seen_packet_rule.insert(key) {
+        return;
+    }
+
+    let mut input =
+        agent_use_lifecycle_integrity_input(lifecycle, evidence_id.clone(), reason.to_string());
+    input.source_span_present = source_span.is_some();
+    input.source_span_required = true;
+    input.provenance_required = true;
+    input.provenance_present = packet
+        .and_then(|packet| packet.provenance_id.as_ref())
+        .is_some()
+        && rule.validation_rule_id != CG_MVP4_3_PACKET_MISSING_PROVENANCE;
+    input.integrity_issue_present = true;
+    input.graph_source_relation_reverified = false;
+
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp4_3/local_flow_packet_integrity/{}/{}",
+            rule.validation_rule_id,
+            agent_use_validation_stable_u64(&evidence_id)
+        ),
+        input,
+    );
+    finding.classification = ValidationClassification::Degraded;
+    finding.blocking_level = finding.classification.blocking_level();
+    finding.integrity_kind = Some("local_flow_packet_integrity".to_string());
+    finding.proof_level = "packet_proof_availability".to_string();
+    finding.proof_strength = "degraded_local_micro_flow_packet_integrity".to_string();
+    finding.proof_status = ValidationProofStatus::NeedsReverification;
+    finding.reverified_graph_source_proof = false;
+    let mut affected_delta = affected_delta.unwrap_or_else(|| {
+        packet
+            .map(|packet| {
+                json!({
+                    "packet_id": packet.packet_id,
+                    "packet_kind": packet.packet_kind,
+                    "file_id": packet.file_id,
+                    "function_entity_id": packet.function_entity_id,
+                    "proof_status": packet.proof_status,
+                    "proof_strength": packet.proof_strength,
+                    "packet_status": packet.packet_status,
+                    "source_code_edit_required": false,
+                    "tool_integrity_repair_required": true,
+                })
+            })
+            .unwrap_or(Value::Null)
+    });
+    if let Some(object) = affected_delta.as_object_mut() {
+        object
+            .entry("source_code_edit_required".to_string())
+            .or_insert(Value::Bool(false));
+        object
+            .entry("tool_integrity_repair_required".to_string())
+            .or_insert(Value::Bool(true));
+    }
+    finding.affected_delta = affected_delta;
+    finding.affected_file = packet
+        .map(|packet| normalize_repo_relative_path(&packet.file_id))
+        .or_else(|| {
+            finding
+                .affected_delta
+                .get("repo_relative_path")
+                .and_then(Value::as_str)
+                .map(normalize_repo_relative_path)
+        });
+    finding.file = finding.affected_file.clone();
+    finding.source_span = source_span;
+    finding.source_role = packet
+        .and_then(|packet| agent_use_micro_edge_source_role_label(packet.source_role.as_str()));
+    finding.exactness =
+        packet.and_then(|packet| agent_use_micro_edge_exactness_label(packet.exactness.as_str()));
+    finding.provenance = json!({
+        "required": true,
+        "present": packet.and_then(|packet| packet.provenance_id.as_ref()).is_some(),
+        "provenance_id": packet.and_then(|packet| packet.provenance_id.clone()),
+        "source_code_edit_required": false,
+    });
+    finding.reason = format!(
+        "{reason}; this blocks use of the affected packet proof but is not proof that source code is wrong"
+    );
+    finding.recommended_fix = Some(
+        "Reindex or repair CodeGraph local micro-flow packet state, then rerun agent-use validate-edit; do not edit source solely to satisfy this stored packet."
+            .to_string(),
+    );
+    finding.suggested_next_steps = vec![
+        "Run agent-use index or the lifecycle-safe changed-file update to rebuild local_flow_packets."
+            .to_string(),
+        "Rerun agent-use validate-edit after CodeGraph packet state is repaired.".to_string(),
+    ];
+    finding
+        .diagnostics
+        .push("source_problem_vs_packet_integrity_separated".to_string());
+    finding.expansion_handle = Some(format!(
+        "validation_packet:micro_flow_packet_integrity:{}",
+        agent_use_validation_stable_u64(&evidence_id)
+    ));
+    findings.push(finding);
+}
+
+fn agent_use_push_local_flow_packet_layer_finding(
+    findings: &mut Vec<ValidationFinding>,
+    seen_packet_rule: &mut BTreeSet<String>,
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    affected_delta: Value,
+    reason: &str,
+) {
+    let evidence_id = format!(
+        "{}:{}",
+        rule.validation_rule_id,
+        agent_use_validation_stable_u64(reason)
+    );
+    if !seen_packet_rule.insert(evidence_id.clone()) {
+        return;
+    }
+    let mut input =
+        agent_use_lifecycle_integrity_input(lifecycle, evidence_id.clone(), reason.to_string());
+    input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+        ValidationEvidenceKind::Diagnostic,
+        evidence_id.clone(),
+        reason.to_string(),
+    )];
+    input.over_budget = rule.validation_rule_id == CG_MVP4_3_PACKET_LAYER_TRUNCATED;
+    input.integrity_issue_present = false;
+    input.graph_source_relation_reverified = false;
+    input.integrity_condition_reverified = false;
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mvp4_3/local_flow_packet_layer/{}/{}",
+            rule.validation_rule_id,
+            agent_use_validation_stable_u64(reason)
+        ),
+        input,
+    );
+    if rule.validation_rule_id == CG_MVP4_3_PACKET_LAYER_TRUNCATED {
+        finding.classification = ValidationClassification::Degraded;
+    } else {
+        finding.classification = ValidationClassification::Unknown;
+    }
+    finding.blocking_level = finding.classification.blocking_level();
+    finding.integrity_kind = Some("local_flow_packet_layer_status".to_string());
+    finding.proof_level = "not_graph_proof".to_string();
+    finding.proof_strength = "diagnostic_only".to_string();
+    finding.proof_status = ValidationProofStatus::OverBudgetDegraded;
+    finding.reverified_graph_source_proof = false;
+    finding.affected_delta = affected_delta;
+    finding.affected_edge = json!({
+        "local_flow_packet_layer_status": true,
+        "source_code_edit_required": false,
+        "tool_integrity_repair_required": true,
+    });
+    finding.reason = reason.to_string();
+    finding.recommended_fix = Some(rule.docs_summary.clone());
+    finding.suggested_next_steps = vec![rule.docs_summary.clone()];
+    finding
+        .diagnostics
+        .push("local_flow_packet_layer_status_not_source_error".to_string());
+    finding.expansion_handle = Some(format!(
+        "validation_packet:micro_flow_packet_layer:{}",
         agent_use_validation_stable_u64(reason)
     ));
     findings.push(finding);
@@ -8572,6 +10210,9 @@ fn agent_use_collect_exact_imports_findings(
         .iter()
         .filter(|entry| agent_use_import_validation_relation(entry.relation))
     {
+        if agent_use_import_delta_target_is_parser_artifact(entry) {
+            continue;
+        }
         let target_id = agent_use_import_delta_target_id(entry);
         let target_path = agent_use_import_delta_target_path(entry);
         let target_removed_or_renamed = removed_entity_paths_by_id.contains_key(target_id)
@@ -8789,6 +10430,9 @@ fn agent_use_validate_current_import_edge(
     let target = store
         .get_entity(target_id)
         .map_err(|error| format!("read import target entity failed: {error}"))?;
+    if agent_use_import_edge_target_is_parser_artifact(edge, target.as_ref()) {
+        return Ok(());
+    }
     let importer_id = agent_use_import_edge_importer_id(edge);
     let source_role = classify_edge_evidence_role(edge).role;
     let importer_role = store
@@ -9069,6 +10713,34 @@ fn agent_use_import_delta_target_id(entry: &codegraph_index::EdgeDeltaEntry) -> 
     } else {
         &entry.target_entity_id
     }
+}
+
+fn agent_use_import_delta_target_is_parser_artifact(
+    entry: &codegraph_index::EdgeDeltaEntry,
+) -> bool {
+    if entry.relation != RelationKind::Imports {
+        return false;
+    }
+    entry.target_endpoint.entity_kind == Some(EntityKind::Import)
+}
+
+fn agent_use_import_edge_target_is_parser_artifact(edge: &Edge, target: Option<&Entity>) -> bool {
+    if edge.relation != RelationKind::Imports {
+        return false;
+    }
+    if target.is_some_and(|entity| entity.kind == EntityKind::Import) {
+        return true;
+    }
+    let syntax_claim_state = edge
+        .metadata
+        .get("syntax_claim_state")
+        .and_then(Value::as_str);
+    let target_claim_state = edge
+        .metadata
+        .get("target_resolution_claim_state")
+        .and_then(Value::as_str);
+    matches!(syntax_claim_state, Some("exact"))
+        && matches!(target_claim_state, Some("unresolved" | "unsupported"))
 }
 
 fn agent_use_import_delta_target_path(entry: &codegraph_index::EdgeDeltaEntry) -> String {
@@ -10031,7 +11703,34 @@ fn agent_use_edge_delta_claimable_graph_proof(edge: &codegraph_index::EdgeDeltaE
 }
 
 fn agent_use_entity_can_be_claimable_graph_proof(entity: &Entity) -> bool {
-    !matches!(entity.kind, EntityKind::PathEvidence)
+    if matches!(entity.kind, EntityKind::PathEvidence) {
+        return false;
+    }
+    let extractor = entity.created_from.to_ascii_lowercase();
+    if extractor.contains("syntax-recovery") || extractor.contains("static-heuristic") {
+        return false;
+    }
+    if entity.confidence < 1.0 {
+        return false;
+    }
+    let claim_state = entity
+        .metadata
+        .get("claim_state")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let parser_reliability = entity
+        .metadata
+        .get("parser_reliability")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let syntax_recovery = entity
+        .metadata
+        .get("syntax_recovery")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    !matches!(claim_state, "heuristic" | "unsupported")
+        && parser_reliability != "untrusted_syntax_region"
+        && !syntax_recovery
 }
 
 fn agent_use_entity_kind_requires_source_span(kind: EntityKind) -> bool {
@@ -10336,11 +12035,34 @@ mod exact_calls_validation_tests {
         std::fs::remove_dir_all(&repo).expect("cleanup");
     }
 
+    #[test]
+    fn cli_micro_edge_source_role_labels_do_not_promote_non_production() {
+        let cases = [
+            ("production", Some(EvidenceRole::Production)),
+            ("test", Some(EvidenceRole::Test)),
+            ("mock", Some(EvidenceRole::Mock)),
+            ("stub", Some(EvidenceRole::Mock)),
+            ("generated", Some(EvidenceRole::Unknown)),
+            ("source_text", Some(EvidenceRole::Unknown)),
+            ("text_evidence", Some(EvidenceRole::Unknown)),
+            ("vendor", Some(EvidenceRole::Unknown)),
+            ("not_a_known_role", Some(EvidenceRole::Unknown)),
+        ];
+        for (label, expected) in cases {
+            assert_eq!(
+                agent_use_micro_edge_source_role_label(label),
+                expected,
+                "{label}"
+            );
+        }
+    }
+
     fn rules() -> Vec<ValidationRule> {
         let mut rules = agent_use_exact_calls_validation_rules();
         rules.extend(agent_use_exact_imports_validation_rules());
         rules.extend(agent_use_proof_integrity_validation_rules());
         rules.extend(agent_use_micro_edge_validation_rules());
+        rules.extend(agent_use_local_flow_packet_validation_rules());
         rules.extend(agent_use_source_role_tests_validation_rules());
         rules.extend(agent_use_activation_gated_contract_validation_rules());
         rules
@@ -10601,6 +12323,10 @@ mod exact_calls_validation_tests {
             "blocking_level": "blocking",
             "relation_kind": "CALLS",
             "reverified_graph_source_proof": true,
+            "severity": "blocking",
+            "proof_strength": "graph_relation_proof",
+            "source_role": "production",
+            "claimability_effect": "claimable",
             "source_span": {
                 "repo_relative_path": "src/a.ts",
                 "start_line": 2,
@@ -11035,6 +12761,8 @@ mod exact_calls_validation_tests {
             "severity": "warning",
             "message": "new unresolved local call",
             "file": "src/a.ts",
+            "source_role": "production",
+            "proof_strength": "text_evidence",
             "source_span": {
                 "repo_relative_path": "src/a.ts",
                 "start_line": 3,
@@ -11071,6 +12799,8 @@ mod exact_calls_validation_tests {
                         "validation_rule_id": format!("CG_MVP3_UNKNOWN_BUDGET_{index}"),
                         "classification": "unknown",
                         "message": "bounded unknown",
+                        "source_role": "production",
+                        "proof_strength": "unknown",
                         "recommended_fix": "Inspect source span."
                     })
                 })
@@ -11106,6 +12836,57 @@ mod exact_calls_validation_tests {
                 "span": {"line_start": 3, "line_end": 3},
                 "recommended_fix": "Define missing_fn or correct the call."
             }]
+        });
+        source_update["validation_packet"]["graph_delta"] = json!({
+            "summary": {
+                "entity_delta_count": 1,
+                "edge_delta_count": 1,
+                "local_flow_packet_delta_count": 2
+            },
+            "local_flow_packets_added_count": 1,
+            "local_flow_packets_removed_count": 0,
+            "local_flow_packets_changed_count": 1,
+            "local_flow_packet_cap_omissions": 7,
+            "local_flow_packet_counts_by_proof_strength": {
+                "flow_proof": 1,
+                "graph_relation_proof": 1
+            },
+            "local_flow_packet_counts_by_status": {
+                "current": 2
+            },
+            "local_flow_packets_added": [{
+                "packet_id": "lfp://src/a.ts#added",
+                "packet_kind": "local_flow_packet",
+                "repo_relative_path": "src/a.ts",
+                "function_identity": "entry",
+                "proof_status": "flow_proof",
+                "proof_strength": "flow_proof",
+                "packet_status": "current",
+                "primary_source_span_id": "span://src/a.ts:1",
+                "omitted_count": 2,
+                "proof_strength_changed": true,
+                "proof_status_changed": true,
+                "flow_proof_changed": true,
+                "packet_body": {"dict_v1": {"body": "x".repeat(2048)}},
+                "ordered_steps": ["large audit step should require expansion"]
+            }],
+            "local_flow_packets_changed": [{
+                "packet_id": "lfp://src/a.ts#changed",
+                "packet_kind": "local_flow_packet",
+                "repo_relative_path": "src/a.ts",
+                "function_identity": "changed",
+                "proof_status": "graph_relation_proof",
+                "proof_strength": "graph_relation_proof",
+                "packet_status": "current",
+                "primary_source_span_id": "span://src/a.ts:2",
+                "omitted_count": 5,
+                "proof_strength_changed": false,
+                "proof_status_changed": true,
+                "flow_proof_changed": false,
+                "packet_body": {"dict_v1": {"body": "y".repeat(2048)}},
+                "ordered_steps": ["changed audit step should require expansion"]
+            }],
+            "normal_local_flow_packet_delta_not_validation_error": true
         });
         source_update["timings"] = json!({"audit_only_stage_timings": "x".repeat(4096)});
         source_update["per_file_status"] = json!((0..32)
@@ -11439,10 +13220,10 @@ mod exact_calls_validation_tests {
             DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
         );
 
+        let output_bytes = serialized_json_len(&packet);
         assert!(
-            serialized_json_len(&packet) <= DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
-            "{}",
-            serialized_json_len(&packet)
+            output_bytes <= DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            "{output_bytes}"
         );
         assert_eq!(
             packet["agent_json_budget"]["max_output_bytes"].as_u64(),
@@ -11451,6 +13232,14 @@ mod exact_calls_validation_tests {
         assert_eq!(
             packet["agent_json_budget"]["max_output_bytes_exceeded"].as_bool(),
             Some(false)
+        );
+        assert_eq!(
+            packet["agent_json_budget"]["output_bytes"].as_u64(),
+            Some(output_bytes as u64)
+        );
+        assert_eq!(
+            packet["agent_json_budget"]["required_safety_fields_preserved"].as_bool(),
+            Some(true)
         );
         assert_compact_validate_edit_safety_fields(&packet);
         cleanup_repo(repo);
@@ -11567,7 +13356,7 @@ mod exact_calls_validation_tests {
         );
 
         assert_eq!(
-            packet["unresolved_references"]["new_count"].as_u64(),
+            packet["validation_packet"]["unresolved_references"]["new_count"].as_u64(),
             Some(1)
         );
         assert_eq!(
@@ -11579,6 +13368,143 @@ mod exact_calls_validation_tests {
                 .as_str()
                 .is_some()
         );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn compact_output_preserves_evidence_first_contract_under_budget_pressure() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let mut packet = agent_use_validate_edit_packet_json(
+            &profile,
+            &options,
+            validate_edit_bloated_budget_source_update(),
+        );
+        agent_use_validate_edit_finalize_budget(
+            &mut packet,
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+        );
+
+        let blocking = &packet["validation_packet"]["blocking_errors"][0];
+        assert_eq!(
+            blocking["validation_rule_id"].as_str(),
+            Some(CG_MVP3_CALLS_DANGLING_TARGET)
+        );
+        assert_eq!(blocking["severity"].as_str(), Some("blocking"));
+        assert_eq!(
+            blocking["proof_strength"].as_str(),
+            Some("graph_relation_proof")
+        );
+        assert_eq!(blocking["source_role"].as_str(), Some("production"));
+        assert!(blocking["source_span"].is_object(), "{blocking}");
+        assert!(blocking["recommended_fix"].as_str().is_some(), "{blocking}");
+
+        let warning = &packet["validation_packet"]["warnings"][0];
+        assert_eq!(
+            warning["validation_rule_id"].as_str(),
+            Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+        );
+        assert_eq!(warning["severity"].as_str(), Some("warning"));
+        assert_eq!(warning["source_role"].as_str(), Some("production"));
+        assert_eq!(warning["proof_strength"].as_str(), Some("text_evidence"));
+        assert!(warning["source_span"].is_object(), "{warning}");
+        assert!(warning["recommended_fix"].as_str().is_some(), "{warning}");
+
+        let unknown = &packet["validation_packet"]["unknowns"][0];
+        assert!(
+            unknown["validation_rule_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("CG_MVP3_UNKNOWN_BUDGET_")),
+            "{unknown}"
+        );
+        assert_eq!(unknown["source_role"].as_str(), Some("production"));
+        assert_eq!(unknown["proof_strength"].as_str(), Some("unknown"));
+        assert!(unknown["recommended_fix"].as_str().is_some(), "{unknown}");
+
+        let unresolved = &packet["validation_packet"]["unresolved_references"];
+        assert_eq!(unresolved["new_count"].as_u64(), Some(1));
+        assert_eq!(
+            unresolved["by_class"]["repo_local_candidate"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(unresolved["not_graph_proof"].as_bool(), Some(true));
+        assert_eq!(
+            unresolved["expansion_handle"].as_str(),
+            Some("validation_packet:unresolved_references")
+        );
+        let escalated = &unresolved["escalated"][0];
+        assert_eq!(escalated["name"].as_str(), Some("missing_fn"));
+        assert_eq!(escalated["proof_strength"].as_str(), Some("text_evidence"));
+        assert_eq!(
+            escalated["claimability"].as_str(),
+            Some("claimable_as_source_text_reference_only")
+        );
+        assert!(escalated["span"].is_object(), "{escalated}");
+        assert!(
+            escalated["recommended_fix"].as_str().is_some(),
+            "{escalated}"
+        );
+
+        assert_eq!(
+            packet["dirty_evidence_summary"]["summary_only"].as_bool(),
+            Some(true),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["dirty_evidence_summary"]["text_evidence_is_not_graph_proof"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet["dirty_evidence_summary"]["candidate_evidence_is_not_graph_proof"].as_bool(),
+            Some(true)
+        );
+
+        let packet_delta = &packet["micro_flow_packet_delta"];
+        assert_eq!(packet_delta["counts"]["added"].as_u64(), Some(1));
+        assert_eq!(packet_delta["counts"]["changed"].as_u64(), Some(1));
+        assert_eq!(packet_delta["counts"]["total"].as_u64(), Some(2));
+        assert_eq!(packet_delta["omitted_count"].as_u64(), Some(7));
+        assert_eq!(
+            packet_delta["counts_by_proof_strength"]["flow_proof"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            packet_delta["expansion_handle"].as_str(),
+            Some("validation_packet.micro_flow_packet_delta")
+        );
+        assert_eq!(packet_delta["ordered_steps_inline"].as_bool(), Some(false));
+        assert_eq!(packet_delta["packet_body_inline"].as_bool(), Some(false));
+        assert_eq!(
+            packet_delta["top_added"][0]["flow_proof_changed"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet_delta["top_added"][0]["ordered_steps_inline"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet_delta["top_added"][0]["packet_body_inline"].as_bool(),
+            Some(false)
+        );
+
+        assert!(packet["omitted_count"].as_u64().unwrap_or_default() > 0);
+        assert!(packet["expansion_handles"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        let serialized = serde_json::to_string(&packet).expect("serialize compact packet");
+        assert!(!serialized.contains("EXPLAIN QUERY PLAN"), "{serialized}");
+        assert!(
+            !serialized.contains("large audit step should require expansion"),
+            "{serialized}"
+        );
+        assert!(
+            !serialized.contains("changed audit step should require expansion"),
+            "{serialized}"
+        );
+        assert!(!serialized.contains("\"packet_body\":"), "{serialized}");
+        assert!(!serialized.contains("\"ordered_steps\":"), "{serialized}");
         cleanup_repo(repo);
     }
 
@@ -12895,6 +14821,7 @@ mod exact_calls_validation_tests {
         for evidence_kind in [
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let mut input = ValidationReverificationInput::exact_graph_source(
@@ -13280,6 +15207,505 @@ mod exact_calls_validation_tests {
             Some(true)
         );
         cleanup_repo(repo);
+    }
+
+    #[test]
+    fn local_flow_packet_validation_rules_cover_packet_contract() {
+        let rules = agent_use_local_flow_packet_validation_rules();
+        for rule_id in [
+            CG_MVP4_3_PACKET_MISSING_NODE,
+            CG_MVP4_3_PACKET_MISSING_EDGE,
+            CG_MVP4_3_PACKET_STALE_SOURCE_FACT,
+            CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN,
+            CG_MVP4_3_PACKET_MISSING_PROVENANCE,
+            CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP,
+            CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION,
+            CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE,
+            CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING,
+            CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING,
+            CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE,
+            CG_MVP4_3_PACKET_LAYER_TRUNCATED,
+            CG_MVP4_3_PACKET_LAYER_UNAVAILABLE,
+        ] {
+            assert!(
+                rules.iter().any(|rule| rule.validation_rule_id == rule_id),
+                "missing local-flow packet validation rule {rule_id}"
+            );
+        }
+        let truncated = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP4_3_PACKET_LAYER_TRUNCATED)
+            .expect("packet truncated rule");
+        assert_eq!(
+            truncated.supported_relation_status,
+            SupportedRelationStatus::DiagnosticOnly
+        );
+        let missing_span = rules
+            .iter()
+            .find(|rule| rule.validation_rule_id == CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN)
+            .expect("packet missing span rule");
+        assert_eq!(
+            missing_span.proof_requirement,
+            ValidationProofRequirement::ReverifiedGraphIntegrity
+        );
+    }
+
+    #[test]
+    fn validate_edit_local_flow_packet_delta_sections_are_not_errors() {
+        let repo = test_repo();
+        let profile = test_profile(&repo);
+        let options = AgentUseValidateEditOptions {
+            repo: repo.clone(),
+            changed_paths: vec![PathBuf::from("src/service.ts")],
+            detail_mode: AgentUseDetailMode::Compact,
+            max_output_bytes: None,
+            fail_on_blocking: false,
+            task_id: None,
+            edit_intent: None,
+            expected_touched_files: Vec::new(),
+            max_validation_ms: None,
+        };
+        let source_update = json!({
+            "status": "ok",
+            "changed_paths": ["src/service.ts"],
+            "normalized_changed_files": ["src/service.ts"],
+            "normal_dot_codegraph_mutated": false,
+            "validation_packet": {
+                "schema_version": 1,
+                "packet_kind": "graph_validation_packet",
+                "status": "ok",
+                "final_status": "ok",
+                "must_fix_before_continuing": false,
+                "hard_interrupt_available": false,
+                "hard_interrupt": null,
+                "graph_delta": {
+                    "summary": {"local_flow_packet_delta_count": 1},
+                    "local_flow_packets_added_count": 1,
+                    "local_flow_packets_removed_count": 0,
+                    "local_flow_packets_changed_count": 0,
+                    "local_flow_packets_added": [{
+                        "packet_id": "packet-service-flow",
+                        "packet_kind": "local_micro_flow_packet",
+                        "repo_relative_path": "src/service.ts",
+                        "function_identity": "function://src/service.ts/service",
+                        "function_frame_micro_node_id": "function-frame-1",
+                        "encoding": "dict_v1",
+                        "proof_status": "micro_flow_found",
+                        "proof_strength": "flow_proof",
+                        "packet_status": "micro_flow_found",
+                        "primary_source_span_id": "span-service-function",
+                        "provenance_id": "packet-service-flow",
+                        "exactness": "derived_with_provenance",
+                        "claimability_label": "claimable_dict_v1_local_micro_flow_packet",
+                        "change_kind": "added",
+                        "flow_proof_changed": true,
+                        "validation_error": false
+                    }],
+                    "local_flow_packets_removed": [],
+                    "local_flow_packets_changed": [],
+                    "local_flow_packet_counts_by_proof_strength": {"flow_proof": 1},
+                    "local_flow_packet_counts_by_status": {"micro_flow_found": 1},
+                    "local_flow_packet_integrity_changes": [],
+                    "local_flow_packet_cap_omissions": 0,
+                    "normal_local_flow_packet_delta_not_validation_error": true
+                },
+                "proof_ladder_changes": {
+                    "flow_proof": {
+                        "changed": true,
+                        "status": "flow_proof",
+                        "graph_proof": true,
+                        "proof_strength": "flow_proof"
+                    }
+                },
+                "blocking_errors": [],
+                "warnings": [],
+                "unknowns": [],
+                "diagnostics": [],
+                "claimability": {"claimable": true, "current": true, "diagnostic_only": false},
+                "lifecycle": {"claimable": true, "current": true}
+            }
+        });
+
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(false));
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["normal_packet_delta_not_error"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["counts"]["total"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["ordered_steps_inline"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["packet_body_inline"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_proof_changes"]["flow_proof_changed_count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_integrity"]["false_source_fix_recommendation_count"].as_u64(),
+            Some(0)
+        );
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn local_flow_query_compact_budget_keeps_first_packet_after_compaction() {
+        let long_summary = "x".repeat(2_500);
+        let mut value = json!({
+            "schema_version": 1,
+            "schema_name": "query_local_flow_packets_agent_json",
+            "status": "ok",
+            "result_count": 3,
+            "omitted_count": 0,
+            "results": [
+                {"packet_id": "packet-1", "summary": long_summary.clone()},
+                {"packet_id": "packet-2", "summary": long_summary.clone()},
+                {"packet_id": "packet-3", "summary": long_summary}
+            ],
+            "agent_json_budget": {
+                "output_bytes": 99_999,
+                "max_output_bytes": 4_096,
+                "max_output_bytes_exceeded": true,
+                "returned_count": 3
+            },
+            "truncation": {
+                "output_bytes": 99_999,
+                "max_output_bytes": 4_096,
+                "max_output_bytes_exceeded": true,
+                "returned_count": 3
+            }
+        });
+
+        agent_use_local_flow_query_enforce_result_budget(
+            &mut value,
+            AgentUseDetailMode::Compact,
+            4_096,
+        );
+
+        let results = value["results"].as_array().expect("results");
+        assert_eq!(results.len(), 3, "{value}");
+        assert_eq!(results[0]["packet_id"].as_str(), Some("packet-1"));
+        assert_eq!(results[2]["packet_id"].as_str(), Some("packet-3"));
+        assert_eq!(results[0]["packet_body_inline"].as_bool(), Some(false));
+        assert_eq!(results[0]["agent_json_compacted"].as_bool(), Some(true));
+        assert_eq!(value["result_count"].as_u64(), Some(3));
+        assert_eq!(value["packet_results_compacted"].as_bool(), Some(true));
+        assert_eq!(value["packet_result_omitted_count"].as_u64(), None);
+        let actual_bytes = serialized_json_len(&value) as u64;
+        assert_eq!(
+            value["agent_json_budget"]["output_bytes"].as_u64(),
+            Some(actual_bytes)
+        );
+        assert_eq!(value["truncation"]["returned_count"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn local_flow_query_compact_budget_keeps_last_packet_row() {
+        let repo = PathBuf::from("C:/repo");
+        let profile = test_profile(&repo);
+        let mut value = json!({
+            "schema_version": 1,
+            "schema_name": "query_local_flow_packets_agent_json",
+            "status": "ok",
+            "command": "query local-flow",
+            "query_kind": "local-flow",
+            "result_count": 1,
+            "omitted_count": 0,
+            "results": [{
+                "packet_id": "packet-1",
+                "packet_kind": "function_local_flow_packet",
+                "file": "src/flow.ts",
+                "function_entity_id": "function://src/flow.ts/g2",
+                "function_frame_micro_node_id": "micro-node://function/g2",
+                "primary_source_span_id": "span://src/flow.ts:1",
+                "source_span_ref_count": 6,
+                "source_span_ids_handle": "audit.local_flow_packets.packet:packet-1.source_span_ids",
+                "proof_status": "micro_flow_found",
+                "proof_strength": "flow_proof",
+                "packet_status": "micro_flow_found",
+                "encoding": "dict_v1",
+                "packet_body_hash": "sha256:test",
+                "packet_summary": {
+                    "compact_body_bytes": 900,
+                    "audit_body_bytes": 1200,
+                    "omitted_count": 0,
+                    "truncation_reason": "not_truncated",
+                    "unknown_or_gap_count": 0
+                },
+                "source_role": "production",
+                "language": "typescript",
+                "exactness": "exact",
+                "claimability": "claimable_dict_v1_local_micro_flow_packet",
+                "versions": {
+                    "source_micro_node_extraction_versions": ["x".repeat(8_000)],
+                    "source_micro_edge_extraction_versions": ["y".repeat(8_000)]
+                },
+                "expansion_handle": "audit.local_flow_packets.packet:packet-1",
+                "ordered_steps_inline": false,
+                "full_source_body_output": false
+            }],
+        });
+
+        compact_agent_use_agent_json_envelope(
+            &mut value,
+            &profile,
+            AgentUseDetailMode::Compact,
+            4096,
+            None,
+        );
+        agent_use_local_flow_query_enforce_result_budget(
+            &mut value,
+            AgentUseDetailMode::Compact,
+            4096,
+        );
+
+        let results = value["results"].as_array().expect("results");
+        assert_eq!(results.len(), 1, "{value}");
+        assert_eq!(results[0]["packet_id"].as_str(), Some("packet-1"));
+        assert_eq!(results[0]["proof_strength"].as_str(), Some("flow_proof"));
+        assert!(results[0].get("versions").is_none(), "{value}");
+        assert_eq!(value["result_count"].as_u64(), Some(1));
+        assert_eq!(value["packet_result_omitted_count"].as_u64(), None);
+    }
+
+    #[test]
+    fn compact_validate_edit_preserves_local_flow_packet_scalars_without_arrays() {
+        let full_graph_delta = json!({
+            "summary": {"local_flow_packet_delta_count": 1},
+            "local_flow_packets_added_count": 0,
+            "local_flow_packets_removed_count": 0,
+            "local_flow_packets_changed_count": 1,
+            "local_flow_packets_added": [],
+            "local_flow_packets_removed": [],
+            "local_flow_packets_changed": [{
+                "packet_id": "packet-service-flow",
+                "packet_kind": "local_micro_flow_packet",
+                "repo_relative_path": "src/service.ts",
+                "proof_status": "partial_local_flow",
+                "proof_strength": "graph_relation_proof",
+                "packet_status": "partial_micro_flow_found",
+                "flow_proof_changed": true,
+                "validation_error": false
+            }],
+            "local_flow_packet_counts_by_proof_strength": {"graph_relation_proof": 1},
+            "local_flow_packet_counts_by_status": {"partial_micro_flow_found": 1},
+            "local_flow_packet_cap_omissions": 0
+        });
+        let mut validation_packet_json = json!({
+            "graph_delta": {
+                "summary": {},
+                "agent_json_compacted": true,
+                "full_detail_handle": "validation_packet.graph_delta"
+            },
+            "proof_ladder_changes": {}
+        });
+
+        agent_use_validate_edit_preserve_local_flow_packet_delta_scalars(
+            &mut validation_packet_json,
+            &full_graph_delta,
+        );
+
+        assert!(validation_packet_json["graph_delta"]
+            .get("local_flow_packets_changed")
+            .is_none());
+        agent_use_validate_edit_attach_local_flow_packet_sections(&mut validation_packet_json);
+        assert_eq!(
+            validation_packet_json["micro_flow_packet_delta"]["counts"]["changed"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            validation_packet_json["micro_flow_packet_delta"]["counts"]["total"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            validation_packet_json["micro_flow_packet_delta"]["counts"]["summary_total"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            validation_packet_json["micro_flow_packet_proof_changes"]["flow_proof_changed_count"]
+                .as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            validation_packet_json["micro_flow_packet_delta"]["ordered_steps_inline"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            validation_packet_json["micro_flow_packet_delta"]["packet_body_inline"].as_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn validate_edit_wrapper_preserves_compact_watch_local_flow_scalars() {
+        let repo = PathBuf::from("C:/repo");
+        let profile = test_profile(&repo);
+        let options = validate_edit_test_options(&repo, AgentUseDetailMode::Compact, false);
+        let source_update = json!({
+            "status": "updated",
+            "changed_paths": ["src/a.ts"],
+            "normalized_changed_files": ["src/a.ts"],
+            "validation_packet": {
+                "schema_version": 1,
+                "packet_kind": "graph_validation_packet",
+                "status": "warning",
+                "final_status": "warning",
+                "must_fix_before_continuing": false,
+                "changed_files": ["src/a.ts"],
+                "graph_delta": {
+                    "summary": {
+                        "agent_json_compacted": true,
+                        "status": "degraded"
+                    },
+                    "agent_json_compacted": true
+                },
+                "proof_ladder_changes": {
+                    "flow_proof": {
+                        "changed": true,
+                        "status": "supported_relation_present",
+                        "graph_proof": true,
+                        "proof_strength": "flow_proof"
+                    }
+                },
+                "warnings": [],
+                "unknowns": [],
+                "diagnostics": [],
+                "blocking_errors": []
+            },
+            "graph_delta": {
+                "summary": {"local_flow_packet_delta_count": 2},
+                "local_flow_packets_added_count": 1,
+                "local_flow_packets_removed_count": 1,
+                "local_flow_packets_changed_count": 0,
+                "local_flow_packets_added": [{
+                    "packet_id": "packet-new",
+                    "packet_kind": "local_micro_flow_packet",
+                    "repo_relative_path": "src/a.ts",
+                    "proof_status": "partial_local_flow",
+                    "proof_strength": "graph_relation_proof",
+                    "packet_status": "partial_micro_flow_found",
+                    "flow_proof_changed": false,
+                    "validation_error": false
+                }],
+                "local_flow_packets_removed": [{
+                    "packet_id": "packet-old",
+                    "packet_kind": "local_micro_flow_packet",
+                    "repo_relative_path": "src/a.ts",
+                    "proof_status": "micro_flow_found",
+                    "proof_strength": "flow_proof",
+                    "packet_status": "micro_flow_found",
+                    "flow_proof_changed": true,
+                    "validation_error": false
+                }],
+                "local_flow_packets_changed": [],
+                "local_flow_packet_counts_by_proof_strength": {"graph_relation_proof": 1},
+                "local_flow_packet_counts_by_status": {"partial_micro_flow_found": 1},
+                "local_flow_packet_cap_omissions": 0,
+                "normal_local_flow_packet_delta_not_validation_error": true
+            }
+        });
+
+        let packet = agent_use_validate_edit_packet_json(&profile, &options, source_update);
+
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["counts"]["added"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["counts"]["removed"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["counts"]["total"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_proof_changes"]["flow_proof_changed_count"].as_u64(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn local_flow_packet_integrity_recommends_tool_repair_not_source_fix() {
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        let row = LocalFlowPacketRow {
+            packet_id: "packet-corrupt-flow".to_string(),
+            file_id: "src/service.ts".to_string(),
+            function_entity_id: "function://src/service.ts/service".to_string(),
+            function_frame_micro_node_id: Some("function-frame-1".to_string()),
+            packet_kind: "local_micro_flow_packet".to_string(),
+            encoding: "dict_v1".to_string(),
+            packet_body: "{}".to_string(),
+            packet_body_hash: "sha256:test".to_string(),
+            compressed_steps: "{}".to_string(),
+            source_span_ids_json: "[]".to_string(),
+            primary_source_span_id: None,
+            proof_status: "micro_flow_found".to_string(),
+            proof_strength: "flow_proof".to_string(),
+            packet_status: "micro_flow_found".to_string(),
+            schema_version: 1,
+            row_schema_version: 1,
+            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+            exactness: "derived_with_provenance".to_string(),
+            provenance_id: None,
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            source_micro_node_extraction_versions_json: "[\"mvp4.1-typescript-micro-nodes-v1\"]"
+                .to_string(),
+            source_micro_edge_extraction_versions_json:
+                "[\"mvp4.2-typescript-local-returns-to-v1\"]".to_string(),
+            cap_state_json:
+                "{\"omitted_count\":0,\"truncation_reason\":null,\"unknown_or_gap_count\":0}"
+                    .to_string(),
+            omitted_count: 0,
+            compact_body_bytes: 2,
+            audit_body_bytes: None,
+            claimability: "claimable_dict_v1_local_micro_flow_packet".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+
+        agent_use_push_local_flow_packet_integrity_finding(
+            &mut findings,
+            &mut seen,
+            rule_by_id[CG_MVP4_3_PACKET_MISSING_PROVENANCE],
+            ValidationLifecycleState::claimable_current(),
+            Some(&row),
+            Some(json!({"test_delta": true})),
+            None,
+            "flow_proof packet has no packet provenance",
+        );
+
+        let finding = findings.first().expect("packet finding");
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding.proof_status,
+            ValidationProofStatus::NeedsReverification
+        );
+        assert_eq!(finding.reverified_graph_source_proof, false);
+        let recommended = finding.recommended_fix.as_deref().unwrap_or_default();
+        assert!(recommended.contains("Reindex or repair CodeGraph local micro-flow packet state"));
+        assert!(recommended.contains("do not edit source solely"));
+        assert_eq!(
+            finding.affected_delta["source_code_edit_required"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            finding.affected_delta["tool_integrity_repair_required"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -14601,6 +17027,7 @@ mod exact_calls_validation_tests {
             ValidationEvidenceKind::TextEvidence,
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let mut input = ValidationReverificationInput::exact_graph_source(
@@ -14878,6 +17305,53 @@ mod exact_calls_validation_tests {
             })
             .expect("optional entity diagnostic");
         assert_ne!(optional.classification, ValidationClassification::Block);
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn syntax_recovery_entity_missing_source_span_is_not_claimable_graph_proof() {
+        let repo = test_repo();
+        write_source(&repo, "lib/app.rb", "class App\nend\nclass Broken\n");
+        let store = test_store(&repo);
+        let mut recovered = function_entity("lib/app.rb", "Broken", 3);
+        recovered.kind = EntityKind::Class;
+        recovered.source_span = None;
+        recovered.created_from = "tree-sitter-syntax-recovery".to_string();
+        recovered
+            .metadata
+            .insert("claim_state".to_string(), json!("heuristic"));
+        recovered.metadata.insert(
+            "parser_reliability".to_string(),
+            json!("untrusted_syntax_region"),
+        );
+        recovered
+            .metadata
+            .insert("syntax_recovery".to_string(), json!(true));
+        store.upsert_entity(&recovered).expect("recovered entity");
+        let mut recovered_minimal = function_entity("lib/app.rb", "AlsoBroken", 3);
+        recovered_minimal.kind = EntityKind::Class;
+        recovered_minimal.source_span = None;
+        recovered_minimal.created_from = "tree-sitter-syntax-recovery".to_string();
+        recovered_minimal.confidence = 0.45;
+        recovered_minimal.metadata.clear();
+        store
+            .upsert_entity(&recovered_minimal)
+            .expect("metadata-free recovered entity");
+
+        let findings = run_proof_integrity_for_paths(
+            &repo,
+            &store,
+            &["lib/app.rb"],
+            ValidationLifecycleState::claimable_current(),
+        );
+
+        assert!(
+            findings.iter().all(|finding| {
+                finding.validation_rule_id != CG_MVP3_CLAIMABLE_ENTITY_MISSING_SOURCE_SPAN
+            }),
+            "syntax-recovery entities are non-claimable diagnostics, got {findings:?}"
+        );
         drop(store);
         cleanup_repo(repo);
     }
@@ -16479,6 +18953,9 @@ fn agent_use_graph_delta_omitted_count(delta: &EntitySourceRoleDeltaReport) -> u
         + omission.micro_edges_added_omitted
         + omission.micro_edges_removed_omitted
         + omission.micro_edges_changed_omitted
+        + omission.local_flow_packets_added_omitted
+        + omission.local_flow_packets_removed_omitted
+        + omission.local_flow_packets_changed_omitted
         + omission.source_spans_added_omitted
         + omission.source_spans_removed_omitted
         + omission.source_spans_changed_omitted
@@ -16522,6 +18999,15 @@ fn agent_use_graph_delta_truncated_sections(
     if omission.micro_edges_changed_omitted > 0 {
         sections.push("micro_edges_changed");
     }
+    if omission.local_flow_packets_added_omitted > 0 {
+        sections.push("local_flow_packets_added");
+    }
+    if omission.local_flow_packets_removed_omitted > 0 {
+        sections.push("local_flow_packets_removed");
+    }
+    if omission.local_flow_packets_changed_omitted > 0 {
+        sections.push("local_flow_packets_changed");
+    }
     if omission.source_spans_added_omitted > 0 {
         sections.push("source_spans_added");
     }
@@ -16558,6 +19044,8 @@ fn agent_use_graph_delta_summary_json(delta: &EntitySourceRoleDeltaReport) -> Va
         "edge_delta_count": delta.edges_added_count + delta.edges_removed_count + delta.edges_changed_count,
         "micro_edge_delta_count": delta.micro_edges_added_count + delta.micro_edges_removed_count + delta.micro_edges_changed_count,
         "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
+        "local_flow_packet_delta_count": delta.local_flow_packets_added_count + delta.local_flow_packets_removed_count + delta.local_flow_packets_changed_count,
+        "local_flow_packet_cap_omissions": delta.local_flow_packet_cap_omissions,
         "source_span_delta_count": delta.source_spans_added_count + delta.source_spans_removed_count + delta.source_spans_changed_count,
         "source_role_delta_count": delta.source_roles_changed_count,
         "text_evidence_delta_count": delta.text_evidence_changed_count,
@@ -16640,6 +19128,9 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "micro_edges_added_count": delta.micro_edges_added_count,
         "micro_edges_removed_count": delta.micro_edges_removed_count,
         "micro_edges_changed_count": delta.micro_edges_changed_count,
+        "local_flow_packets_added_count": delta.local_flow_packets_added_count,
+        "local_flow_packets_removed_count": delta.local_flow_packets_removed_count,
+        "local_flow_packets_changed_count": delta.local_flow_packets_changed_count,
         "source_roles_changed_count": delta.source_roles_changed_count,
         "source_spans_added_count": delta.source_spans_added_count,
         "source_spans_removed_count": delta.source_spans_removed_count,
@@ -16656,6 +19147,9 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "micro_edges_added": delta.micro_edges_added,
         "micro_edges_removed": delta.micro_edges_removed,
         "micro_edges_changed": delta.micro_edges_changed,
+        "local_flow_packets_added": delta.local_flow_packets_added,
+        "local_flow_packets_removed": delta.local_flow_packets_removed,
+        "local_flow_packets_changed": delta.local_flow_packets_changed,
         "source_spans_added": delta.source_spans_added,
         "source_spans_removed": delta.source_spans_removed,
         "source_spans_changed": delta.source_spans_changed,
@@ -16670,6 +19164,7 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "nuance_tokens_invalidated": delta.nuance_tokens_invalidated,
         "routing_handles_invalidated": delta.routing_handles_invalidated,
         "micro_edge_layer_status_change": delta.micro_edge_layer_status_change,
+        "local_flow_packet_layer_status_change": delta.local_flow_packet_layer_status_change,
         "proof_ladder_changes": delta.proof_ladder_changes,
         "file_renames_detected": delta.file_renames_detected,
         "rename_ambiguities": delta.rename_ambiguities,
@@ -16689,6 +19184,11 @@ pub(crate) fn agent_use_graph_delta_json(delta: &EntitySourceRoleDeltaReport) ->
         "micro_edge_integrity_changes": delta.micro_edge_integrity_changes,
         "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
         "normal_micro_edge_delta_not_validation_error": delta.normal_micro_edge_delta_not_validation_error,
+        "local_flow_packet_counts_by_proof_strength": delta.local_flow_packet_counts_by_proof_strength,
+        "local_flow_packet_counts_by_status": delta.local_flow_packet_counts_by_status,
+        "local_flow_packet_integrity_changes": delta.local_flow_packet_integrity_changes,
+        "local_flow_packet_cap_omissions": delta.local_flow_packet_cap_omissions,
+        "normal_local_flow_packet_delta_not_validation_error": delta.normal_local_flow_packet_delta_not_validation_error,
         "degraded_relation_classes": delta.degraded_relation_classes,
         "unsupported_relation_classes": delta.unsupported_relation_classes,
         "source_roles_changed": delta.source_roles_changed,
@@ -19249,6 +21749,7 @@ pub(crate) fn agent_use_query_read_path_metrics_json(kind: &str, value: &Value) 
             result_count,
         ),
         "definitions" => ("bounded_symbol_definition_lookup", 0, 0, 1, result_count),
+        "local-flow" | "local_flow" => ("bounded_local_flow_packet_lookup", 1, 0, 0, 0),
         "unresolved-calls" => ("bounded_unresolved_call_lookup", 0, 0, 0, result_count),
         _ => ("bounded_indexed_lookup", 0, 0, 0, result_count),
     };

@@ -154,6 +154,27 @@
           "items": {
             "$ref": "#/$defs/expected_validation"
           }
+        },
+        "expected_local_micro_flow_packets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/local_micro_flow_packet"
+          }
+        },
+        "forbidden_local_micro_flow_packets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/forbidden_local_micro_flow_packet"
+          }
+        },
+        "expected_packet_delta": {
+          "$ref": "#/$defs/packet_delta"
+        },
+        "expected_linter_packet_state": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/linter_packet_state"
+          }
         }
       }
     },
@@ -334,16 +355,100 @@
       "additionalProperties": false,
       "required": [
         "packet_kind",
-        "ordered_steps",
-        "step_spans",
         "proof_strength",
         "unknown_gaps",
         "omitted_truncation_expectation",
         "forbidden_global_interprocedural_claim"
       ],
+      "anyOf": [
+        {
+          "required": [
+            "ordered_steps",
+            "step_spans"
+          ]
+        },
+        {
+          "required": [
+            "encoding",
+            "packet_body"
+          ]
+        }
+      ],
       "properties": {
         "packet_kind": {
           "type": "string"
+        },
+        "encoding": {
+          "type": "string",
+          "enum": [
+            "dict_v1"
+          ]
+        },
+        "packet_body": {
+          "type": "object",
+          "required": [
+            "dictionary",
+            "paths",
+            "compression_contract"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "dictionary": {
+              "type": "object"
+            },
+            "paths": {
+              "type": "array"
+            },
+            "compression_contract": {
+              "type": "object",
+              "required": [
+                "lossless_to_audit_ordered_steps",
+                "source_spans_preserved",
+                "provenance_preserved",
+                "exactness_preserved",
+                "source_roles_preserved",
+                "branch_and_return_paths_preserved",
+                "unknown_gaps_preserved",
+                "full_source_bodies_allowed"
+              ],
+              "additionalProperties": true,
+              "properties": {
+                "lossless_to_audit_ordered_steps": {
+                  "const": true
+                },
+                "source_spans_preserved": {
+                  "const": true
+                },
+                "provenance_preserved": {
+                  "const": true
+                },
+                "exactness_preserved": {
+                  "const": true
+                },
+                "source_roles_preserved": {
+                  "const": true
+                },
+                "branch_and_return_paths_preserved": {
+                  "const": true
+                },
+                "shadowed_binding_identity_preserved": {
+                  "const": true
+                },
+                "unknown_gaps_preserved": {
+                  "const": true
+                },
+                "cap_omissions_preserved": {
+                  "const": true
+                },
+                "full_source_bodies_allowed": {
+                  "const": false
+                },
+                "verbose_ordered_steps_default_inline": {
+                  "const": false
+                }
+              }
+            }
+          }
         },
         "ordered_steps": {
           "type": "array"
@@ -567,6 +672,286 @@
         "unsupported",
         "unknown"
       ]
+    },
+    "local_micro_flow_packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_id_selector",
+        "function_selector",
+        "language",
+        "source_role",
+        "proof_status",
+        "proof_strength",
+        "encoding",
+        "packet_body",
+        "expected_dict_entries",
+        "expected_paths",
+        "expected_steps",
+        "expected_branch_ids",
+        "expected_return_path_ids",
+        "expected_gaps",
+        "expected_unknowns_or_risks",
+        "expected_omitted_count",
+        "expected_truncation_reason",
+        "expected_expansion_handle",
+        "expected_audit_ordered_steps"
+      ],
+      "properties": {
+        "packet_id_selector": {
+          "type": "object"
+        },
+        "function_selector": {
+          "type": "object"
+        },
+        "language": {
+          "type": "string"
+        },
+        "source_role": {
+          "type": "string"
+        },
+        "proof_status": {
+          "type": "string"
+        },
+        "proof_strength": {
+          "type": "string"
+        },
+        "encoding": {
+          "type": "string",
+          "enum": [
+            "dict_v1"
+          ]
+        },
+        "packet_body": {
+          "type": "object",
+          "required": [
+            "dictionary",
+            "paths",
+            "compression_contract"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "dictionary": {
+              "type": "object"
+            },
+            "paths": {
+              "type": "array"
+            },
+            "compression_contract": {
+              "type": "object",
+              "required": [
+                "lossless_to_audit_ordered_steps",
+                "source_spans_preserved",
+                "provenance_preserved",
+                "exactness_preserved",
+                "source_roles_preserved",
+                "branch_and_return_paths_preserved",
+                "shadowed_binding_identity_preserved",
+                "unknown_gaps_preserved",
+                "cap_omissions_preserved",
+                "full_source_bodies_allowed",
+                "verbose_ordered_steps_default_inline"
+              ],
+              "additionalProperties": true,
+              "properties": {
+                "lossless_to_audit_ordered_steps": {
+                  "const": true
+                },
+                "source_spans_preserved": {
+                  "const": true
+                },
+                "provenance_preserved": {
+                  "const": true
+                },
+                "exactness_preserved": {
+                  "const": true
+                },
+                "source_roles_preserved": {
+                  "const": true
+                },
+                "branch_and_return_paths_preserved": {
+                  "const": true
+                },
+                "shadowed_binding_identity_preserved": {
+                  "const": true
+                },
+                "unknown_gaps_preserved": {
+                  "const": true
+                },
+                "cap_omissions_preserved": {
+                  "const": true
+                },
+                "full_source_bodies_allowed": {
+                  "const": false
+                },
+                "verbose_ordered_steps_default_inline": {
+                  "const": false
+                }
+              }
+            }
+          }
+        },
+        "expected_dict_entries": {
+          "type": "object"
+        },
+        "expected_paths": {
+          "type": "array"
+        },
+        "expected_steps": {
+          "type": "array"
+        },
+        "expected_branch_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_return_path_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_gaps": {
+          "type": "array"
+        },
+        "expected_unknowns_or_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected_truncation_reason": {
+          "type": "string"
+        },
+        "expected_expansion_handle": {
+          "type": "object"
+        },
+        "expected_audit_ordered_steps": {
+          "type": "array"
+        }
+      }
+    },
+    "forbidden_local_micro_flow_packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "forbidden_proof_strength",
+        "forbidden_collapsed_branch",
+        "forbidden_collapsed_return_path",
+        "forbidden_collapsed_shadowed_binding",
+        "forbidden_missing_span",
+        "forbidden_missing_provenance",
+        "forbidden_full_source_body",
+        "forbidden_default_ordered_steps_inline"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "forbidden_proof_strength": {
+          "type": "string"
+        },
+        "forbidden_collapsed_branch": {
+          "type": "boolean"
+        },
+        "forbidden_collapsed_return_path": {
+          "type": "boolean"
+        },
+        "forbidden_collapsed_shadowed_binding": {
+          "type": "boolean"
+        },
+        "forbidden_missing_span": {
+          "type": "boolean"
+        },
+        "forbidden_missing_provenance": {
+          "type": "boolean"
+        },
+        "forbidden_full_source_body": {
+          "type": "boolean"
+        },
+        "forbidden_default_ordered_steps_inline": {
+          "type": "boolean"
+        }
+      }
+    },
+    "packet_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "added",
+        "removed",
+        "changed",
+        "stale",
+        "truncated",
+        "unavailable",
+        "proof_strength_changed"
+      ],
+      "properties": {
+        "added": {
+          "type": "array"
+        },
+        "removed": {
+          "type": "array"
+        },
+        "changed": {
+          "type": "array"
+        },
+        "stale": {
+          "type": "array"
+        },
+        "truncated": {
+          "type": "array"
+        },
+        "unavailable": {
+          "type": "array"
+        },
+        "proof_strength_changed": {
+          "type": "array"
+        }
+      }
+    },
+    "linter_packet_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_delta",
+        "packet_integrity",
+        "packet_layer_status",
+        "severity",
+        "hard_interrupt_available",
+        "recommended_action_kind"
+      ],
+      "properties": {
+        "packet_delta": {
+          "type": "object"
+        },
+        "packet_integrity": {
+          "type": "object"
+        },
+        "packet_layer_status": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "hard_interrupt_available": {
+          "type": "boolean"
+        },
+        "recommended_action_kind": {
+          "enum": [
+            "source_fix",
+            "reindex_or_repair",
+            "safe_to_continue",
+            "unsupported_or_unknown"
+          ]
+        }
+      }
     }
   }
 }

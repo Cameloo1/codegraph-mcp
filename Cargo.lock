@@ -56,8 +56,10 @@ dependencies = [
  "codegraph-query",
  "codegraph-store",
  "codegraph-vector",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tree-sitter",
 ]
 
 [[package]]

@@ -6,19 +6,21 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use codegraph_core::DictV1PacketBody;
 use codegraph_index::{
     candidate_spool_query_index_path, index_repo_to_db_with_options,
     scope::{self, IndexScope, IndexScopeDecision, ScopeAction, ScopePathKind, ScopeRuleKind},
     IndexBuildMode, IndexOptions, IndexScopeOptions, StorageMode,
 };
 use codegraph_parser::{content_hash, detect_language};
-use codegraph_store::{GraphStore, SqliteGraphStore};
+use codegraph_store::{GraphStore, LocalFlowPacketQueryOptions, SqliteGraphStore};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    mvp4_micro_edge_proof_boundary_json, mvp4_micro_node_proof_boundary_json, storage_budget,
+    mvp4_local_flow_packet_proof_boundary_json, mvp4_micro_edge_proof_boundary_json,
+    mvp4_micro_node_proof_boundary_json, storage_budget,
 };
 
 const AUDIT_SCHEMA_VERSION: u32 = 1;
@@ -109,7 +111,7 @@ const MOCK_RELATIONS: &[&str] = &["MOCKS", "STUBS"];
 pub fn run_audit_command(args: &[String]) -> Result<Value, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(
-            "Usage: codegraph-mcp audit <index-scope|vector-chunks|storage|storage-micro|schema-check|micro-nodes|micro-edges|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
+            "Usage: codegraph-mcp audit <index-scope|vector-chunks|storage|storage-micro|schema-check|micro-nodes|micro-edges|local-flow-packets|storage-experiments|sample-edges|sample-paths|relation-counts|label-samples|summarize-labels> [ARGS]".to_string(),
         );
     };
 
@@ -126,6 +128,9 @@ pub fn run_audit_command(args: &[String]) -> Result<Value, String> {
         }
         "micro-edges" | "micro_edges" | "mvp4-micro-edges" | "mvp4_micro_edges" => {
             run_micro_edges_command(&args[1..])
+        }
+        "local-flow-packets" | "local_flow_packets" | "local-flow" | "local_flow" => {
+            run_local_flow_packets_command(&args[1..])
         }
         "storage-experiments" | "storage-experiment" => run_storage_experiments_command(&args[1..]),
         "sample-edges" | "edge-sample" => run_sample_edges_command(&args[1..]),
@@ -158,6 +163,16 @@ struct MicroEdgesOptions {
     json_path: Option<PathBuf>,
     markdown_path: Option<PathBuf>,
     sample_limit: usize,
+}
+
+#[derive(Debug, Clone)]
+struct LocalFlowPacketsOptions {
+    db_path: PathBuf,
+    json_path: Option<PathBuf>,
+    markdown_path: Option<PathBuf>,
+    sample_limit: usize,
+    packet_id: Option<String>,
+    expand_ordered_steps: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -3908,6 +3923,192 @@ fn run_micro_edges_command(args: &[String]) -> Result<Value, String> {
     Ok(value)
 }
 
+fn run_local_flow_packets_command(args: &[String]) -> Result<Value, String> {
+    let options = parse_local_flow_packets_options(args)?;
+    let before = db_file_snapshot(&options.db_path);
+    let store = SqliteGraphStore::open_read_only(&options.db_path).map_err(|error| {
+        format!(
+            "failed to open {} read-only: {error}",
+            options.db_path.display()
+        )
+    })?;
+    let schema_version = store.schema_version().map_err(|error| error.to_string())?;
+    let report = if !store
+        .table_exists("local_flow_packets")
+        .map_err(|error| error.to_string())?
+    {
+        json!({
+            "status": "unavailable",
+            "audit": "local_flow_packets",
+            "db_path": path_string(&options.db_path),
+            "schema_version": schema_version,
+            "feature_status": "unavailable",
+            "reason": "local_flow_packets table missing",
+            "total_rows": 0,
+            "sample_count": 0,
+            "sample_limit": options.sample_limit,
+            "default_full_table_scan": false,
+            "full_source_body_output": false,
+            "ordered_steps_default_inline": false,
+            "audit_expansion_available": false,
+            "core_graph_micro_edge_packet_availability_separated": true,
+            "proof_boundary": mvp4_local_flow_packet_proof_boundary_json(),
+        })
+    } else if !store
+        .sparse_sidecar_schema_ready()
+        .map_err(|error| error.to_string())?
+    {
+        json!({
+            "status": "unavailable",
+            "audit": "local_flow_packets",
+            "db_path": path_string(&options.db_path),
+            "schema_version": schema_version,
+            "feature_status": "unavailable",
+            "reason": "sparse sidecar schema incomplete",
+            "total_rows": 0,
+            "sample_count": 0,
+            "sample_limit": options.sample_limit,
+            "default_full_table_scan": false,
+            "full_source_body_output": false,
+            "ordered_steps_default_inline": false,
+            "audit_expansion_available": false,
+            "core_graph_micro_edge_packet_availability_separated": true,
+            "proof_boundary": mvp4_local_flow_packet_proof_boundary_json(),
+        })
+    } else {
+        let summary = store
+            .local_flow_packet_visibility_summary(options.sample_limit)
+            .map_err(|error| error.to_string())?;
+        let status = if summary.total_rows == 0 {
+            "not_applicable"
+        } else if summary.cap_hit_count > 0 || summary.omitted_count > 0 {
+            "truncated"
+        } else {
+            "ready"
+        };
+        let mut expanded_packet = Value::Null;
+        if let Some(packet_id) = options.packet_id.as_deref() {
+            let mut rows = store
+                .query_local_flow_packets(&LocalFlowPacketQueryOptions {
+                    limit: 1,
+                    packet_id: Some(packet_id.to_string()),
+                    ..LocalFlowPacketQueryOptions::default()
+                })
+                .map_err(|error| error.to_string())?;
+            if let Some(row) = rows.pop() {
+                let packet_body: Value =
+                    serde_json::from_str(&row.packet_body).map_err(|error| error.to_string())?;
+                let ordered_steps = if options.expand_ordered_steps {
+                    let body: DictV1PacketBody = serde_json::from_value(packet_body.clone())
+                        .map_err(|error| {
+                            format!("failed to decode dict_v1 packet body for audit: {error}")
+                        })?;
+                    serde_json::to_value(body.to_ordered_steps().map_err(|error| {
+                        format!("failed to expand dict_v1 ordered_steps for audit: {error}")
+                    })?)
+                    .map_err(|error| error.to_string())?
+                } else {
+                    Value::Null
+                };
+                expanded_packet = json!({
+                    "packet_id": row.packet_id,
+                    "packet_body": packet_body,
+                    "ordered_steps": ordered_steps,
+                    "ordered_steps_included": options.expand_ordered_steps,
+                    "full_source_body_output": false,
+                    "storage": {
+                        "packet_body_hash": row.packet_body_hash,
+                        "compact_body_bytes": row.compact_body_bytes,
+                        "audit_body_bytes": row.audit_body_bytes,
+                    }
+                });
+            }
+        }
+        json!({
+            "status": status,
+            "audit": "local_flow_packets",
+            "db_path": path_string(&options.db_path),
+            "schema_version": schema_version,
+            "feature_status": status,
+            "supported_language_slice": "typescript_ts_function_local_packets_v1",
+            "total_rows": summary.total_rows,
+            "rows_by_packet_kind": summary.rows_by_packet_kind,
+            "rows_by_proof_status": summary.rows_by_proof_status,
+            "rows_by_proof_strength": summary.rows_by_proof_strength,
+            "rows_by_packet_status": summary.rows_by_packet_status,
+            "rows_by_language": summary.rows_by_language,
+            "rows_by_source_role": summary.rows_by_source_role,
+            "files_represented": summary.files_represented,
+            "functions_represented": summary.functions_represented,
+            "schema_versions": summary.schema_versions,
+            "row_schema_versions": summary.row_schema_versions,
+            "payload_versions": summary.payload_versions,
+            "extraction_versions": summary.extraction_versions,
+            "exactness_counts": summary.exactness_counts,
+            "claimability_counts": summary.claimability_counts,
+            "cap_hit_count": summary.cap_hit_count,
+            "omitted_count": summary.omitted_count,
+            "compact_body_bytes": summary.compact_body_bytes,
+            "audit_body_bytes": summary.audit_body_bytes,
+            "sidecar_table_bytes": summary.estimated_payload_bytes,
+            "sidecar_table_bytes_measurement": "estimated_row_payload_bytes",
+            "sample_limit": summary.sample_limit,
+            "sample_count": summary.sample.len(),
+            "sample": summary.sample,
+            "expanded_packet": expanded_packet,
+            "audit_expansion_available": options.packet_id.is_some(),
+            "query_plan": summary.query_plan,
+            "default_full_table_scan": summary.default_full_table_scan,
+            "full_source_body_output": summary.full_source_body_output,
+            "ordered_steps_default_inline": summary.ordered_steps_default_inline,
+            "core_graph_micro_edge_packet_availability_separated": true,
+            "proof_boundary": mvp4_local_flow_packet_proof_boundary_json(),
+            "context_entry_command_activated": false,
+        })
+    };
+    drop(store);
+    let after = db_file_snapshot(&options.db_path);
+    let inspection = read_only_inspection_audit(
+        before,
+        after,
+        "sqlite_store_open_read_only_query_only".to_string(),
+        false,
+        "SqliteGraphStore::open_read_only used for bounded MVP4.3 local-flow packet inspection"
+            .to_string(),
+    );
+    let mut value = report;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "read_only_inspection".to_string(),
+            serde_json::to_value(&inspection).map_err(|error| error.to_string())?,
+        );
+        object.insert(
+            "artifact_mutated_during_inspection".to_string(),
+            json!(inspection.artifact_mutated_during_inspection),
+        );
+        object.insert(
+            "sidecar_only_change".to_string(),
+            json!(inspection.sidecar_only_change),
+        );
+        object.insert(
+            "json_output".to_string(),
+            json!(options.json_path.as_ref().map(path_string)),
+        );
+        object.insert(
+            "markdown_output".to_string(),
+            json!(options.markdown_path.as_ref().map(path_string)),
+        );
+    }
+    let markdown = render_local_flow_packets_markdown(&value);
+    write_optional_outputs(
+        &value,
+        &markdown,
+        &options.json_path,
+        &options.markdown_path,
+    )?;
+    Ok(value)
+}
+
 fn run_storage_experiments_command(args: &[String]) -> Result<Value, String> {
     let options = parse_storage_experiment_options(args)?;
     let report = run_storage_experiments(&options)?;
@@ -4302,6 +4503,42 @@ fn parse_micro_edges_options(args: &[String]) -> Result<MicroEdgesOptions, Strin
         json_path,
         markdown_path,
         sample_limit,
+    })
+}
+
+fn parse_local_flow_packets_options(args: &[String]) -> Result<LocalFlowPacketsOptions, String> {
+    let mut db_path = default_audit_db_path();
+    let mut json_path = None;
+    let mut markdown_path = None;
+    let mut sample_limit = 20usize;
+    let mut packet_id = None;
+    let mut expand_ordered_steps = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--db" => db_path = take_path(args, &mut index, "--db")?,
+            "--json" => json_path = Some(take_path(args, &mut index, "--json")?),
+            "--markdown" | "--md" => {
+                markdown_path = Some(take_path(args, &mut index, "--markdown")?)
+            }
+            "--sample" | "--limit" => {
+                sample_limit = take_usize(args, &mut index, "--sample")?.min(100)
+            }
+            "--packet-id" | "--packet_id" => {
+                packet_id = Some(take_value(args, &mut index, "--packet-id")?)
+            }
+            "--expand" | "--ordered-steps" | "--ordered_steps" => expand_ordered_steps = true,
+            value => return Err(format!("unknown audit local-flow-packets option: {value}")),
+        }
+        index += 1;
+    }
+    Ok(LocalFlowPacketsOptions {
+        db_path,
+        json_path,
+        markdown_path,
+        sample_limit,
+        packet_id,
+        expand_ordered_steps,
     })
 }
 
@@ -10524,6 +10761,45 @@ fn render_micro_edges_markdown(report: &Value) -> String {
     output.push_str(
         "- This audit does not prove route, auth, security, runtime, or complete function behavior.\n",
     );
+    output
+}
+
+fn render_local_flow_packets_markdown(report: &Value) -> String {
+    let mut output = String::new();
+    output.push_str("# MVP4.3 Local Micro-Flow Packet Visibility\n\n");
+    output.push_str(&format!(
+        "- Status: `{}`\n",
+        report["status"].as_str().unwrap_or("unknown")
+    ));
+    output.push_str(&format!(
+        "- Database: `{}`\n",
+        report["db_path"].as_str().unwrap_or("")
+    ));
+    output.push_str(&format!(
+        "- Total rows: `{}`\n",
+        report["total_rows"].as_u64().unwrap_or(0)
+    ));
+    output.push_str(&format!(
+        "- Sample count: `{}`\n",
+        report["sample_count"].as_u64().unwrap_or(0)
+    ));
+    output.push_str(&format!(
+        "- Ordered steps default inline: `{}`\n",
+        report["ordered_steps_default_inline"]
+            .as_bool()
+            .unwrap_or(false)
+    ));
+    output.push_str(&format!(
+        "- Full source body output: `{}`\n",
+        report["full_source_body_output"].as_bool().unwrap_or(false)
+    ));
+    output.push_str("\n## Boundary\n\n");
+    output.push_str(
+        "- Default packet visibility is bounded and does not inline verbose `ordered_steps`.\n",
+    );
+    output.push_str("- Audit expansion renders persisted `dict_v1`; it does not create a stronger proof source.\n");
+    output.push_str("- Packet availability remains separate from core graph, micro-node, and micro-edge availability.\n");
+    output.push_str("- This audit does not activate mutation_proof or context-entry routing.\n");
     output
 }
 

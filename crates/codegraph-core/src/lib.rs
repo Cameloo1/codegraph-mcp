@@ -11,6 +11,7 @@
 mod dirty_evidence;
 mod ids;
 mod kinds;
+mod local_micro_flow;
 mod model;
 mod normalized;
 mod validation;
@@ -23,28 +24,69 @@ pub use dirty_evidence::{
     DIRTY_EVIDENCE_REGISTRY_SCHEMA_VERSION, PROOF_LADDER_INVALIDATION_CONTRACT_SCHEMA_VERSION,
 };
 pub use ids::{
-    classify_micro_identity_change, decide_local_returns_to_exactness,
-    local_returns_to_identity_input, micro_source_roles_allow_local_production_proof,
-    mvp4_micro_edge_language_capability, normalize_repo_relative_path, stable_edge_id,
-    stable_entity_id, stable_entity_id_for_kind, stable_fact_hash, stable_fact_identity_key,
-    stable_micro_edge_id, stable_micro_node_id, stable_micro_packet_id,
-    stable_route_bridge_identity_id, validate_micro_fact_provenance, LocalReturnsToCapContract,
-    LocalReturnsToContract, LocalReturnsToExactnessDecision, LocalReturnsToExactnessInput,
-    LocalReturnsToExactnessRequirement, LocalReturnsToIdentityContractInput,
-    LocalReturnsToIntegrityFindingKind, LocalReturnsToLinterClass, LocalReturnsToSourceDeltaKind,
+    classify_micro_identity_change, decide_local_micro_flow_proof_eligibility,
+    decide_local_returns_to_exactness, local_returns_to_identity_input,
+    micro_source_roles_allow_local_production_proof, mvp4_micro_edge_language_capability,
+    normalize_repo_relative_path, stable_edge_id, stable_entity_id, stable_entity_id_for_kind,
+    stable_fact_hash, stable_fact_identity_key, stable_micro_edge_id, stable_micro_node_id,
+    stable_micro_packet_id, stable_route_bridge_identity_id, validate_micro_fact_provenance,
+    LocalMicroFlowIntegrityFindingKind, LocalMicroFlowPacketLinterClass,
+    LocalMicroFlowPacketStatus, LocalMicroFlowProofEligibilityDecision,
+    LocalMicroFlowProofEligibilityInput, LocalMicroFlowProofRequirement,
+    LocalMicroFlowSourceDeltaKind, LocalMicroFlowUnsupportedConditionKind,
+    LocalReturnsToCapContract, LocalReturnsToContract, LocalReturnsToExactnessDecision,
+    LocalReturnsToExactnessInput, LocalReturnsToExactnessRequirement,
+    LocalReturnsToIdentityContractInput, LocalReturnsToIntegrityFindingKind,
+    LocalReturnsToLinterClass, LocalReturnsToSourceDeltaKind,
     LocalReturnsToUnsupportedConditionKind, MicroDerivationKind, MicroEdgeCandidate,
     MicroEdgeCandidateCapState, MicroEdgeIdentityInput, MicroEdgeKind, MicroEdgeLanguageCapability,
     MicroEdgeLayerState, MicroEdgeSupportStatus, MicroExactness, MicroFactProvenance,
     MicroIdentityChangeKind, MicroIdentityStability, MicroNodeIdentityInput, MicroNodeKind,
     MicroPacketIdentityInput, MicroProvenanceError, MicroSourceRole, RouteBridgeIdentityInput,
     RouteBridgeIdentityKind, LOCAL_RETURNS_TO_CAP_CONTRACT, LOCAL_RETURNS_TO_CONTRACT,
-    LOCAL_RETURNS_TO_FORBIDDEN_INTERPRETATIONS, MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY,
+    LOCAL_RETURNS_TO_FORBIDDEN_INTERPRETATIONS, MVP4_2B_LOCAL_FLOWS_TO_CLAIMABILITY,
+    MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION, MVP4_2B_LOCAL_READS_CLAIMABILITY,
+    MVP4_2B_LOCAL_READS_EXTRACTION_VERSION, MVP4_2B_LOCAL_WRITES_CLAIMABILITY,
+    MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION, MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY,
     MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
-    MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION, MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES,
-    MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY,
+    MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_ENCODING,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+    MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS, MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES,
+    MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY, MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY,
+    MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY, MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY,
 };
 pub use kinds::{
     EdgeClass, EdgeContext, EntityKind, EvidenceRole, Exactness, ParseEnumError, RelationKind,
+};
+pub use local_micro_flow::{
+    build_local_micro_flow_packet_candidates_from_persisted_facts,
+    mvp4_3_default_local_micro_flow_packet_query_language,
+    mvp4_3_local_micro_flow_packet_active_languages,
+    mvp4_3_local_micro_flow_packet_language_capability,
+    mvp4_3_local_micro_flow_packet_source_supported,
+    mvp4_3_local_micro_flow_packet_supported_edge_kinds,
+    mvp4_3_local_micro_flow_packet_supported_node_kinds,
+    validate_local_micro_flow_agent_json_contract, DictV1CompactStepRef, DictV1CompressionContract,
+    DictV1Dictionary, DictV1PacketBody, DictV1Path, DictV1Step, LocalMicroFlowAuditStep,
+    LocalMicroFlowBudget, LocalMicroFlowBudgetContract, LocalMicroFlowCanonicalPacket,
+    LocalMicroFlowCanonicalPath, LocalMicroFlowCanonicalStep, LocalMicroFlowCapOmission,
+    LocalMicroFlowCodecError, LocalMicroFlowExpansionHandle, LocalMicroFlowFileRef,
+    LocalMicroFlowFunctionIdentity, LocalMicroFlowGap, LocalMicroFlowGenerationState,
+    LocalMicroFlowMicroEdgeRef, LocalMicroFlowMicroNodeRef, LocalMicroFlowOrderKey,
+    LocalMicroFlowPacketCandidate, LocalMicroFlowPacketCandidateDiagnostic,
+    LocalMicroFlowPacketCandidateSet, LocalMicroFlowPacketLanguageCapability,
+    LocalMicroFlowPacketProofClassification, LocalMicroFlowPacketSupportStatus,
+    LocalMicroFlowPathProofClassification, LocalMicroFlowPersistedEdgeFact,
+    LocalMicroFlowPersistedFactInput, LocalMicroFlowPersistedNodeFact,
+    LocalMicroFlowProofClassificationState, LocalMicroFlowProofLinterMapping,
+    LocalMicroFlowProvenance, LocalMicroFlowReturnPathIdentity, LocalMicroFlowStepKind,
+    LOCAL_MICRO_FLOW_AGENT_JSON_PACKET_KIND, LOCAL_MICRO_FLOW_AGENT_JSON_SCHEMA_NAME,
+    LOCAL_MICRO_FLOW_AGENT_JSON_SCHEMA_VERSION, LOCAL_MICRO_FLOW_DICT_V1_CODEC_VERSION,
+    LOCAL_MICRO_FLOW_DICT_V1_ENCODING, LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION,
+    LOCAL_MICRO_FLOW_MAX_LABEL_BYTES, LOCAL_MICRO_FLOW_MAX_SKELETON_TEXT_BYTES,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES,
+    MVP4_3_TYPESCRIPT_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
 };
 pub use model::{
     classify_edge_evidence_role, classify_entity_source_role, combine_evidence_roles,
@@ -59,9 +101,9 @@ pub use normalized::{
     classify_normalized_fact_changes, NormalizedClaimabilityMetadata, NormalizedEdgeFact,
     NormalizedEntityFact, NormalizedFactChangeSet, NormalizedFactEnvelope, NormalizedFactKind,
     NormalizedFactOmission, NormalizedFileFact, NormalizedLifecycleMetadata,
-    NormalizedMicroEdgeFact, NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact,
-    NormalizedSourceRoleFact, NormalizedSourceSpanFact, NormalizedTextEvidenceFact,
-    NormalizedUnresolvedReferenceFact, NORMALIZED_FACT_SCHEMA_VERSION,
+    NormalizedLocalFlowPacketFact, NormalizedMicroEdgeFact, NormalizedPathEvidenceFact,
+    NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact, NormalizedSourceSpanFact,
+    NormalizedTextEvidenceFact, NormalizedUnresolvedReferenceFact, NORMALIZED_FACT_SCHEMA_VERSION,
 };
 pub use validation::{
     aggregate_final_validation_status, classify_validation_finding,

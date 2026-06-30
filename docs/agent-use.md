@@ -330,10 +330,63 @@ runtime proof sources.
 The public agent JSON schemas live under `docs/schemas/agent-json/`, with the
 versioning policy in [agent-json.md](agent-json.md).
 
+MVP4.3 local micro-flow packets are active only for verified TypeScript `.ts`
+production source. Context, routing, validate-edit, watch, and MCP surfaces are
+handle-first: compact output carries packet handles and summary fields, while
+opened packets use `local_micro_flow_packet_agent_json` with
+`encoding: "dict_v1"` and a dictionary/path `packet_body`. Verbose
+`ordered_steps` are explain/audit expansion output, not the default agent-loop
+payload and not a stronger proof source. JavaScript, JSX, TSX, Python, Go,
+Rust, C, C++, Java, C#, Ruby, PHP, and unsupported/text-only files do not emit
+local-flow packet rows or `flow_proof` unless a later fixture-backed
+implementation explicitly changes that status.
+
 Telemetry fields distinguish measured, unknown, and aggregated values. Memory
 is reported as `memory: "unknown"` with `memory_measured: false` unless it is
 actually measured. Timing substages that cannot be separated yet are labeled as
 unknown or aggregated rather than presented as precise measurements.
+
+## Language Support Boundary
+
+The Pre-MVP4.4 language hardening lane verified the current registered
+frontends: JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++,
+Ruby, and PHP. Exact support is fixture-backed and surface-specific; registered
+does not mean every relation is exact.
+
+Current agent-use behavior:
+
+- TypeScript `.ts` production files have the active MVP4.3 local-flow packet
+  slice: local micro-nodes, local micro-edges, compact `dict_v1`
+  `local_flow_packets`, and `flow_proof` only for complete eligible local
+  chains.
+- TypeScript `.mts`/`.cts`, TSX, JavaScript, JSX, Python, Go, Rust, C, C++,
+  Java, C#, Ruby, and PHP remain useful through their verified parser, symbol,
+  text, source-role, unresolved-reference, context-pack, validate-edit, watch,
+  and MCP surfaces, but packet support is `not_implemented` unless the final
+  language matrix says otherwise.
+- Rust, Python, Go, TypeScript, and JavaScript have fixture-backed unresolved
+  reference warning behavior where eligible. External, builtin/std,
+  macro/codegen, dynamic, computed, runtime, compiler/LSP-required, and
+  preprocessor-required cases remain warning/unknown/diagnostic rather than
+  source-proof blockers by default.
+- C and C++ support parser/source-span and include/symbol evidence where
+  verified, while macros, inactive preprocessor branches, templates, generated
+  headers, and function-pointer behavior require preprocessor/compiler evidence
+  before any exact claim.
+- Java and C# support syntax/entity/import/using evidence where verified, while
+  virtual dispatch, reflection, framework annotations, and dependency injection
+  require compiler/LSP or runtime evidence before any exact claim.
+- Ruby and PHP support syntax/entity/require/include evidence where verified,
+  while metaprogramming, magic methods, framework convention routes, and dynamic
+  includes/calls remain unknown or heuristic.
+
+Text, candidate, vector, nuance, and source-navigation evidence can orient an
+agent and cite source text, but they are not typed graph proof. Route and bridge
+future contracts remain inert: no current `ROUTES_TO`, `MOUNTS_ROUTER`, or
+`BRIDGES_TO` edge is claimable unless a source-spanned exact extractor is
+explicitly present. There is no public benchmark, CodeGraph-over-`rg`/CGC,
+official SWE-bench, real-agent patch-quality, or security-vulnerability proof
+claim in these language surfaces.
 
 ## Graph Verification Diagnostics
 

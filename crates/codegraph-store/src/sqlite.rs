@@ -8,13 +8,24 @@ use std::{
 };
 
 use codegraph_core::{
-    mvp4_micro_edge_language_capability, normalize_edge_classification,
-    normalize_repo_relative_path, stable_edge_id, stable_entity_id_for_kind, DerivedClosureEdge,
-    Edge, EdgeClass, EdgeContext, Entity, EntityKind, Exactness, FileRecord, MicroEdgeKind,
-    MicroExactness, MicroSourceRole, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+    build_local_micro_flow_packet_candidates_from_persisted_facts,
+    mvp4_3_local_micro_flow_packet_source_supported, mvp4_micro_edge_language_capability,
+    normalize_edge_classification, normalize_repo_relative_path, stable_edge_id,
+    stable_entity_id_for_kind, validate_local_micro_flow_agent_json_contract, DerivedClosureEdge,
+    Edge, EdgeClass, EdgeContext, Entity, EntityKind, Exactness, FileRecord,
+    LocalMicroFlowPacketCandidate, LocalMicroFlowPacketCandidateSet, LocalMicroFlowPacketStatus,
+    LocalMicroFlowPersistedEdgeFact, LocalMicroFlowPersistedFactInput,
+    LocalMicroFlowPersistedNodeFact, MicroEdgeKind, MicroEdgeSupportStatus, MicroExactness,
+    MicroNodeKind, MicroSourceRole, PathEvidence, ProofLadderLevel, RelationKind, RepoIndexState,
+    SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_ENCODING,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
 };
 use rusqlite::{
-    functions::FunctionFlags, params, types::Type, Connection, OpenFlags, OptionalExtension, Row,
+    functions::FunctionFlags,
+    params, params_from_iter,
+    types::{Type, Value as SqlValue},
+    Connection, OpenFlags, OptionalExtension, Row,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -23,12 +34,13 @@ use crate::{
     GraphStore, RetrievalTraceRecord, StoreError, StoreResult, TextSearchHit, TextSearchKind,
 };
 
-pub const SCHEMA_VERSION: u32 = 22;
+pub const SCHEMA_VERSION: u32 = 23;
 pub const DB_PASSPORT_VERSION: u32 = 1;
 pub const MAX_SYMBOL_VALUE_BYTES: usize = 512;
 pub const MAX_QUALIFIED_NAME_BYTES: usize = 1024;
 pub const MAX_QNAME_PREFIX_BYTES: usize = 768;
 pub const MAX_SPARSE_SIDECAR_PAYLOAD_BYTES: usize = 8192;
+pub const MAX_LOCAL_FLOW_PACKET_BODY_BYTES: usize = 160 * 1024;
 pub const SPARSE_SIDECAR_TABLES: &[&str] = &[
     "entity_features",
     "edge_features",
@@ -336,6 +348,114 @@ pub struct AstMicroEdgeVisibilitySummary {
     pub full_source_body_output: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LocalFlowPacketVisibilitySample {
+    pub packet_id: String,
+    pub packet_kind: String,
+    pub file: String,
+    pub function_entity_id: String,
+    pub function_frame_micro_node_id: Option<String>,
+    pub primary_source_span_id: Option<String>,
+    pub proof_status: String,
+    pub proof_strength: String,
+    pub packet_status: String,
+    pub encoding: String,
+    pub omitted_count: u64,
+    pub truncation_reason: Option<String>,
+    pub unknown_or_gap_count: u64,
+    pub compact_body_bytes: u64,
+    pub audit_body_bytes: Option<u64>,
+    pub expansion_handle: String,
+    pub exactness: String,
+    pub claimability: String,
+    pub source_role: String,
+    pub language: String,
+    pub schema_version: u32,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub packet_body_hash: String,
+    pub packet_body_inlined: bool,
+    pub ordered_steps_inlined: bool,
+    pub full_source_body_output: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LocalFlowPacketVisibilitySummary {
+    pub total_rows: u64,
+    pub rows_by_packet_kind: BTreeMap<String, u64>,
+    pub rows_by_proof_status: BTreeMap<String, u64>,
+    pub rows_by_proof_strength: BTreeMap<String, u64>,
+    pub rows_by_packet_status: BTreeMap<String, u64>,
+    pub rows_by_language: BTreeMap<String, u64>,
+    pub rows_by_source_role: BTreeMap<String, u64>,
+    pub files_represented: u64,
+    pub functions_represented: u64,
+    pub schema_versions: Vec<u32>,
+    pub row_schema_versions: Vec<u32>,
+    pub payload_versions: Vec<u32>,
+    pub extraction_versions: Vec<String>,
+    pub exactness_counts: BTreeMap<String, u64>,
+    pub claimability_counts: BTreeMap<String, u64>,
+    pub cap_hit_count: u64,
+    pub omitted_count: u64,
+    pub compact_body_bytes: u64,
+    pub audit_body_bytes: u64,
+    pub estimated_payload_bytes: u64,
+    pub sample_limit: usize,
+    pub sample: Vec<LocalFlowPacketVisibilitySample>,
+    pub query_plan: Vec<String>,
+    pub default_full_table_scan: bool,
+    pub full_source_body_output: bool,
+    pub ordered_steps_default_inline: bool,
+}
+
+impl LocalFlowPacketVisibilitySummary {
+    fn empty(sample_limit: usize) -> Self {
+        Self {
+            total_rows: 0,
+            rows_by_packet_kind: BTreeMap::new(),
+            rows_by_proof_status: BTreeMap::new(),
+            rows_by_proof_strength: BTreeMap::new(),
+            rows_by_packet_status: BTreeMap::new(),
+            rows_by_language: BTreeMap::new(),
+            rows_by_source_role: BTreeMap::new(),
+            files_represented: 0,
+            functions_represented: 0,
+            schema_versions: Vec::new(),
+            row_schema_versions: Vec::new(),
+            payload_versions: Vec::new(),
+            extraction_versions: Vec::new(),
+            exactness_counts: BTreeMap::new(),
+            claimability_counts: BTreeMap::new(),
+            cap_hit_count: 0,
+            omitted_count: 0,
+            compact_body_bytes: 0,
+            audit_body_bytes: 0,
+            estimated_payload_bytes: 0,
+            sample_limit,
+            sample: Vec::new(),
+            query_plan: Vec::new(),
+            default_full_table_scan: false,
+            full_source_body_output: false,
+            ordered_steps_default_inline: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LocalFlowPacketQueryOptions {
+    pub limit: usize,
+    pub packet_id: Option<String>,
+    pub file_id: Option<String>,
+    pub function_query: Option<String>,
+    pub proof_status: Option<String>,
+    pub proof_strength: Option<String>,
+    pub language: Option<String>,
+    pub source_role: Option<String>,
+    pub include_packet_body: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AstMicroEdgeRow {
     pub micro_edge_id: String,
@@ -364,18 +484,31 @@ pub struct LocalFlowPacketRow {
     pub packet_id: String,
     pub file_id: String,
     pub function_entity_id: String,
+    pub function_frame_micro_node_id: Option<String>,
     pub packet_kind: String,
+    pub encoding: String,
+    pub packet_body: String,
+    pub packet_body_hash: String,
     pub compressed_steps: String,
     pub source_span_ids_json: String,
     pub primary_source_span_id: Option<String>,
     pub proof_status: String,
+    pub proof_strength: String,
+    pub packet_status: String,
     pub schema_version: u32,
+    pub row_schema_version: u32,
     pub extraction_version: String,
     pub exactness: String,
     pub provenance_id: Option<String>,
     pub source_role: String,
     pub language: String,
     pub payload_version: u32,
+    pub source_micro_node_extraction_versions_json: String,
+    pub source_micro_edge_extraction_versions_json: String,
+    pub cap_state_json: String,
+    pub omitted_count: u64,
+    pub compact_body_bytes: u64,
+    pub audit_body_bytes: Option<u64>,
     pub claimability: String,
     pub lifecycle_binding: String,
 }
@@ -2338,6 +2471,77 @@ impl SqliteGraphStore {
         collect_rows(rows)
     }
 
+    pub fn local_micro_flow_packet_candidates_for_file(
+        &self,
+        file_id: &str,
+    ) -> StoreResult<LocalMicroFlowPacketCandidateSet> {
+        let repo_relative_path = normalize_repo_relative_path(file_id);
+        let node_rows = self.ast_micro_nodes_for_file(&repo_relative_path)?;
+        let edge_rows = self.ast_micro_edges_for_file(&repo_relative_path)?;
+
+        let mut nodes = Vec::with_capacity(node_rows.len());
+        for row in node_rows {
+            let source_span = <Self as GraphStore>::get_source_span(self, &row.source_span_id)?;
+            nodes.push(LocalMicroFlowPersistedNodeFact {
+                micro_node_id: row.micro_node_id,
+                file_id: row.file_id,
+                function_entity_id: row.function_entity_id,
+                scope_entity_id: row.scope_entity_id,
+                micro_kind: micro_node_kind_from_storage_str(&row.micro_kind),
+                raw_micro_kind: row.micro_kind,
+                symbol: row.symbol,
+                source_span,
+                exactness: MicroExactness::from_storage_str(&row.exactness)
+                    .unwrap_or(MicroExactness::Unknown),
+                provenance_id: row.provenance_id,
+                source_role: MicroSourceRole::from_storage_str(&row.source_role)
+                    .unwrap_or(MicroSourceRole::Unknown),
+                language: row.language,
+                schema_version: row.schema_version,
+                payload_version: row.payload_version,
+                extraction_version: row.extraction_version,
+                claimability: row.claimability,
+                lifecycle_binding: row.lifecycle_binding,
+            });
+        }
+
+        let mut edges = Vec::with_capacity(edge_rows.len());
+        for row in edge_rows {
+            let source_span = row
+                .source_span_id
+                .as_deref()
+                .map(|span_id| <Self as GraphStore>::get_source_span(self, span_id))
+                .transpose()?
+                .flatten();
+            edges.push(LocalMicroFlowPersistedEdgeFact {
+                micro_edge_id: row.micro_edge_id,
+                file_id: row.file_id,
+                function_entity_id: row.function_entity_id,
+                scope_entity_id: row.scope_entity_id,
+                source_micro_node_id: row.source_micro_node_id,
+                target_micro_node_id: row.target_micro_node_id,
+                relation_kind: MicroEdgeKind::from_storage_str(&row.relation_kind),
+                raw_relation_kind: row.relation_kind,
+                source_span,
+                exactness: MicroExactness::from_storage_str(&row.exactness)
+                    .unwrap_or(MicroExactness::Unknown),
+                provenance_id: row.provenance_id,
+                source_role: MicroSourceRole::from_storage_str(&row.source_role)
+                    .unwrap_or(MicroSourceRole::Unknown),
+                language: row.language,
+                frontend: row.frontend,
+                schema_version: row.schema_version,
+                payload_version: row.payload_version,
+                extraction_version: row.extraction_version,
+                claimability: row.claimability,
+                lifecycle_binding: row.lifecycle_binding,
+            });
+        }
+
+        let input = LocalMicroFlowPersistedFactInput::new(repo_relative_path, nodes, edges);
+        Ok(build_local_micro_flow_packet_candidates_from_persisted_facts(&input))
+    }
+
     pub fn ast_micro_edge_visibility_summary(
         &self,
         sample_limit: usize,
@@ -2538,9 +2742,11 @@ impl SqliteGraphStore {
                 row.micro_edge_id
             )));
         }
-        if row.provenance_id.is_none() && row.relation_kind == "local_returns_to" {
+        if row.provenance_id.is_none()
+            && MicroEdgeKind::from_storage_str(&row.relation_kind).is_some()
+        {
             return Err(StoreError::Message(format!(
-                "local_returns_to ast_micro_edge {} is missing provenance_id",
+                "ast_micro_edge {} is missing provenance_id",
                 row.micro_edge_id
             )));
         }
@@ -2555,9 +2761,22 @@ impl SqliteGraphStore {
         let Some(relation_kind) = MicroEdgeKind::from_storage_str(&row.relation_kind) else {
             return Ok(());
         };
-        if relation_kind != MicroEdgeKind::LocalReturnsTo {
+        // Allowed (head, tail) endpoint micro-kinds per persisted micro-edge relation.
+        let endpoint_kinds: Option<(&[&str], &[&str])> = match relation_kind {
+            MicroEdgeKind::LocalReturnsTo => Some((&["return_site"], &["function_frame"])),
+            MicroEdgeKind::LocalReads => Some((&["value_use"], &["parameter", "local_binding"])),
+            MicroEdgeKind::LocalWrites => {
+                Some((&["assignment_site"], &["parameter", "local_binding"]))
+            }
+            MicroEdgeKind::LocalFlowsTo => Some((
+                &["parameter", "local_binding"],
+                &["parameter", "local_binding"],
+            )),
+            _ => None,
+        };
+        let Some((head_kinds, tail_kinds)) = endpoint_kinds else {
             return Ok(());
-        }
+        };
 
         let head = self.required_ast_micro_node_endpoint(
             &row.micro_edge_id,
@@ -2569,16 +2788,16 @@ impl SqliteGraphStore {
             "tail",
             &row.target_micro_node_id,
         )?;
-        if head.micro_kind != "return_site" {
+        if !head_kinds.contains(&head.micro_kind.as_str()) {
             return Err(StoreError::Message(format!(
-                "local_returns_to ast_micro_edge {} head must be return_site, got {}",
-                row.micro_edge_id, head.micro_kind
+                "ast_micro_edge {} head must be one of {:?}, got {}",
+                row.micro_edge_id, head_kinds, head.micro_kind
             )));
         }
-        if tail.micro_kind != "function_frame" {
+        if !tail_kinds.contains(&tail.micro_kind.as_str()) {
             return Err(StoreError::Message(format!(
-                "local_returns_to ast_micro_edge {} tail must be function_frame, got {}",
-                row.micro_edge_id, tail.micro_kind
+                "ast_micro_edge {} tail must be one of {:?}, got {}",
+                row.micro_edge_id, tail_kinds, tail.micro_kind
             )));
         }
         if head.file_id != row.file_id || tail.file_id != row.file_id {
@@ -2600,15 +2819,22 @@ impl SqliteGraphStore {
             MicroSourceRole::from_storage_str(&row.source_role).unwrap_or(MicroSourceRole::Unknown);
         let exactness =
             MicroExactness::from_storage_str(&row.exactness).unwrap_or(MicroExactness::Unknown);
-        if !capability.supports_claimable_exact(
-            &row.frontend,
-            source_role,
-            exactness,
-            &row.claimability,
-            &row.extraction_version,
-        ) {
+        if !matches!(
+            capability.activation_status,
+            MicroEdgeSupportStatus::ExactCapable
+                | MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+        ) || !capability.matches_frontend(&row.frontend)
+            || source_role != MicroSourceRole::Production
+            || exactness != capability.exactness_capability
+            || !capability
+                .claimability_label
+                .is_some_and(|expected| row.claimability.trim() == expected)
+            || !capability
+                .extraction_version
+                .is_some_and(|expected| row.extraction_version.trim() == expected)
+        {
             return Err(StoreError::Message(format!(
-                "local_returns_to ast_micro_edge {} is not enabled by the active micro-edge language capability",
+                "ast_micro_edge {} is not enabled by the active micro-edge language capability",
                 row.micro_edge_id
             )));
         }
@@ -2645,42 +2871,717 @@ impl SqliteGraphStore {
     }
 
     pub fn insert_local_flow_packet(&self, row: &LocalFlowPacketRow) -> StoreResult<()> {
+        self.validate_local_flow_packet_row(row)?;
         validate_sparse_sidecar_payload_len(
             "local_flow_packets.compressed_steps",
             &row.compressed_steps,
         )?;
+        validate_local_flow_packet_body_len(&row.packet_body)?;
         validate_sparse_sidecar_payload_len(
             "local_flow_packets.source_span_ids_json",
             &row.source_span_ids_json,
         )?;
+        validate_sparse_sidecar_payload_len(
+            "local_flow_packets.source_micro_node_extraction_versions_json",
+            &row.source_micro_node_extraction_versions_json,
+        )?;
+        validate_sparse_sidecar_payload_len(
+            "local_flow_packets.source_micro_edge_extraction_versions_json",
+            &row.source_micro_edge_extraction_versions_json,
+        )?;
+        validate_sparse_sidecar_payload_len(
+            "local_flow_packets.cap_state_json",
+            &row.cap_state_json,
+        )?;
         self.connection.execute(
             "INSERT INTO local_flow_packets (
-                packet_id, file_id, function_entity_id, packet_kind,
+                packet_id, file_id, function_entity_id, function_frame_micro_node_id,
+                packet_kind, encoding, packet_body, packet_body_hash,
                 compressed_steps, source_span_ids_json, primary_source_span_id,
-                proof_status, schema_version, extraction_version, exactness,
-                provenance_id, source_role, language, payload_version,
+                proof_status, proof_strength, packet_status, schema_version,
+                row_schema_version, extraction_version, exactness, provenance_id,
+                source_role, language, payload_version,
+                source_micro_node_extraction_versions_json,
+                source_micro_edge_extraction_versions_json, cap_state_json,
+                omitted_count, compact_body_bytes, audit_body_bytes,
                 claimability, lifecycle_binding
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
             params![
                 row.packet_id,
                 row.file_id,
                 row.function_entity_id,
+                row.function_frame_micro_node_id.as_deref(),
                 row.packet_kind,
+                row.encoding,
+                row.packet_body,
+                row.packet_body_hash,
                 row.compressed_steps,
                 row.source_span_ids_json,
                 row.primary_source_span_id.as_deref(),
                 row.proof_status,
+                row.proof_strength,
+                row.packet_status,
                 i64::from(row.schema_version),
+                i64::from(row.row_schema_version),
                 row.extraction_version,
                 row.exactness,
                 row.provenance_id.as_deref(),
                 row.source_role,
                 row.language,
                 i64::from(row.payload_version),
+                row.source_micro_node_extraction_versions_json,
+                row.source_micro_edge_extraction_versions_json,
+                row.cap_state_json,
+                row.omitted_count as i64,
+                row.compact_body_bytes as i64,
+                row.audit_body_bytes.map(|value| value as i64),
                 row.claimability,
                 row.lifecycle_binding
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn replace_local_flow_packets_for_file(
+        &self,
+        file_id: &str,
+        rows: &[LocalFlowPacketRow],
+    ) -> StoreResult<usize> {
+        let normalized_file_id = normalize_repo_relative_path(file_id);
+        let mut packet_ids = BTreeSet::new();
+        for row in rows {
+            if normalize_repo_relative_path(&row.file_id) != normalized_file_id {
+                return Err(StoreError::Message(format!(
+                    "local_flow_packet {} file mismatch: row {}, replacement {}",
+                    row.packet_id, row.file_id, normalized_file_id
+                )));
+            }
+            if !packet_ids.insert(row.packet_id.as_str()) {
+                return Err(StoreError::Message(format!(
+                    "duplicate local_flow_packet id {} during file replacement",
+                    row.packet_id
+                )));
+            }
+            self.validate_local_flow_packet_row(row)?;
+        }
+        self.connection.execute(
+            "DELETE FROM local_flow_packets WHERE file_id = ?1",
+            [&normalized_file_id],
+        )?;
+        for row in rows {
+            self.insert_local_flow_packet(row)?;
+        }
+        Ok(rows.len())
+    }
+
+    pub fn local_flow_packet_count_for_file(&self, file_id: &str) -> StoreResult<u64> {
+        if !exists_in_sqlite_master(&self.connection, "table", "local_flow_packets")? {
+            return Ok(0);
+        }
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_flow_packets WHERE file_id = ?1",
+                [normalize_repo_relative_path(file_id)],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count.max(0) as u64)
+            .map_err(StoreError::from)
+    }
+
+    pub fn local_flow_packets_for_file(
+        &self,
+        file_id: &str,
+    ) -> StoreResult<Vec<LocalFlowPacketRow>> {
+        if !exists_in_sqlite_master(&self.connection, "table", "local_flow_packets")? {
+            return Ok(Vec::new());
+        }
+        let mut statement = self.connection.prepare_cached(
+            "SELECT packet_id, file_id, function_entity_id, function_frame_micro_node_id,
+                    packet_kind, encoding, packet_body, packet_body_hash, compressed_steps,
+                    source_span_ids_json, primary_source_span_id, proof_status, proof_strength,
+                    packet_status, schema_version, row_schema_version, extraction_version,
+                    exactness, provenance_id, source_role, language, payload_version,
+                    source_micro_node_extraction_versions_json,
+                    source_micro_edge_extraction_versions_json, cap_state_json,
+                    omitted_count, compact_body_bytes, audit_body_bytes,
+                    claimability, lifecycle_binding
+             FROM local_flow_packets
+             WHERE file_id = ?1
+             ORDER BY function_entity_id, packet_id",
+        )?;
+        let rows = statement.query_map([normalize_repo_relative_path(file_id)], |row| {
+            Ok(LocalFlowPacketRow {
+                packet_id: row.get("packet_id")?,
+                file_id: row.get("file_id")?,
+                function_entity_id: row.get("function_entity_id")?,
+                function_frame_micro_node_id: row.get("function_frame_micro_node_id")?,
+                packet_kind: row.get("packet_kind")?,
+                encoding: row.get("encoding")?,
+                packet_body: row.get("packet_body")?,
+                packet_body_hash: row.get("packet_body_hash")?,
+                compressed_steps: row.get("compressed_steps")?,
+                source_span_ids_json: row.get("source_span_ids_json")?,
+                primary_source_span_id: row.get("primary_source_span_id")?,
+                proof_status: row.get("proof_status")?,
+                proof_strength: row.get("proof_strength")?,
+                packet_status: row.get("packet_status")?,
+                schema_version: row.get::<_, u32>("schema_version")?,
+                row_schema_version: row.get::<_, u32>("row_schema_version")?,
+                extraction_version: row.get("extraction_version")?,
+                exactness: row.get("exactness")?,
+                provenance_id: row.get("provenance_id")?,
+                source_role: row.get("source_role")?,
+                language: row.get("language")?,
+                payload_version: row.get::<_, u32>("payload_version")?,
+                source_micro_node_extraction_versions_json: row
+                    .get("source_micro_node_extraction_versions_json")?,
+                source_micro_edge_extraction_versions_json: row
+                    .get("source_micro_edge_extraction_versions_json")?,
+                cap_state_json: row.get("cap_state_json")?,
+                omitted_count: row.get::<_, i64>("omitted_count")?.max(0) as u64,
+                compact_body_bytes: row.get::<_, i64>("compact_body_bytes")?.max(0) as u64,
+                audit_body_bytes: row
+                    .get::<_, Option<i64>>("audit_body_bytes")?
+                    .map(|value| value.max(0) as u64),
+                claimability: row.get("claimability")?,
+                lifecycle_binding: row.get("lifecycle_binding")?,
+            })
+        })?;
+        collect_rows(rows)
+    }
+
+    pub fn local_flow_packet_visibility_summary(
+        &self,
+        sample_limit: usize,
+    ) -> StoreResult<LocalFlowPacketVisibilitySummary> {
+        let sample_limit = sample_limit.min(100);
+        if !exists_in_sqlite_master(&self.connection, "table", "local_flow_packets")? {
+            return Ok(LocalFlowPacketVisibilitySummary::empty(sample_limit));
+        }
+
+        let total_rows = count_rows(&self.connection, "local_flow_packets")?;
+        let query_plan = explain_query_plan_details(
+            &self.connection,
+            "SELECT packet_kind, COUNT(*) FROM local_flow_packets GROUP BY packet_kind",
+        )?;
+        let mut statement = self.connection.prepare_cached(
+            "SELECT packet_id, file_id, function_entity_id, function_frame_micro_node_id,
+                    packet_kind, encoding, packet_body_hash, compressed_steps,
+                    source_span_ids_json, primary_source_span_id, proof_status, proof_strength,
+                    packet_status, schema_version, row_schema_version, extraction_version,
+                    exactness, provenance_id, source_role, language, payload_version,
+                    source_micro_node_extraction_versions_json,
+                    source_micro_edge_extraction_versions_json, cap_state_json,
+                    omitted_count, compact_body_bytes, audit_body_bytes,
+                    claimability, lifecycle_binding
+             FROM local_flow_packets
+             ORDER BY file_id, function_entity_id, packet_id
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([sample_limit as i64], |row| {
+            let cap_state_json: String = row.get("cap_state_json")?;
+            let cap_state = serde_json::from_str::<Value>(&cap_state_json).unwrap_or(Value::Null);
+            Ok(LocalFlowPacketVisibilitySample {
+                packet_id: row.get("packet_id")?,
+                packet_kind: row.get("packet_kind")?,
+                file: row.get("file_id")?,
+                function_entity_id: row.get("function_entity_id")?,
+                function_frame_micro_node_id: row.get("function_frame_micro_node_id")?,
+                primary_source_span_id: row.get("primary_source_span_id")?,
+                proof_status: row.get("proof_status")?,
+                proof_strength: row.get("proof_strength")?,
+                packet_status: row.get("packet_status")?,
+                encoding: row.get("encoding")?,
+                omitted_count: row.get::<_, i64>("omitted_count")?.max(0) as u64,
+                truncation_reason: local_flow_packet_truncation_reason(&cap_state),
+                unknown_or_gap_count: local_flow_packet_gap_count_from_cap_state(&cap_state),
+                compact_body_bytes: row.get::<_, i64>("compact_body_bytes")?.max(0) as u64,
+                audit_body_bytes: row
+                    .get::<_, Option<i64>>("audit_body_bytes")?
+                    .map(|value| value.max(0) as u64),
+                expansion_handle: format!(
+                    "audit.local_flow_packets.packet:{}",
+                    row.get::<_, String>("packet_id")?
+                ),
+                exactness: row.get("exactness")?,
+                claimability: row.get("claimability")?,
+                source_role: row.get("source_role")?,
+                language: row.get("language")?,
+                schema_version: row.get::<_, u32>("schema_version")?,
+                row_schema_version: row.get::<_, u32>("row_schema_version")?,
+                payload_version: row.get::<_, u32>("payload_version")?,
+                extraction_version: row.get("extraction_version")?,
+                packet_body_hash: row.get("packet_body_hash")?,
+                packet_body_inlined: false,
+                ordered_steps_inlined: false,
+                full_source_body_output: false,
+            })
+        })?;
+        let sample = collect_rows(rows)?;
+        let (cap_hit_count, omitted_count) = local_flow_packet_cap_summary(&self.connection)?;
+        let compact_body_bytes: i64 = self.connection.query_row(
+            "SELECT COALESCE(SUM(compact_body_bytes), 0) FROM local_flow_packets",
+            [],
+            |row| row.get(0),
+        )?;
+        let audit_body_bytes: i64 = self.connection.query_row(
+            "SELECT COALESCE(SUM(COALESCE(audit_body_bytes, 0)), 0) FROM local_flow_packets",
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(LocalFlowPacketVisibilitySummary {
+            total_rows,
+            rows_by_packet_kind: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "packet_kind",
+            )?,
+            rows_by_proof_status: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "proof_status",
+            )?,
+            rows_by_proof_strength: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "proof_strength",
+            )?,
+            rows_by_packet_status: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "packet_status",
+            )?,
+            rows_by_language: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "language",
+            )?,
+            rows_by_source_role: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "source_role",
+            )?,
+            files_represented: count_local_flow_packets_distinct(&self.connection, "file_id")?,
+            functions_represented: count_local_flow_packets_distinct(
+                &self.connection,
+                "function_entity_id",
+            )?,
+            schema_versions: distinct_local_flow_packet_u32_values(
+                &self.connection,
+                "schema_version",
+            )?,
+            row_schema_versions: distinct_local_flow_packet_u32_values(
+                &self.connection,
+                "row_schema_version",
+            )?,
+            payload_versions: distinct_local_flow_packet_u32_values(
+                &self.connection,
+                "payload_version",
+            )?,
+            extraction_versions: distinct_local_flow_packet_text_values(
+                &self.connection,
+                "extraction_version",
+            )?,
+            exactness_counts: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "exactness",
+            )?,
+            claimability_counts: count_local_flow_packets_by_text_column(
+                &self.connection,
+                "claimability",
+            )?,
+            cap_hit_count,
+            omitted_count,
+            compact_body_bytes: compact_body_bytes.max(0) as u64,
+            audit_body_bytes: audit_body_bytes.max(0) as u64,
+            estimated_payload_bytes: local_flow_packet_estimated_payload_bytes(&self.connection)?,
+            sample_limit,
+            sample,
+            query_plan,
+            default_full_table_scan: false,
+            full_source_body_output: false,
+            ordered_steps_default_inline: false,
+        })
+    }
+
+    pub fn query_local_flow_packets(
+        &self,
+        options: &LocalFlowPacketQueryOptions,
+    ) -> StoreResult<Vec<LocalFlowPacketRow>> {
+        if !exists_in_sqlite_master(&self.connection, "table", "local_flow_packets")? {
+            return Ok(Vec::new());
+        }
+        let mut sql = String::from(
+            "SELECT packet_id, file_id, function_entity_id, function_frame_micro_node_id,
+                    packet_kind, encoding, packet_body, packet_body_hash, compressed_steps,
+                    source_span_ids_json, primary_source_span_id, proof_status, proof_strength,
+                    packet_status, schema_version, row_schema_version, extraction_version,
+                    exactness, provenance_id, source_role, language, payload_version,
+                    source_micro_node_extraction_versions_json,
+                    source_micro_edge_extraction_versions_json, cap_state_json,
+                    omitted_count, compact_body_bytes, audit_body_bytes,
+                    claimability, lifecycle_binding
+             FROM local_flow_packets",
+        );
+        let mut clauses = Vec::new();
+        let mut params = Vec::<SqlValue>::new();
+        if let Some(packet_id) = options
+            .packet_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push("packet_id = ?".to_string());
+            params.push(SqlValue::Text(packet_id.to_string()));
+        }
+        if let Some(file_id) = options.file_id.as_deref().filter(|value| !value.is_empty()) {
+            clauses.push("file_id = ?".to_string());
+            params.push(SqlValue::Text(normalize_repo_relative_path(file_id)));
+        }
+        if let Some(function_query) = options
+            .function_query
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push(
+                "(function_entity_id = ? OR function_frame_micro_node_id = ? OR function_entity_id LIKE ?)".to_string(),
+            );
+            params.push(SqlValue::Text(function_query.to_string()));
+            params.push(SqlValue::Text(function_query.to_string()));
+            params.push(SqlValue::Text(format!("%{function_query}%")));
+        }
+        if let Some(proof_status) = options
+            .proof_status
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push("proof_status = ?".to_string());
+            params.push(SqlValue::Text(proof_status.to_string()));
+        }
+        if let Some(proof_strength) = options
+            .proof_strength
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push("proof_strength = ?".to_string());
+            params.push(SqlValue::Text(proof_strength.to_string()));
+        }
+        if let Some(language) = options
+            .language
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push("language = ?".to_string());
+            params.push(SqlValue::Text(language.to_string()));
+        }
+        if let Some(source_role) = options
+            .source_role
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push("source_role = ?".to_string());
+            params.push(SqlValue::Text(source_role.to_string()));
+        }
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+        sql.push_str(" ORDER BY file_id, function_entity_id, packet_id LIMIT ?");
+        params.push(SqlValue::Integer(options.limit.max(1).min(100) as i64));
+
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let rows = statement.query_map(params_from_iter(params.iter()), local_flow_packet_row)?;
+        collect_rows(rows)
+    }
+
+    pub fn local_flow_packet_rows_from_candidates(
+        &self,
+        candidates: &LocalMicroFlowPacketCandidateSet,
+    ) -> StoreResult<Vec<LocalFlowPacketRow>> {
+        let mut rows = Vec::new();
+        for candidate in &candidates.candidates {
+            if let Some(row) = self.local_flow_packet_row_from_candidate(candidate)? {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
+    fn local_flow_packet_row_from_candidate(
+        &self,
+        candidate: &LocalMicroFlowPacketCandidate,
+    ) -> StoreResult<Option<LocalFlowPacketRow>> {
+        let Some(packet) = candidate.packet.as_ref() else {
+            return Ok(None);
+        };
+        if !mvp4_3_local_micro_flow_packet_source_supported(
+            &candidate.language,
+            candidate.source_role,
+        ) {
+            return Ok(None);
+        }
+
+        let agent_json = packet.to_agent_json(false).map_err(|error| {
+            StoreError::Message(format!(
+                "local_flow_packet {} dict_v1 validation failed: {error}",
+                candidate.packet_id
+            ))
+        })?;
+        validate_local_micro_flow_agent_json_contract(&agent_json).map_err(|error| {
+            StoreError::Message(format!(
+                "local_flow_packet {} agent JSON contract failed: {error}",
+                candidate.packet_id
+            ))
+        })?;
+        if agent_json.get("ordered_steps").is_some() {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} must not inline ordered_steps by default",
+                candidate.packet_id
+            )));
+        }
+
+        let packet_body = agent_json.get("packet_body").cloned().ok_or_else(|| {
+            StoreError::Message(format!(
+                "local_flow_packet {} missing compact packet_body",
+                candidate.packet_id
+            ))
+        })?;
+        let packet_body_json = serde_json::to_string(&packet_body)
+            .map_err(|error| StoreError::Message(error.to_string()))?;
+        let compact_body_bytes = packet_body_json.len() as u64;
+        let packet_body_hash = local_flow_packet_body_hash(&packet_body_json);
+        let source_span_ids = local_flow_packet_source_span_ids(candidate, packet);
+        let source_span_ids_json = serde_json::to_string(&source_span_ids)
+            .map_err(|error| StoreError::Message(error.to_string()))?;
+        let cap_state_json = serde_json::to_string(&json!({
+            "omitted_count": packet.budget.omitted_count,
+            "truncation_reason": if packet.budget.truncation_reason.is_empty() {
+                Value::Null
+            } else {
+                Value::String(packet.budget.truncation_reason.clone())
+            },
+            "max_packet_steps": packet.budget.max_packet_steps,
+            "max_packet_bytes": packet.budget.max_packet_bytes,
+            "compact_body_bytes": packet_body_json.len(),
+            "unknown_or_gap_count": packet.unknown_unsupported_gaps.len(),
+            "audit_ordered_steps_available": true
+        }))
+        .map_err(|error| StoreError::Message(error.to_string()))?;
+        let audit_body_bytes = packet
+            .to_ordered_steps()
+            .ok()
+            .and_then(|steps| serde_json::to_string(&steps).ok())
+            .map(|value| value.len() as u64);
+        let proof_strength = local_micro_flow_proof_strength_str(candidate.proof_strength);
+        let proof_status = agent_json
+            .get("proof_status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let exactness = if candidate.proof_strength == ProofLadderLevel::FlowProof {
+            MicroExactness::DerivedWithProvenance.as_str()
+        } else if candidate.proof_strength == ProofLadderLevel::GraphRelationProof {
+            MicroExactness::Exact.as_str()
+        } else {
+            MicroExactness::Unknown.as_str()
+        };
+        let function_entity_id = candidate
+            .function_entity_id
+            .clone()
+            .unwrap_or_else(|| candidate.function_micro_node_id.clone());
+        let row = LocalFlowPacketRow {
+            packet_id: candidate.packet_id.clone(),
+            file_id: normalize_repo_relative_path(&candidate.file_id),
+            function_entity_id,
+            function_frame_micro_node_id: Some(candidate.function_micro_node_id.clone()),
+            packet_kind: candidate.packet_kind.clone(),
+            encoding: LOCAL_MICRO_FLOW_DICT_V1_ENCODING.to_string(),
+            packet_body: packet_body_json.clone(),
+            packet_body_hash: packet_body_hash.clone(),
+            compressed_steps: serde_json::to_string(&json!({
+                "encoding": LOCAL_MICRO_FLOW_DICT_V1_ENCODING,
+                "packet_body_storage": "packet_body",
+                "packet_body_hash": packet_body_hash,
+                "ordered_steps_default_inline": false,
+                "full_source_body_storage": false
+            }))
+            .map_err(|error| StoreError::Message(error.to_string()))?,
+            source_span_ids_json,
+            primary_source_span_id: Some(candidate.function_micro_node_id.clone()),
+            proof_status,
+            proof_strength: proof_strength.to_string(),
+            packet_status: candidate.packet_status.as_str().to_string(),
+            schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            row_schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+            exactness: exactness.to_string(),
+            provenance_id: Some(candidate.packet_id.clone()),
+            source_role: candidate.source_role.as_str().to_string(),
+            language: candidate.language.clone(),
+            payload_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+            source_micro_node_extraction_versions_json: serde_json::to_string(
+                &candidate.source_micro_node_extraction_versions,
+            )
+            .map_err(|error| StoreError::Message(error.to_string()))?,
+            source_micro_edge_extraction_versions_json: serde_json::to_string(
+                &candidate.source_micro_edge_extraction_versions,
+            )
+            .map_err(|error| StoreError::Message(error.to_string()))?,
+            cap_state_json,
+            omitted_count: packet.budget.omitted_count,
+            compact_body_bytes,
+            audit_body_bytes,
+            claimability: local_flow_packet_claimability(candidate.packet_status),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+        Ok(Some(row))
+    }
+
+    fn validate_local_flow_packet_row(&self, row: &LocalFlowPacketRow) -> StoreResult<()> {
+        if row.packet_kind != MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} has unsupported packet_kind {}",
+                row.packet_id, row.packet_kind
+            )));
+        }
+        if row.encoding != LOCAL_MICRO_FLOW_DICT_V1_ENCODING {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} encoding must be dict_v1",
+                row.packet_id
+            )));
+        }
+        let compressed_summary: Value = serde_json::from_str(&row.compressed_steps)
+            .map_err(|error| StoreError::Message(error.to_string()))?;
+        if compressed_summary
+            .get("packet_body_hash")
+            .and_then(Value::as_str)
+            != Some(row.packet_body_hash.as_str())
+            || compressed_summary.get("encoding").and_then(Value::as_str)
+                != Some(LOCAL_MICRO_FLOW_DICT_V1_ENCODING)
+            || compressed_summary
+                .get("ordered_steps_default_inline")
+                .and_then(Value::as_bool)
+                != Some(false)
+            || compressed_summary
+                .get("full_source_body_storage")
+                .and_then(Value::as_bool)
+                != Some(false)
+        {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} compressed_steps summary does not match packet_body",
+                row.packet_id
+            )));
+        }
+        if row.packet_body_hash != local_flow_packet_body_hash(&row.packet_body) {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} packet_body_hash mismatch",
+                row.packet_id
+            )));
+        }
+        if row.schema_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION
+            || row.row_schema_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION
+            || row.payload_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION
+            || row.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} version contract mismatch",
+                row.packet_id
+            )));
+        }
+        let row_source_role =
+            MicroSourceRole::from_storage_str(&row.source_role).ok_or_else(|| {
+                StoreError::Message(format!(
+                    "local_flow_packet {} has unsupported source_role {}",
+                    row.packet_id, row.source_role
+                ))
+            })?;
+        if !mvp4_3_local_micro_flow_packet_source_supported(&row.language, row_source_role) {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} is outside the authorized packet adapter production scope",
+                row.packet_id
+            )));
+        }
+        if row.packet_body.contains("\"full_source_body\"")
+            || row.packet_body.contains("\"source_body\"")
+            || row.packet_body.contains("\"ordered_steps\"")
+        {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} contains forbidden verbose or full-source fields",
+                row.packet_id
+            )));
+        }
+        let packet_body: Value = serde_json::from_str(&row.packet_body)
+            .map_err(|error| StoreError::Message(error.to_string()))?;
+        validate_dict_v1_packet_body_value(&row.packet_id, &packet_body)?;
+        let source_span_ids = parse_string_array_json(
+            &row.source_span_ids_json,
+            "local_flow_packets.source_span_ids_json",
+        )?;
+        if LocalMicroFlowPacketStatus::from_storage_str(&row.packet_status)
+            .is_some_and(LocalMicroFlowPacketStatus::rows_may_be_claimable)
+            && source_span_ids.is_empty()
+        {
+            return Err(StoreError::Message(format!(
+                "claimable local_flow_packet {} is missing source span ids",
+                row.packet_id
+            )));
+        }
+        for span_id in source_span_ids {
+            if <Self as GraphStore>::get_source_span(self, &span_id)?.is_none() {
+                return Err(StoreError::Message(format!(
+                    "local_flow_packet {} references missing source span {}",
+                    row.packet_id, span_id
+                )));
+            }
+        }
+        if let Some(span_id) = row.primary_source_span_id.as_deref() {
+            if <Self as GraphStore>::get_source_span(self, span_id)?.is_none() {
+                return Err(StoreError::Message(format!(
+                    "local_flow_packet {} references missing primary source span {}",
+                    row.packet_id, span_id
+                )));
+            }
+        }
+        if let Some(function_frame_id) = row.function_frame_micro_node_id.as_deref() {
+            let function_frame = ast_micro_node_endpoint(&self.connection, function_frame_id)?
+                .ok_or_else(|| {
+                    StoreError::Message(format!(
+                        "local_flow_packet {} missing function frame endpoint {}",
+                        row.packet_id, function_frame_id
+                    ))
+                })?;
+            if function_frame.micro_kind != "function_frame"
+                || function_frame.file_id != row.file_id
+                || function_frame.function_entity_id.as_deref()
+                    != Some(row.function_entity_id.as_str())
+            {
+                return Err(StoreError::Message(format!(
+                    "local_flow_packet {} function frame linkage mismatch",
+                    row.packet_id
+                )));
+            }
+        }
+        let node_versions = parse_string_array_json(
+            &row.source_micro_node_extraction_versions_json,
+            "local_flow_packets.source_micro_node_extraction_versions_json",
+        )?;
+        let edge_versions = parse_string_array_json(
+            &row.source_micro_edge_extraction_versions_json,
+            "local_flow_packets.source_micro_edge_extraction_versions_json",
+        )?;
+        if node_versions.is_empty() || edge_versions.is_empty() {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} is missing source micro fact versions",
+                row.packet_id
+            )));
+        }
+        let cap_state: Value = serde_json::from_str(&row.cap_state_json)
+            .map_err(|error| StoreError::Message(error.to_string()))?;
+        if cap_state
+            .get("omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+            != row.omitted_count
+        {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} cap omitted_count mismatch",
+                row.packet_id
+            )));
+        }
         Ok(())
     }
 
@@ -2894,7 +3795,7 @@ impl SqliteGraphStore {
             ),
             (
                 "local_flow_packets",
-                "SELECT COALESCE(SUM(length(packet_id) + length(file_id) + length(function_entity_id) + length(packet_kind) + length(compressed_steps) + length(source_span_ids_json) + length(proof_status) + length(extraction_version) + length(claimability) + 24), 0) FROM local_flow_packets",
+                "SELECT COALESCE(SUM(length(packet_id) + length(file_id) + length(function_entity_id) + COALESCE(length(function_frame_micro_node_id), 0) + length(packet_kind) + length(encoding) + length(packet_body) + length(packet_body_hash) + length(compressed_steps) + length(source_span_ids_json) + length(proof_status) + length(proof_strength) + length(packet_status) + length(extraction_version) + length(source_micro_node_extraction_versions_json) + length(source_micro_edge_extraction_versions_json) + length(cap_state_json) + length(claimability) + 64), 0) FROM local_flow_packets",
             ),
             (
                 "routing_packet_handles",
@@ -4378,6 +5279,156 @@ fn ast_micro_node_endpoint(
         .map_err(StoreError::from)
 }
 
+fn micro_node_kind_from_storage_str(value: &str) -> Option<MicroNodeKind> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "function_frame" => Some(MicroNodeKind::FunctionFrame),
+        "parameter" => Some(MicroNodeKind::Parameter),
+        "local_binding" => Some(MicroNodeKind::LocalBinding),
+        "property_access" => Some(MicroNodeKind::PropertyAccess),
+        "call_site" => Some(MicroNodeKind::CallSite),
+        "return_site" => Some(MicroNodeKind::ReturnSite),
+        "assignment_site" => Some(MicroNodeKind::AssignmentSite),
+        "mutation_site" => Some(MicroNodeKind::MutationSite),
+        "condition_site" => Some(MicroNodeKind::ConditionSite),
+        "literal_key" => Some(MicroNodeKind::LiteralKey),
+        "import_binding" => Some(MicroNodeKind::ImportBinding),
+        "export_binding" => Some(MicroNodeKind::ExportBinding),
+        "test_assertion" => Some(MicroNodeKind::TestAssertion),
+        "route_literal" => Some(MicroNodeKind::RouteLiteral),
+        "route_binding" => Some(MicroNodeKind::RouteBinding),
+        "auth_literal" => Some(MicroNodeKind::AuthLiteral),
+        "sanitizer_call" => Some(MicroNodeKind::SanitizerCall),
+        "value_use" => Some(MicroNodeKind::ValueUse),
+        _ => None,
+    }
+}
+
+fn local_flow_packet_source_span_ids(
+    candidate: &LocalMicroFlowPacketCandidate,
+    packet: &codegraph_core::LocalMicroFlowCanonicalPacket,
+) -> Vec<String> {
+    let mut ids = BTreeSet::new();
+    ids.insert(candidate.function_micro_node_id.clone());
+    for path in &packet.paths {
+        for step in &path.steps {
+            for node in &step.micro_node_refs {
+                ids.insert(node.micro_node_id.clone());
+            }
+            for edge in &step.micro_edge_refs {
+                ids.insert(edge.micro_edge_id.clone());
+            }
+        }
+    }
+    ids.into_iter().collect()
+}
+
+fn local_micro_flow_proof_strength_str(level: ProofLadderLevel) -> &'static str {
+    match level {
+        ProofLadderLevel::TextEvidence => "text_evidence",
+        ProofLadderLevel::SymbolEvidence => "symbol_evidence",
+        ProofLadderLevel::CandidateEvidence => "candidate_evidence",
+        ProofLadderLevel::SourceNavigationEvidence => "source_navigation_evidence",
+        ProofLadderLevel::GraphRelationProof => "graph_relation_proof",
+        ProofLadderLevel::MutationProof => "mutation_proof",
+        ProofLadderLevel::FlowProof => "flow_proof",
+        ProofLadderLevel::Unknown => "unknown",
+        ProofLadderLevel::Unsupported => "unsupported",
+        ProofLadderLevel::DiagnosticOnly => "diagnostic_only",
+    }
+}
+
+fn local_flow_packet_claimability(status: LocalMicroFlowPacketStatus) -> String {
+    if status.rows_may_be_claimable() {
+        "claimable_dict_v1_local_micro_flow_packet".to_string()
+    } else {
+        "diagnostic_dict_v1_local_micro_flow_packet".to_string()
+    }
+}
+
+fn local_flow_packet_body_hash(packet_body: &str) -> String {
+    format!("fnv64:{:016x}", stable_text_hash_key(packet_body) as u64)
+}
+
+fn parse_string_array_json(value: &str, label: &str) -> StoreResult<Vec<String>> {
+    let parsed: Value =
+        serde_json::from_str(value).map_err(|error| StoreError::Message(error.to_string()))?;
+    let Some(values) = parsed.as_array() else {
+        return Err(StoreError::Message(format!("{label} must be a JSON array")));
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(|value| value.to_string())
+                .ok_or_else(|| {
+                    StoreError::Message(format!("{label} must contain only string values"))
+                })
+        })
+        .collect()
+}
+
+fn validate_dict_v1_packet_body_value(packet_id: &str, packet_body: &Value) -> StoreResult<()> {
+    let body = packet_body.as_object().ok_or_else(|| {
+        StoreError::Message(format!(
+            "local_flow_packet {packet_id} packet_body must be an object"
+        ))
+    })?;
+    let dictionary = body
+        .get("dictionary")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            StoreError::Message(format!(
+                "local_flow_packet {packet_id} packet_body.dictionary missing"
+            ))
+        })?;
+    for required in ["spans", "nodes", "edges", "provenance", "steps"] {
+        if dictionary
+            .get(required)
+            .and_then(Value::as_object)
+            .is_none()
+        {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {packet_id} packet_body.dictionary.{required} missing"
+            )));
+        }
+    }
+    if body.get("paths").and_then(Value::as_array).is_none() {
+        return Err(StoreError::Message(format!(
+            "local_flow_packet {packet_id} packet_body.paths missing"
+        )));
+    }
+    let contract = body
+        .get("compression_contract")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            StoreError::Message(format!(
+                "local_flow_packet {packet_id} compression contract missing"
+            ))
+        })?;
+    for (field, expected) in [
+        ("lossless_to_audit_ordered_steps", true),
+        ("source_spans_preserved", true),
+        ("provenance_preserved", true),
+        ("exactness_preserved", true),
+        ("source_roles_preserved", true),
+        ("branch_and_return_paths_preserved", true),
+        ("shadowed_binding_identity_preserved", true),
+        ("unknown_gaps_preserved", true),
+        ("cap_omissions_preserved", true),
+        ("full_source_bodies_allowed", false),
+        ("verbose_ordered_steps_default_inline", false),
+    ] {
+        if contract.get(field).and_then(Value::as_bool) != Some(expected) {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {packet_id} compression contract {field} must be {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn sparse_sidecar_schema_ready(connection: &Connection) -> StoreResult<bool> {
     for table in SPARSE_SIDECAR_TABLES {
         if !exists_in_sqlite_master(connection, "table", table)? {
@@ -4500,11 +5551,42 @@ const SPARSE_SIDECAR_CONTRACT_COLUMNS: &[(&str, &str, &str)] = &[
         "lifecycle_binding",
         "TEXT NOT NULL DEFAULT 'db_passport'",
     ),
+    ("local_flow_packets", "function_frame_micro_node_id", "TEXT"),
+    (
+        "local_flow_packets",
+        "encoding",
+        "TEXT NOT NULL DEFAULT 'dict_v1' CHECK(encoding = 'dict_v1')",
+    ),
+    (
+        "local_flow_packets",
+        "packet_body",
+        "TEXT NOT NULL DEFAULT '{}' CHECK(length(packet_body) <= 163840)",
+    ),
+    (
+        "local_flow_packets",
+        "packet_body_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    ),
     ("local_flow_packets", "primary_source_span_id", "TEXT"),
+    (
+        "local_flow_packets",
+        "proof_strength",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+    (
+        "local_flow_packets",
+        "packet_status",
+        "TEXT NOT NULL DEFAULT 'micro_flow_unavailable'",
+    ),
     (
         "local_flow_packets",
         "schema_version",
         "INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0)",
+    ),
+    (
+        "local_flow_packets",
+        "row_schema_version",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(row_schema_version > 0)",
     ),
     (
         "local_flow_packets",
@@ -4521,6 +5603,36 @@ const SPARSE_SIDECAR_CONTRACT_COLUMNS: &[(&str, &str, &str)] = &[
         "local_flow_packets",
         "language",
         "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+    (
+        "local_flow_packets",
+        "source_micro_node_extraction_versions_json",
+        "TEXT NOT NULL DEFAULT '[]' CHECK(length(source_micro_node_extraction_versions_json) <= 8192)",
+    ),
+    (
+        "local_flow_packets",
+        "source_micro_edge_extraction_versions_json",
+        "TEXT NOT NULL DEFAULT '[]' CHECK(length(source_micro_edge_extraction_versions_json) <= 8192)",
+    ),
+    (
+        "local_flow_packets",
+        "cap_state_json",
+        "TEXT NOT NULL DEFAULT '{}' CHECK(length(cap_state_json) <= 8192)",
+    ),
+    (
+        "local_flow_packets",
+        "omitted_count",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(omitted_count >= 0)",
+    ),
+    (
+        "local_flow_packets",
+        "compact_body_bytes",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(compact_body_bytes >= 0)",
+    ),
+    (
+        "local_flow_packets",
+        "audit_body_bytes",
+        "INTEGER CHECK(audit_body_bytes IS NULL OR audit_body_bytes >= 0)",
     ),
     (
         "local_flow_packets",
@@ -4628,6 +5740,16 @@ fn validate_sparse_sidecar_payload_len(field: &str, payload: &str) -> StoreResul
         return Err(StoreError::Message(format!(
             "{field} exceeds max sparse sidecar payload length {} bytes",
             MAX_SPARSE_SIDECAR_PAYLOAD_BYTES
+        )));
+    }
+    Ok(())
+}
+
+fn validate_local_flow_packet_body_len(packet_body: &str) -> StoreResult<()> {
+    if packet_body.len() > MAX_LOCAL_FLOW_PACKET_BODY_BYTES {
+        return Err(StoreError::Message(format!(
+            "local_flow_packets.packet_body exceeds max packet body length {} bytes",
+            MAX_LOCAL_FLOW_PACKET_BODY_BYTES
         )));
     }
     Ok(())
@@ -6680,6 +7802,24 @@ fn count_ast_micro_edges_by_text_column(
     Ok(collect_rows(rows)?.into_iter().collect())
 }
 
+fn count_local_flow_packets_by_text_column(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<BTreeMap<String, u64>> {
+    let sql = format!(
+        "SELECT {column}, COUNT(*) FROM local_flow_packets GROUP BY {column} ORDER BY {column}"
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?
+                .unwrap_or_else(|| "absent".to_string()),
+            row.get::<_, i64>(1)?.max(0) as u64,
+        ))
+    })?;
+    Ok(collect_rows(rows)?.into_iter().collect())
+}
+
 #[derive(Debug, Default)]
 struct AstMicroNodeCapHitVisibilityAggregate {
     truncated_file_count: u64,
@@ -6823,6 +7963,12 @@ fn count_ast_micro_edges_distinct(connection: &Connection, column: &str) -> Stor
     Ok(count.max(0) as u64)
 }
 
+fn count_local_flow_packets_distinct(connection: &Connection, column: &str) -> StoreResult<u64> {
+    let sql = format!("SELECT COUNT(DISTINCT {column}) FROM local_flow_packets");
+    let count: i64 = connection.query_row(&sql, [], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
 fn count_ast_micro_nodes_distinct_non_null(
     connection: &Connection,
     column: &str,
@@ -6863,6 +8009,16 @@ fn distinct_ast_micro_edge_u32_values(
     collect_rows(rows)
 }
 
+fn distinct_local_flow_packet_u32_values(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<Vec<u32>> {
+    let sql = format!("SELECT DISTINCT {column} FROM local_flow_packets ORDER BY {column}");
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, u32>(0))?;
+    collect_rows(rows)
+}
+
 fn distinct_ast_micro_node_text_values(
     connection: &Connection,
     column: &str,
@@ -6878,6 +8034,16 @@ fn distinct_ast_micro_edge_text_values(
     column: &str,
 ) -> StoreResult<Vec<String>> {
     let sql = format!("SELECT DISTINCT {column} FROM ast_micro_edges ORDER BY {column}");
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    collect_rows(rows)
+}
+
+fn distinct_local_flow_packet_text_values(
+    connection: &Connection,
+    column: &str,
+) -> StoreResult<Vec<String>> {
+    let sql = format!("SELECT DISTINCT {column} FROM local_flow_packets ORDER BY {column}");
     let mut statement = connection.prepare_cached(&sql)?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     collect_rows(rows)
@@ -6899,6 +8065,96 @@ fn ast_micro_edge_estimated_payload_bytes(connection: &Connection) -> StoreResul
         |row| row.get(0),
     )?;
     Ok(bytes.max(0) as u64)
+}
+
+fn local_flow_packet_estimated_payload_bytes(connection: &Connection) -> StoreResult<u64> {
+    let bytes: i64 = connection.query_row(
+        "SELECT COALESCE(SUM(length(packet_id) + length(file_id) + length(function_entity_id) + COALESCE(length(function_frame_micro_node_id), 0) + length(packet_kind) + length(encoding) + length(packet_body) + length(packet_body_hash) + length(compressed_steps) + length(source_span_ids_json) + length(proof_status) + length(proof_strength) + length(packet_status) + length(extraction_version) + length(exactness) + COALESCE(length(provenance_id), 0) + length(source_role) + length(language) + length(claimability) + length(lifecycle_binding) + 64), 0) FROM local_flow_packets",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(bytes.max(0) as u64)
+}
+
+fn local_flow_packet_cap_summary(connection: &Connection) -> StoreResult<(u64, u64)> {
+    let mut statement = connection.prepare_cached(
+        "SELECT omitted_count, packet_status, cap_state_json FROM local_flow_packets",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?.max(0) as u64,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut cap_hit_count = 0u64;
+    let mut omitted_count = 0u64;
+    for (row_omitted, packet_status, cap_state_json) in collect_rows(rows)? {
+        omitted_count += row_omitted;
+        let cap_state = serde_json::from_str::<Value>(&cap_state_json).unwrap_or(Value::Null);
+        if row_omitted > 0
+            || packet_status.contains("truncated")
+            || local_flow_packet_truncation_reason(&cap_state).is_some()
+        {
+            cap_hit_count += 1;
+        }
+    }
+    Ok((cap_hit_count, omitted_count))
+}
+
+fn local_flow_packet_truncation_reason(cap_state: &Value) -> Option<String> {
+    cap_state
+        .get("truncation_reason")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn local_flow_packet_gap_count_from_cap_state(cap_state: &Value) -> u64 {
+    cap_state
+        .get("unknown_or_gap_count")
+        .or_else(|| cap_state.get("gap_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn local_flow_packet_row(row: &Row<'_>) -> rusqlite::Result<LocalFlowPacketRow> {
+    Ok(LocalFlowPacketRow {
+        packet_id: row.get("packet_id")?,
+        file_id: row.get("file_id")?,
+        function_entity_id: row.get("function_entity_id")?,
+        function_frame_micro_node_id: row.get("function_frame_micro_node_id")?,
+        packet_kind: row.get("packet_kind")?,
+        encoding: row.get("encoding")?,
+        packet_body: row.get("packet_body")?,
+        packet_body_hash: row.get("packet_body_hash")?,
+        compressed_steps: row.get("compressed_steps")?,
+        source_span_ids_json: row.get("source_span_ids_json")?,
+        primary_source_span_id: row.get("primary_source_span_id")?,
+        proof_status: row.get("proof_status")?,
+        proof_strength: row.get("proof_strength")?,
+        packet_status: row.get("packet_status")?,
+        schema_version: row.get::<_, u32>("schema_version")?,
+        row_schema_version: row.get::<_, u32>("row_schema_version")?,
+        extraction_version: row.get("extraction_version")?,
+        exactness: row.get("exactness")?,
+        provenance_id: row.get("provenance_id")?,
+        source_role: row.get("source_role")?,
+        language: row.get("language")?,
+        payload_version: row.get::<_, u32>("payload_version")?,
+        source_micro_node_extraction_versions_json: row
+            .get("source_micro_node_extraction_versions_json")?,
+        source_micro_edge_extraction_versions_json: row
+            .get("source_micro_edge_extraction_versions_json")?,
+        cap_state_json: row.get("cap_state_json")?,
+        omitted_count: row.get::<_, i64>("omitted_count")?.max(0) as u64,
+        compact_body_bytes: row.get::<_, i64>("compact_body_bytes")?.max(0) as u64,
+        audit_body_bytes: row
+            .get::<_, Option<i64>>("audit_body_bytes")?
+            .map(|value| value.max(0) as u64),
+        claimability: row.get("claimability")?,
+        lifecycle_binding: row.get("lifecycle_binding")?,
+    })
 }
 
 fn explain_query_plan_details(connection: &Connection, sql: &str) -> StoreResult<Vec<String>> {
@@ -12349,18 +13605,31 @@ CREATE TABLE IF NOT EXISTS local_flow_packets (
     packet_id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
     function_entity_id TEXT NOT NULL,
+    function_frame_micro_node_id TEXT,
     packet_kind TEXT NOT NULL,
+    encoding TEXT NOT NULL DEFAULT 'dict_v1' CHECK(encoding = 'dict_v1'),
+    packet_body TEXT NOT NULL DEFAULT '{}' CHECK(length(packet_body) <= 163840),
+    packet_body_hash TEXT NOT NULL DEFAULT '',
     compressed_steps TEXT NOT NULL CHECK(length(compressed_steps) <= 8192),
     source_span_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(length(source_span_ids_json) <= 8192),
     primary_source_span_id TEXT,
     proof_status TEXT NOT NULL,
+    proof_strength TEXT NOT NULL DEFAULT 'unknown',
+    packet_status TEXT NOT NULL DEFAULT 'micro_flow_unavailable',
     schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version > 0),
+    row_schema_version INTEGER NOT NULL DEFAULT 1 CHECK(row_schema_version > 0),
     extraction_version TEXT NOT NULL,
     exactness TEXT NOT NULL DEFAULT 'unknown' CHECK(exactness IN ('exact', 'derived_with_provenance', 'heuristic', 'unsupported', 'unknown')),
     provenance_id TEXT,
     source_role TEXT NOT NULL DEFAULT 'unknown' CHECK(source_role IN ('production', 'test', 'mock', 'mixed', 'unknown')),
     language TEXT NOT NULL DEFAULT 'unknown',
     payload_version INTEGER NOT NULL CHECK(payload_version > 0),
+    source_micro_node_extraction_versions_json TEXT NOT NULL DEFAULT '[]' CHECK(length(source_micro_node_extraction_versions_json) <= 8192),
+    source_micro_edge_extraction_versions_json TEXT NOT NULL DEFAULT '[]' CHECK(length(source_micro_edge_extraction_versions_json) <= 8192),
+    cap_state_json TEXT NOT NULL DEFAULT '{}' CHECK(length(cap_state_json) <= 8192),
+    omitted_count INTEGER NOT NULL DEFAULT 0 CHECK(omitted_count >= 0),
+    compact_body_bytes INTEGER NOT NULL DEFAULT 0 CHECK(compact_body_bytes >= 0),
+    audit_body_bytes INTEGER CHECK(audit_body_bytes IS NULL OR audit_body_bytes >= 0),
     claimability TEXT NOT NULL DEFAULT 'candidate_only',
     lifecycle_binding TEXT NOT NULL DEFAULT 'db_passport',
     CHECK(proof_status != 'micro_flow_found' OR source_span_ids_json != '[]')
@@ -12647,18 +13916,24 @@ mod tests {
 
     use codegraph_core::{
         stable_edge_id, stable_entity_id, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
-        EntityKind, Exactness, FileRecord, PathEvidence, RelationKind, RepoIndexState, SourceSpan,
+        EntityKind, Exactness, FileRecord, LocalMicroFlowPacketStatus, PathEvidence,
+        ProofLadderLevel, RelationKind, RepoIndexState, SourceSpan,
+        MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+        MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+        MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
     };
     use rusqlite::{params, Connection};
+    use serde_json::json;
 
     use super::{
         classify_sqlite_access_problem, count_rows, db_path_access_from_io_error,
-        inspect_db_preflight, intern_object_id, intern_qualified_name, lookup_object_id,
-        lookup_qualified_name, migrate_dictionary_compaction, register_sqlite_functions,
-        stable_text_hash_key, stable_text_len, table_has_column, AstMicroEdgeRow, AstMicroNodeRow,
-        DbPassport, EdgeFeatureRow, EntityFeatureRow, EvidenceFeatureRow, ExpectedDbPassport,
-        GraphStore, LocalFlowPacketRow, RetrievalTraceRecord, RoutingPacketHandleRow,
-        SqliteGraphStore, StoreError, TextSearchKind, ValidationFindingRow, DB_PASSPORT_VERSION,
+        inspect_db_preflight, intern_object_id, intern_qualified_name, local_flow_packet_body_hash,
+        lookup_object_id, lookup_qualified_name, migrate_dictionary_compaction,
+        register_sqlite_functions, stable_text_hash_key, stable_text_len, table_has_column,
+        AstMicroEdgeRow, AstMicroNodeRow, DbPassport, EdgeFeatureRow, EntityFeatureRow,
+        EvidenceFeatureRow, ExpectedDbPassport, GraphStore, LocalFlowPacketQueryOptions,
+        LocalFlowPacketRow, RetrievalTraceRecord, RoutingPacketHandleRow, SqliteGraphStore,
+        StoreError, TextSearchKind, ValidationFindingRow, DB_PASSPORT_VERSION,
         MAX_QNAME_PREFIX_BYTES, MAX_QUALIFIED_NAME_BYTES, MAX_SPARSE_SIDECAR_PAYLOAD_BYTES,
         SCHEMA_SQL, SCHEMA_VERSION, SPARSE_SIDECAR_TABLES,
     };
@@ -12668,6 +13943,21 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("expected Ok(..), got Err({error:?})"),
         }
+    }
+
+    fn test_dict_v1_packet_body() -> String {
+        r#"{"schema_version":1,"payload_version":1,"codec_version":"mvp4.3-dict-v1-codec-v1","dictionary":{"spans":{},"nodes":{},"edges":{},"provenance":{},"labels":{},"exactness":{},"claimability":{},"source_roles":{},"branch_identities":{},"return_path_identities":{},"gaps":{},"cap_omissions":{},"proof_metadata":{},"steps":{}},"paths":[],"compression_contract":{"lossless_to_audit_ordered_steps":true,"source_spans_preserved":true,"provenance_preserved":true,"exactness_preserved":true,"source_roles_preserved":true,"branch_and_return_paths_preserved":true,"shadowed_binding_identity_preserved":true,"unknown_gaps_preserved":true,"cap_omissions_preserved":true,"full_source_bodies_allowed":false,"verbose_ordered_steps_default_inline":false}}"#.to_string()
+    }
+
+    fn test_packet_summary(packet_body_hash: &str) -> String {
+        json!({
+            "encoding": "dict_v1",
+            "packet_body_storage": "packet_body",
+            "packet_body_hash": packet_body_hash,
+            "ordered_steps_default_inline": false,
+            "full_source_body_storage": false
+        })
+        .to_string()
     }
 
     fn store() -> SqliteGraphStore {
@@ -12957,6 +14247,104 @@ mod tests {
     }
 
     #[test]
+    fn local_flow_packet_visibility_and_query_are_bounded() {
+        let store = store();
+        ok(store.insert_source_span_after_file_delete("span-auth-flow", &span()));
+        let packet_body = test_dict_v1_packet_body();
+        let packet_body_hash = local_flow_packet_body_hash(&packet_body);
+        ok(store.insert_local_flow_packet(&LocalFlowPacketRow {
+            packet_id: "local-flow-auth-login".to_string(),
+            file_id: "src/auth.ts".to_string(),
+            function_entity_id: "repo://e/auth-login".to_string(),
+            function_frame_micro_node_id: None,
+            packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
+            encoding: "dict_v1".to_string(),
+            packet_body,
+            packet_body_hash: packet_body_hash.clone(),
+            compressed_steps: test_packet_summary(&packet_body_hash),
+            source_span_ids_json: "[\"span-auth-flow\"]".to_string(),
+            primary_source_span_id: Some("span-auth-flow".to_string()),
+            proof_status: "flow_proof".to_string(),
+            proof_strength: "flow_proof".to_string(),
+            packet_status: "micro_flow_found".to_string(),
+            schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            row_schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+            exactness: "derived_with_provenance".to_string(),
+            provenance_id: Some("local-flow-auth-login".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+            source_micro_node_extraction_versions_json: "[\"mvp4.1-typescript-micro-nodes-v1\"]"
+                .to_string(),
+            source_micro_edge_extraction_versions_json:
+                "[\"mvp4.2b-typescript-local-flows-to-v1\"]".to_string(),
+            cap_state_json:
+                "{\"omitted_count\":0,\"truncation_reason\":null,\"unknown_or_gap_count\":0}"
+                    .to_string(),
+            omitted_count: 0,
+            compact_body_bytes: 128,
+            audit_body_bytes: Some(256),
+            claimability: "claimable_dict_v1_local_micro_flow_packet".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+
+        let summary = ok(store.local_flow_packet_visibility_summary(10));
+        assert_eq!(summary.total_rows, 1);
+        assert_eq!(
+            summary.rows_by_proof_strength.get("flow_proof").copied(),
+            Some(1)
+        );
+        assert_eq!(summary.sample.len(), 1);
+        assert!(!summary.sample[0].packet_body_inlined);
+        assert!(!summary.sample[0].ordered_steps_inlined);
+        assert!(!summary.sample[0].full_source_body_output);
+        assert!(!summary.ordered_steps_default_inline);
+        assert!(!summary.full_source_body_output);
+
+        let by_packet = ok(
+            store.query_local_flow_packets(&LocalFlowPacketQueryOptions {
+                limit: 5,
+                packet_id: Some("local-flow-auth-login".to_string()),
+                ..LocalFlowPacketQueryOptions::default()
+            }),
+        );
+        assert_eq!(by_packet.len(), 1);
+        assert_eq!(by_packet[0].packet_body_hash, packet_body_hash);
+
+        let by_function = ok(
+            store.query_local_flow_packets(&LocalFlowPacketQueryOptions {
+                limit: 5,
+                function_query: Some("auth-login".to_string()),
+                proof_strength: Some("flow_proof".to_string()),
+                ..LocalFlowPacketQueryOptions::default()
+            }),
+        );
+        assert_eq!(by_function.len(), 1);
+    }
+
+    #[test]
+    fn local_flow_packet_missing_table_is_feature_unavailable_safe() {
+        let store = store();
+        ok(store
+            .connection
+            .execute("DROP TABLE local_flow_packets", []));
+
+        let summary = ok(store.local_flow_packet_visibility_summary(10));
+        assert_eq!(summary.total_rows, 0);
+        assert!(summary.sample.is_empty());
+        assert!(!summary.default_full_table_scan);
+
+        let rows = ok(
+            store.query_local_flow_packets(&LocalFlowPacketQueryOptions {
+                limit: 5,
+                ..LocalFlowPacketQueryOptions::default()
+            }),
+        );
+        assert!(rows.is_empty());
+    }
+
+    #[test]
     fn ast_micro_node_visibility_reports_persisted_cap_hits() {
         let store = store();
         let span = SourceSpan::new("src/high_density.ts", 1, 10);
@@ -13066,7 +14454,7 @@ mod tests {
             file_id: "src/auth.ts".to_string(),
             function_entity_id: Some("repo://e/auth-login".to_string()),
             scope_entity_id: None,
-            micro_kind: "LocalBinding".to_string(),
+            micro_kind: "local_binding".to_string(),
             symbol: Some("token".to_string()),
             source_span_id: "span-auth-login".to_string(),
             schema_version: 1,
@@ -13076,16 +14464,16 @@ mod tests {
             source_role: "production".to_string(),
             language: "typescript".to_string(),
             payload_version: 1,
-            claimability: "source_spanned".to_string(),
+            claimability: "claimable_source_spanned_local_binding_existence".to_string(),
             lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_ast_micro_node(&AstMicroNodeRow {
-            micro_node_id: "micro-node-return".to_string(),
+            micro_node_id: "micro-node-result".to_string(),
             file_id: "src/auth.ts".to_string(),
             function_entity_id: Some("repo://e/auth-login".to_string()),
             scope_entity_id: None,
-            micro_kind: "ReturnSite".to_string(),
-            symbol: None,
+            micro_kind: "local_binding".to_string(),
+            symbol: Some("result".to_string()),
             source_span_id: "span-auth-return".to_string(),
             schema_version: 1,
             extraction_version: "sidecar-test-v1".to_string(),
@@ -13094,7 +14482,7 @@ mod tests {
             source_role: "production".to_string(),
             language: "typescript".to_string(),
             payload_version: 1,
-            claimability: "source_spanned".to_string(),
+            claimability: "claimable_source_spanned_local_binding_existence".to_string(),
             lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_source_span_after_file_delete(
@@ -13114,37 +14502,56 @@ mod tests {
             scope_entity_id: None,
             core_edge_id: None,
             source_micro_node_id: "micro-node-token".to_string(),
-            target_micro_node_id: "micro-node-return".to_string(),
+            target_micro_node_id: "micro-node-result".to_string(),
             relation_kind: "LOCAL_FLOWS_TO".to_string(),
             source_span_id: Some("span-auth-flow".to_string()),
             exactness: "derived_with_provenance".to_string(),
             provenance_id: Some("micro-edge-base".to_string()),
             schema_version: 1,
-            extraction_version: "sidecar-test-v1".to_string(),
+            extraction_version: "mvp4.2b-typescript-local-flows-to-v1".to_string(),
             source_role: "production".to_string(),
             language: "typescript".to_string(),
-            frontend: "test-frontend".to_string(),
+            frontend: "tree-sitter-typescript".to_string(),
             payload_version: 1,
-            claimability: "source_spanned".to_string(),
+            claimability: "claimable_source_spanned_derived_local_value_flow".to_string(),
             lifecycle_binding: "passport:test".to_string(),
         }));
+        let packet_body = test_dict_v1_packet_body();
+        let packet_body_hash = local_flow_packet_body_hash(&packet_body);
         ok(store.insert_local_flow_packet(&LocalFlowPacketRow {
             packet_id: "local-flow-auth-login".to_string(),
             file_id: "src/auth.ts".to_string(),
             function_entity_id: "repo://e/auth-login".to_string(),
-            packet_kind: "local_micro_flow".to_string(),
-            compressed_steps: "token LOCAL_FLOWS_TO return".to_string(),
+            function_frame_micro_node_id: None,
+            packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
+            encoding: "dict_v1".to_string(),
+            packet_body: packet_body.clone(),
+            packet_body_hash: packet_body_hash.clone(),
+            compressed_steps: test_packet_summary(&packet_body_hash),
             source_span_ids_json: "[\"span-auth-flow\"]".to_string(),
             primary_source_span_id: Some("span-auth-flow".to_string()),
-            proof_status: "micro_flow_found".to_string(),
-            schema_version: 1,
-            extraction_version: "sidecar-test-v1".to_string(),
+            proof_status: "flow_proof".to_string(),
+            proof_strength: "flow_proof".to_string(),
+            packet_status: "micro_flow_found".to_string(),
+            schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            row_schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
             exactness: "derived_with_provenance".to_string(),
             provenance_id: Some("micro-edge-token-return".to_string()),
             source_role: "production".to_string(),
             language: "typescript".to_string(),
-            payload_version: 1,
-            claimability: "exact_local_flow".to_string(),
+            payload_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+            source_micro_node_extraction_versions_json: "[\"mvp4.1-typescript-micro-nodes-v1\"]"
+                .to_string(),
+            source_micro_edge_extraction_versions_json:
+                "[\"mvp4.2b-typescript-local-flows-to-v1\"]".to_string(),
+            cap_state_json:
+                "{\"omitted_count\":0,\"truncation_reason\":null,\"compact_body_bytes\":0}"
+                    .to_string(),
+            omitted_count: 0,
+            compact_body_bytes: 0,
+            audit_body_bytes: None,
+            claimability: "claimable_dict_v1_local_micro_flow_packet".to_string(),
             lifecycle_binding: "passport:test".to_string(),
         }));
         ok(store.insert_routing_packet_handle(&RoutingPacketHandleRow {
@@ -13241,39 +14648,56 @@ mod tests {
                 scope_entity_id: None,
                 core_edge_id: None,
                 source_micro_node_id: "micro-node-token".to_string(),
-                target_micro_node_id: "micro-node-return".to_string(),
+                target_micro_node_id: "micro-node-result".to_string(),
                 relation_kind: "LOCAL_FLOWS_TO".to_string(),
                 source_span_id: None,
                 exactness: "exact".to_string(),
                 provenance_id: None,
                 schema_version: 1,
-                extraction_version: "sidecar-test-v1".to_string(),
+                extraction_version: "mvp4.2b-typescript-local-flows-to-v1".to_string(),
                 source_role: "production".to_string(),
                 language: "typescript".to_string(),
-                frontend: "test-frontend".to_string(),
+                frontend: "tree-sitter-typescript".to_string(),
                 payload_version: 1,
-                claimability: "source_spanned".to_string(),
+                claimability: "claimable_source_spanned_derived_local_value_flow".to_string(),
                 lifecycle_binding: "passport:test".to_string(),
             })
             .is_err());
+        let bad_packet_body = test_dict_v1_packet_body();
+        let bad_packet_body_hash = local_flow_packet_body_hash(&bad_packet_body);
         assert!(store
             .insert_local_flow_packet(&LocalFlowPacketRow {
                 packet_id: "local-flow-bad".to_string(),
                 file_id: "src/auth.ts".to_string(),
                 function_entity_id: "repo://e/auth-login".to_string(),
-                packet_kind: "local_micro_flow".to_string(),
-                compressed_steps: "missing spans".to_string(),
+                function_frame_micro_node_id: None,
+                packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
+                encoding: "dict_v1".to_string(),
+                packet_body: bad_packet_body.clone(),
+                packet_body_hash: bad_packet_body_hash.clone(),
+                compressed_steps: test_packet_summary(&bad_packet_body_hash),
                 source_span_ids_json: "[]".to_string(),
                 primary_source_span_id: None,
-                proof_status: "micro_flow_found".to_string(),
-                schema_version: 1,
-                extraction_version: "sidecar-test-v1".to_string(),
+                proof_status: "flow_proof".to_string(),
+                proof_strength: "flow_proof".to_string(),
+                packet_status: "micro_flow_found".to_string(),
+                schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+                row_schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+                extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
                 exactness: "derived_with_provenance".to_string(),
                 provenance_id: Some("micro-edge-token-return".to_string()),
                 source_role: "production".to_string(),
                 language: "typescript".to_string(),
-                payload_version: 1,
-                claimability: "exact_local_flow".to_string(),
+                payload_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+                source_micro_node_extraction_versions_json:
+                    "[\"mvp4.1-typescript-micro-nodes-v1\"]".to_string(),
+                source_micro_edge_extraction_versions_json:
+                    "[\"mvp4.2b-typescript-local-flows-to-v1\"]".to_string(),
+                cap_state_json: "{\"omitted_count\":0}".to_string(),
+                omitted_count: 0,
+                compact_body_bytes: 0,
+                audit_body_bytes: None,
+                claimability: "claimable_dict_v1_local_micro_flow_packet".to_string(),
                 lifecycle_binding: "passport:test".to_string(),
             })
             .is_err());
@@ -13490,6 +14914,297 @@ mod tests {
         missing_provenance.micro_edge_id = "edge-missing-provenance".to_string();
         missing_provenance.provenance_id = None;
         assert!(store.insert_ast_micro_edge(&missing_provenance).is_err());
+    }
+
+    #[test]
+    fn local_micro_flow_packet_candidates_read_persisted_facts_without_rows() {
+        let store = store();
+        let span = |line: u32, start: u32| SourceSpan {
+            repo_relative_path: "src/auth.ts".to_string(),
+            start_line: line,
+            start_column: Some(start),
+            end_line: line,
+            end_column: Some(start + 4),
+        };
+        for (id, source_span) in [
+            ("span-function", span(1, 1)),
+            ("span-param", span(1, 16)),
+            ("span-assign", span(2, 3)),
+            ("span-use", span(2, 12)),
+            ("span-local", span(2, 7)),
+            ("span-return", span(3, 3)),
+            ("span-read", span(2, 12)),
+            ("span-write", span(2, 3)),
+            ("span-flow", span(2, 7)),
+            ("span-returns-to", span(3, 3)),
+        ] {
+            ok(store.upsert_source_span(id, &source_span));
+        }
+        for (id, source_span) in [
+            ("fn-login", span(1, 1)),
+            ("param-seed", span(1, 16)),
+            ("assign-total", span(2, 3)),
+            ("use-seed", span(2, 12)),
+            ("local-total", span(2, 7)),
+            ("return-total", span(3, 3)),
+            ("edge-read-seed", span(2, 12)),
+            ("edge-write-total", span(2, 3)),
+            ("edge-flow-seed-total", span(2, 7)),
+            ("edge-return-total-login", span(3, 3)),
+        ] {
+            ok(store.upsert_source_span(id, &source_span));
+        }
+
+        let function_id = Some("repo://e/auth.login".to_string());
+        let node = |id: &str, kind: &str, symbol: Option<&str>, span_id: &str| AstMicroNodeRow {
+            micro_node_id: id.to_string(),
+            file_id: "src/auth.ts".to_string(),
+            function_entity_id: function_id.clone(),
+            scope_entity_id: Some("scope://auth.login".to_string()),
+            micro_kind: kind.to_string(),
+            symbol: symbol.map(str::to_string),
+            source_span_id: span_id.to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some(format!("prov-{id}")),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: format!("claimable_source_spanned_{kind}"),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+        for row in [
+            node("fn-login", "function_frame", Some("login"), "span-function"),
+            node("param-seed", "parameter", Some("seed"), "span-param"),
+            node("assign-total", "assignment_site", None, "span-assign"),
+            node("use-seed", "value_use", Some("seed"), "span-use"),
+            node("local-total", "local_binding", Some("total"), "span-local"),
+            node("return-total", "return_site", None, "span-return"),
+        ] {
+            ok(store.insert_ast_micro_node(&row));
+        }
+
+        let edge = |id: &str,
+                    kind: &str,
+                    head: &str,
+                    tail: &str,
+                    span_id: &str,
+                    exactness: &str,
+                    extraction_version: &str,
+                    claimability: &str|
+         -> AstMicroEdgeRow {
+            AstMicroEdgeRow {
+                micro_edge_id: id.to_string(),
+                file_id: "src/auth.ts".to_string(),
+                function_entity_id: function_id.clone(),
+                scope_entity_id: Some("scope://auth.login".to_string()),
+                core_edge_id: None,
+                source_micro_node_id: head.to_string(),
+                target_micro_node_id: tail.to_string(),
+                relation_kind: kind.to_string(),
+                source_span_id: Some(span_id.to_string()),
+                exactness: exactness.to_string(),
+                provenance_id: Some(format!("prov-{id}")),
+                schema_version: 1,
+                extraction_version: extraction_version.to_string(),
+                source_role: "production".to_string(),
+                language: "typescript".to_string(),
+                frontend: "tree-sitter-typescript".to_string(),
+                payload_version: 1,
+                claimability: claimability.to_string(),
+                lifecycle_binding: "db_passport".to_string(),
+            }
+        };
+        for row in [
+            edge(
+                "edge-read-seed",
+                "local_reads",
+                "use-seed",
+                "param-seed",
+                "span-read",
+                "exact",
+                "mvp4.2b-typescript-local-reads-v1",
+                "claimable_source_spanned_resolver_proven_local_read",
+            ),
+            edge(
+                "edge-write-total",
+                "local_writes",
+                "assign-total",
+                "local-total",
+                "span-write",
+                "exact",
+                "mvp4.2b-typescript-local-writes-v1",
+                "claimable_source_spanned_resolver_proven_local_write",
+            ),
+            edge(
+                "edge-flow-seed-total",
+                "local_flows_to",
+                "param-seed",
+                "local-total",
+                "span-flow",
+                "derived_with_provenance",
+                "mvp4.2b-typescript-local-flows-to-v1",
+                "claimable_source_spanned_derived_local_value_flow",
+            ),
+            edge(
+                "edge-return-total-login",
+                "local_returns_to",
+                "return-total",
+                "fn-login",
+                "span-returns-to",
+                "exact",
+                "mvp4.2-typescript-local-returns-to-v1",
+                "claimable_source_spanned_local_return_containment",
+            ),
+        ] {
+            ok(store.insert_ast_micro_edge(&row));
+        }
+
+        let candidates = ok(store.local_micro_flow_packet_candidates_for_file("src/auth.ts"));
+        assert_eq!(candidates.raw_ast_truth_bypass_count, 0);
+        assert_eq!(candidates.local_flow_packet_rows_emitted(), 0);
+        assert_eq!(candidates.candidates.len(), 1);
+        let candidate = &candidates.candidates[0];
+        assert_eq!(
+            candidate.packet_status,
+            LocalMicroFlowPacketStatus::MicroFlowFound
+        );
+        assert_eq!(candidate.proof_strength, ProofLadderLevel::FlowProof);
+        assert_eq!(candidate.edge_ref_count, 4);
+        assert!(candidate.packet.is_some());
+        let packet_rows = ok(store.local_flow_packet_rows_from_candidates(&candidates));
+        assert_eq!(packet_rows.len(), 1);
+        let packet_row = &packet_rows[0];
+        assert_eq!(packet_row.encoding, "dict_v1");
+        assert_eq!(packet_row.packet_kind, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND);
+        assert_eq!(
+            packet_row.extraction_version,
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        );
+        assert_eq!(packet_row.proof_strength, "flow_proof");
+        assert_eq!(packet_row.packet_status, "micro_flow_found");
+        assert_eq!(
+            packet_row.packet_body_hash,
+            local_flow_packet_body_hash(&packet_row.packet_body)
+        );
+        assert!(packet_row
+            .compressed_steps
+            .contains(&packet_row.packet_body_hash));
+        assert!(!packet_row.packet_body.contains("\"ordered_steps\""));
+        assert!(!packet_row.packet_body.contains("\"full_source_body\""));
+        assert!(packet_row
+            .source_micro_node_extraction_versions_json
+            .contains("mvp4.1-typescript-micro-nodes-v1"));
+        assert!(packet_row
+            .source_micro_edge_extraction_versions_json
+            .contains("mvp4.2b-typescript-local-flows-to-v1"));
+        assert!(packet_row
+            .source_micro_edge_extraction_versions_json
+            .contains("mvp4.2-typescript-local-returns-to-v1"));
+        assert_eq!(packet_row.omitted_count, 0);
+        let counts = ok(store.sparse_sidecar_counts());
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+        assert_eq!(
+            ok(store.replace_local_flow_packets_for_file("src/auth.ts", &packet_rows)),
+            1
+        );
+        assert_eq!(ok(store.local_flow_packet_count_for_file("src/auth.ts")), 1);
+        let persisted = ok(store.local_flow_packets_for_file("src/auth.ts"));
+        assert_eq!(persisted, packet_rows);
+        let counts = ok(store.sparse_sidecar_counts());
+        assert_eq!(counts.get("local_flow_packets").copied(), Some(1));
+
+        let mut bad_missing_span = packet_rows[0].clone();
+        bad_missing_span.packet_id = "local-flow-auth-missing-span".to_string();
+        bad_missing_span.source_span_ids_json = "[\"missing-span\"]".to_string();
+        assert!(
+            store
+                .replace_local_flow_packets_for_file("src/auth.ts", &[bad_missing_span])
+                .is_err(),
+            "invalid replacement must be rejected before deleting old-good packets"
+        );
+        assert_eq!(
+            ok(store.local_flow_packets_for_file("src/auth.ts")),
+            packet_rows,
+            "old-good packets must survive failed replacement validation"
+        );
+
+        assert!(
+            store
+                .replace_local_flow_packets_for_file(
+                    "src/auth.ts",
+                    &[packet_rows[0].clone(), packet_rows[0].clone()],
+                )
+                .is_err(),
+            "duplicate packet ids must not publish"
+        );
+        assert_eq!(
+            ok(store.local_flow_packets_for_file("src/auth.ts")),
+            packet_rows,
+            "old-good packets must survive duplicate replacement rejection"
+        );
+
+        let mut wrong_file = packet_rows[0].clone();
+        wrong_file.packet_id = "local-flow-auth-wrong-file".to_string();
+        wrong_file.file_id = "src/other.ts".to_string();
+        assert!(
+            store
+                .replace_local_flow_packets_for_file("src/auth.ts", &[wrong_file])
+                .is_err(),
+            "file-scoped replacement must reject cross-file packet rows"
+        );
+        assert_eq!(
+            ok(store.local_flow_packets_for_file("src/auth.ts")),
+            packet_rows,
+            "old-good packets must survive cross-file replacement rejection"
+        );
+
+        let mut test_role = packet_rows[0].clone();
+        test_role.packet_id = "local-flow-auth-test-role".to_string();
+        test_role.source_role = "test".to_string();
+        assert!(
+            store.insert_local_flow_packet(&test_role).is_err(),
+            "non-production packet rows must remain outside the authorized scope"
+        );
+
+        let mut unsupported_language = packet_rows[0].clone();
+        unsupported_language.packet_id = "local-flow-auth-javascript".to_string();
+        unsupported_language.language = "javascript".to_string();
+        assert!(
+            store
+                .insert_local_flow_packet(&unsupported_language)
+                .is_err(),
+            "languages without an exact packet adapter must not publish packet rows"
+        );
+
+        let mut missing_frame = packet_rows[0].clone();
+        missing_frame.packet_id = "local-flow-auth-missing-frame".to_string();
+        missing_frame.function_frame_micro_node_id = Some("missing-frame".to_string());
+        assert!(
+            store.insert_local_flow_packet(&missing_frame).is_err(),
+            "packet rows must reference current function-frame endpoints"
+        );
+
+        assert_eq!(
+            ok(store.replace_local_flow_packets_for_file("src/auth.ts", &[])),
+            0
+        );
+        assert_eq!(
+            ok(store.local_flow_packet_count_for_file("src/auth.ts")),
+            0,
+            "empty replacement must clean stale packets for ineligible/deleted functions"
+        );
+        assert_eq!(
+            ok(store.replace_local_flow_packets_for_file("src/auth.ts", &packet_rows)),
+            1
+        );
+        ok(store.delete_facts_for_file("src/auth.ts"));
+        assert_eq!(
+            ok(store.local_flow_packet_count_for_file("src/auth.ts")),
+            0,
+            "file delete cleanup must remove packet rows with the file sidecar facts"
+        );
     }
 
     #[test]

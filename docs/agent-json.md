@@ -20,6 +20,15 @@ Schema files live in `docs/schemas/agent-json/`:
 - `validation_packet_agent_json.schema.json`
 - `common.schema.json`
 
+MVP4 packet schemas also live there. `local_micro_flow_packet_agent_json` is
+active only for the verified MVP4.3 TypeScript `.ts` production local-flow
+packet slice; unsupported languages and non-production source roles do not emit
+packet rows or `flow_proof`. `context_entry_packet_agent_json` remains dormant
+planning surface until its implementation gate passes.
+
+- `local_micro_flow_packet_agent_json.schema.json`
+- `context_entry_packet_agent_json.schema.json`
+
 ## Versioning
 
 Every agent JSON response has:
@@ -183,8 +192,27 @@ mode is added; clients should treat these schemas as the compact lifecycle
 contract, not as a claim that the rich diagnostics were removed. MVP4.2
 micro-edge visibility fields are additive summaries only: they report optional
 `LOCAL_RETURNS_TO` layer status, counts, caps, and recovery actions separately
-from core graph claimability, and they do not expose local-flow packets or
-`flow_proof`.
+from core graph claimability.
+
+`query_local_flow_packets_agent_json` is the compact query envelope for the
+current packet layer. It reports packet-layer status, rows by language, proof
+status/strength counts, handles, truncation, and omitted counts without inlining
+full packet bodies by default. Query-level `graph_proof=false` means the query
+envelope itself is not a proof claim; individual TypeScript packet rows may
+carry `proof_strength: "flow_proof"` only when the packet is complete,
+current, source-spanned, provenance-safe, production-role, and eligible.
+
+`local_micro_flow_packet_agent_json` is the opened packet-body contract for the
+verified MVP4.3 TypeScript `.ts` production local-flow packet slice. Compact
+packet bodies use `encoding: "dict_v1"` plus a dictionary/path program
+(`packet_body`) so repeated source spans, micro-node refs, micro-edge refs,
+provenance, branch ids, return-path ids, and labels are interned once. Verbose
+`ordered_steps` are an explain/audit expansion of the same facts, not the
+default context/routing payload and not a stronger proof source. For
+JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, PHP, and
+text-only/unsupported files, packet support remains `not_implemented` or
+`not_applicable`; missing packet rows are not source errors and cannot create a
+hard interrupt.
 
 `languages --json` is release capability metadata for language frontend
 support. It is intentionally outside the agent JSON packet schema set unless a

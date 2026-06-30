@@ -349,4 +349,74 @@ impl EvidenceRole {
     pub const fn is_production(self) -> bool {
         matches!(self, Self::Production)
     }
+
+    pub fn from_source_role_label(value: &str) -> Self {
+        let normalized = value.trim().replace(['-', ' '], "_").to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Self::Unknown;
+        }
+        if normalized.contains("mixed") {
+            return Self::Mixed;
+        }
+        if normalized.contains("mock") || normalized.contains("stub") {
+            return Self::Mock;
+        }
+        if normalized.contains("test")
+            || normalized.contains("spec")
+            || normalized.contains("fixture")
+            || normalized.contains("assert")
+        {
+            return Self::Test;
+        }
+        if normalized.contains("unknown")
+            || normalized.contains("unresolved")
+            || normalized.contains("generated")
+            || normalized.contains("source_text")
+            || normalized.contains("text_evidence")
+            || normalized.contains("source_navigation")
+            || normalized.contains("candidate")
+            || normalized.contains("vector")
+            || normalized.contains("vendor")
+            || normalized.contains("vendored")
+            || normalized.contains("third_party")
+        {
+            return Self::Unknown;
+        }
+        match normalized.as_str() {
+            "production" | "prod" | "implementation" | "source" | "source_code" => Self::Production,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod source_role_tests {
+    use super::EvidenceRole;
+
+    #[test]
+    fn source_role_labels_do_not_promote_non_production_evidence() {
+        let cases = [
+            ("production", EvidenceRole::Production),
+            ("implementation", EvidenceRole::Production),
+            ("test", EvidenceRole::Test),
+            ("spec_fixture", EvidenceRole::Test),
+            ("mock", EvidenceRole::Mock),
+            ("stub", EvidenceRole::Mock),
+            ("generated", EvidenceRole::Unknown),
+            ("source_text", EvidenceRole::Unknown),
+            ("text_evidence", EvidenceRole::Unknown),
+            ("source_navigation", EvidenceRole::Unknown),
+            ("candidate", EvidenceRole::Unknown),
+            ("vector", EvidenceRole::Unknown),
+            ("vendor", EvidenceRole::Unknown),
+            ("not_a_known_role", EvidenceRole::Unknown),
+        ];
+        for (label, expected) in cases {
+            assert_eq!(
+                EvidenceRole::from_source_role_label(label),
+                expected,
+                "{label}"
+            );
+        }
+    }
 }

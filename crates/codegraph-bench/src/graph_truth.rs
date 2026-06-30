@@ -48,6 +48,7 @@ pub struct GraphTruthGateOptions {
 pub fn default_graph_truth_gate_options() -> GraphTruthGateOptions {
     GraphTruthGateOptions {
         cases: PathBuf::from("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures"),
         fixture_root: PathBuf::from("."),
@@ -83,6 +84,7 @@ pub struct ContextPacketGateOptions {
 pub fn default_context_packet_gate_options() -> ContextPacketGateOptions {
     ContextPacketGateOptions {
         cases: PathBuf::from("benchmarks")
+            .join("tracks")
             .join("graph_truth")
             .join("fixtures"),
         fixture_root: PathBuf::from("."),
@@ -1796,7 +1798,7 @@ fn evaluate_case(
     for edge in &observed.edges {
         if edge.derived
             && edge.provenance_edges.is_empty()
-            && options.fail_on_derived_without_provenance
+            && (options.fail_on_derived_without_provenance || edge.derived)
         {
             push_failure(
                 &mut failures,
@@ -2965,7 +2967,9 @@ fn path_matches(
         if edge.derived && !expected.derived_allowed {
             return false;
         }
-        if (expected.provenance_required || expected.derived_edges_require_provenance)
+        if (edge.derived
+            || expected.provenance_required
+            || expected.derived_edges_require_provenance)
             && edge.derived
             && edge.provenance_edges.is_empty()
         {
@@ -3880,9 +3884,7 @@ mod tests {
             distractor_policy: None,
         };
 
-        let mut options = default_graph_truth_gate_options();
-        options.fail_on_derived_without_provenance = true;
-        let result = evaluate_case(&case, &observed, &options);
+        let result = evaluate_case(&case, &observed, &default_graph_truth_gate_options());
 
         assert_eq!(result.base_edges_observed, 1);
         assert_eq!(result.derived_edges_observed, 1);
@@ -3992,9 +3994,7 @@ mod tests {
         };
         let case = empty_graph_truth_case("edge-classes");
 
-        let mut options = default_graph_truth_gate_options();
-        options.fail_on_derived_without_provenance = true;
-        let result = evaluate_case(&case, &observed, &options);
+        let result = evaluate_case(&case, &observed, &default_graph_truth_gate_options());
 
         assert!(result
             .failures

@@ -11,8 +11,23 @@ pub const MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION: &str =
     "mvp4.2-typescript-local-returns-to-v1";
 pub const MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY: &str =
     "claimable_source_spanned_local_return_containment";
+pub const MVP4_2B_LOCAL_READS_EXTRACTION_VERSION: &str = "mvp4.2b-typescript-local-reads-v1";
+pub const MVP4_2B_LOCAL_READS_CLAIMABILITY: &str =
+    "claimable_source_spanned_resolver_proven_local_read";
+pub const MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION: &str = "mvp4.2b-typescript-local-writes-v1";
+pub const MVP4_2B_LOCAL_WRITES_CLAIMABILITY: &str =
+    "claimable_source_spanned_resolver_proven_local_write";
+pub const MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION: &str = "mvp4.2b-typescript-local-flows-to-v1";
+pub const MVP4_2B_LOCAL_FLOWS_TO_CLAIMABILITY: &str =
+    "claimable_source_spanned_derived_local_value_flow";
 pub const MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION: u32 = 1;
 pub const MVP4_2_MICRO_EDGE_PAYLOAD_VERSION: u32 = 1;
+pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION: u32 = 1;
+pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION: u32 = 1;
+pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION: &str =
+    "mvp4.3-typescript-local-micro-flow-packets-v1";
+pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND: &str = "function_local_micro_flow_packet";
+pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_ENCODING: &str = "dict_v1";
 
 pub fn normalize_repo_relative_path(path: impl AsRef<str>) -> String {
     let path = path.as_ref().trim().replace('\\', "/");
@@ -119,6 +134,10 @@ pub enum MicroNodeKind {
     RouteBinding,
     AuthLiteral,
     SanitizerCall,
+    /// A source-spanned read/use occurrence of a value binding (identifier in
+    /// read position). Existence-only until a local binding resolver proves the
+    /// binding (MVP4.2b); the missing read endpoint for `LOCAL_READS`/flow.
+    ValueUse,
 }
 
 impl MicroNodeKind {
@@ -140,6 +159,7 @@ impl MicroNodeKind {
         Self::RouteBinding,
         Self::AuthLiteral,
         Self::SanitizerCall,
+        Self::ValueUse,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -161,6 +181,7 @@ impl MicroNodeKind {
             Self::RouteBinding => "route_binding",
             Self::AuthLiteral => "auth_literal",
             Self::SanitizerCall => "sanitizer_call",
+            Self::ValueUse => "value_use",
         }
     }
 }
@@ -384,16 +405,114 @@ pub const MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY: MicroEdgeLanguageCapabili
         unsupported_reason: None,
     };
 
-pub const MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES: &[MicroEdgeLanguageCapability] =
-    &[MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY];
+const LOCAL_BINDING_RESOLVER_REQUIREMENTS: &[&str] =
+    &["local_binding_resolver_lexical_scope_shadowing"];
+const LOCAL_READS_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] = &[
+    MicroNodeKind::ValueUse,
+    MicroNodeKind::Parameter,
+    MicroNodeKind::LocalBinding,
+];
+const LOCAL_WRITES_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] = &[
+    MicroNodeKind::AssignmentSite,
+    MicroNodeKind::Parameter,
+    MicroNodeKind::LocalBinding,
+];
+const LOCAL_READS_FIXTURE_IDS: &[&str] = &[];
+const LOCAL_WRITES_FIXTURE_IDS: &[&str] = &[];
+
+pub const MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY: MicroEdgeLanguageCapability =
+    MicroEdgeLanguageCapability {
+        language: "typescript",
+        frontend: Some("tree-sitter-typescript"),
+        micro_edge_kind: MicroEdgeKind::LocalReads,
+        activation_status: MicroEdgeSupportStatus::ExactCapable,
+        endpoint_node_requirements: LOCAL_READS_ENDPOINT_REQUIREMENTS,
+        resolver_requirements: LOCAL_BINDING_RESOLVER_REQUIREMENTS,
+        exactness_capability: MicroExactness::Exact,
+        provenance_builder: "direct_ast_resolver_proven_local_read",
+        parser_recovery_behavior: "omit_exact_edge_on_recovery_ambiguity",
+        source_role_behavior: "production_only",
+        claimability_label: Some(MVP4_2B_LOCAL_READS_CLAIMABILITY),
+        fixture_ids: LOCAL_READS_FIXTURE_IDS,
+        extraction_version: Some(MVP4_2B_LOCAL_READS_EXTRACTION_VERSION),
+        unsupported_reason: None,
+    };
+
+pub const MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY: MicroEdgeLanguageCapability =
+    MicroEdgeLanguageCapability {
+        language: "typescript",
+        frontend: Some("tree-sitter-typescript"),
+        micro_edge_kind: MicroEdgeKind::LocalWrites,
+        activation_status: MicroEdgeSupportStatus::ExactCapable,
+        endpoint_node_requirements: LOCAL_WRITES_ENDPOINT_REQUIREMENTS,
+        resolver_requirements: LOCAL_BINDING_RESOLVER_REQUIREMENTS,
+        exactness_capability: MicroExactness::Exact,
+        provenance_builder: "direct_ast_resolver_proven_local_write",
+        parser_recovery_behavior: "omit_exact_edge_on_recovery_ambiguity",
+        source_role_behavior: "production_only",
+        claimability_label: Some(MVP4_2B_LOCAL_WRITES_CLAIMABILITY),
+        fixture_ids: LOCAL_WRITES_FIXTURE_IDS,
+        extraction_version: Some(MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION),
+        unsupported_reason: None,
+    };
+
+// LOCAL_FLOWS_TO is a DERIVED edge (not direct AST): for a write `target = expr`,
+// each binding read in `expr` flows into the write target. Endpoints are the two
+// resolver-proven bindings (source -> target), both already-persisted inventory
+// nodes; the derivation cites the LOCAL_READS + LOCAL_WRITES facts as provenance.
+const LOCAL_FLOWS_TO_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] =
+    &[MicroNodeKind::Parameter, MicroNodeKind::LocalBinding];
+const LOCAL_FLOWS_TO_RESOLVER_REQUIREMENTS: &[&str] = &[
+    "local_binding_resolver_lexical_scope_shadowing",
+    "assignment_rhs_read_containment",
+];
+const LOCAL_FLOWS_TO_FIXTURE_IDS: &[&str] = &[];
+
+pub const MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY: MicroEdgeLanguageCapability =
+    MicroEdgeLanguageCapability {
+        language: "typescript",
+        frontend: Some("tree-sitter-typescript"),
+        micro_edge_kind: MicroEdgeKind::LocalFlowsTo,
+        activation_status: MicroEdgeSupportStatus::DerivedWithProvenanceCapable,
+        endpoint_node_requirements: LOCAL_FLOWS_TO_ENDPOINT_REQUIREMENTS,
+        resolver_requirements: LOCAL_FLOWS_TO_RESOLVER_REQUIREMENTS,
+        exactness_capability: MicroExactness::DerivedWithProvenance,
+        provenance_builder: "derived_local_assignment_chain_value_flow",
+        parser_recovery_behavior: "omit_derived_edge_on_recovery_ambiguity",
+        source_role_behavior: "production_only",
+        claimability_label: Some(MVP4_2B_LOCAL_FLOWS_TO_CLAIMABILITY),
+        fixture_ids: LOCAL_FLOWS_TO_FIXTURE_IDS,
+        extraction_version: Some(MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION),
+        unsupported_reason: None,
+    };
+
+pub const MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES: &[MicroEdgeLanguageCapability] = &[
+    MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY,
+    MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY,
+    MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY,
+    MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY,
+];
+
+pub const MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS: &[MicroEdgeKind] = &[
+    MicroEdgeKind::LocalReads,
+    MicroEdgeKind::LocalWrites,
+    MicroEdgeKind::LocalFlowsTo,
+    MicroEdgeKind::LocalReturnsTo,
+];
 
 pub fn mvp4_micro_edge_language_capability(
     language: &str,
     kind: MicroEdgeKind,
 ) -> MicroEdgeLanguageCapability {
     let normalized = language.trim().to_ascii_lowercase();
-    if normalized == "typescript" && kind == MicroEdgeKind::LocalReturnsTo {
-        return MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY;
+    if normalized == "typescript" {
+        match kind {
+            MicroEdgeKind::LocalReturnsTo => return MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY,
+            MicroEdgeKind::LocalReads => return MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY,
+            MicroEdgeKind::LocalWrites => return MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY,
+            MicroEdgeKind::LocalFlowsTo => return MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY,
+            _ => {}
+        }
     }
     MicroEdgeLanguageCapability::not_implemented(kind)
 }
@@ -655,6 +774,9 @@ pub struct MicroPacketIdentityInput {
     pub packet_version: u32,
     pub extraction_version: String,
     pub step_set_version: String,
+    /// Stable semantic step ids in packet order. These ids identify the compact
+    /// path program; they are not the verbose explain/audit `ordered_steps`
+    /// rendering.
     pub ordered_step_ids: Vec<String>,
 }
 
@@ -1015,6 +1137,485 @@ impl MicroEdgeLayerState {
 
     pub const fn graph_claimability_separate(self) -> bool {
         true
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalMicroFlowPacketStatus {
+    MicroFlowFound,
+    PartialMicroFlowFound,
+    NoMicroFlowPathFound,
+    MicroFlowUnavailable,
+    MicroFlowTruncated,
+    MicroFlowUnsupported,
+    MicroFlowStale,
+    MicroFlowCorrupt,
+    MicroFlowIncompatible,
+}
+
+impl LocalMicroFlowPacketStatus {
+    pub const ALL: &'static [Self] = &[
+        Self::MicroFlowFound,
+        Self::PartialMicroFlowFound,
+        Self::NoMicroFlowPathFound,
+        Self::MicroFlowUnavailable,
+        Self::MicroFlowTruncated,
+        Self::MicroFlowUnsupported,
+        Self::MicroFlowStale,
+        Self::MicroFlowCorrupt,
+        Self::MicroFlowIncompatible,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MicroFlowFound => "micro_flow_found",
+            Self::PartialMicroFlowFound => "partial_micro_flow_found",
+            Self::NoMicroFlowPathFound => "no_micro_flow_path_found",
+            Self::MicroFlowUnavailable => "micro_flow_unavailable",
+            Self::MicroFlowTruncated => "micro_flow_truncated",
+            Self::MicroFlowUnsupported => "micro_flow_unsupported",
+            Self::MicroFlowStale => "micro_flow_stale",
+            Self::MicroFlowCorrupt => "micro_flow_corrupt",
+            Self::MicroFlowIncompatible => "micro_flow_incompatible",
+        }
+    }
+
+    pub const fn rows_may_be_claimable(self) -> bool {
+        matches!(self, Self::MicroFlowFound | Self::PartialMicroFlowFound)
+    }
+
+    pub const fn compact_output_allowed(self) -> bool {
+        true
+    }
+
+    pub const fn validate_edit_should_warn(self) -> bool {
+        matches!(
+            self,
+            Self::PartialMicroFlowFound
+                | Self::MicroFlowUnavailable
+                | Self::MicroFlowTruncated
+                | Self::MicroFlowUnsupported
+                | Self::MicroFlowStale
+                | Self::MicroFlowCorrupt
+                | Self::MicroFlowIncompatible
+        )
+    }
+
+    pub const fn hard_interrupt_eligible_from_status_only(self) -> bool {
+        false
+    }
+
+    pub const fn recommended_action(self) -> &'static str {
+        match self {
+            Self::MicroFlowFound => "use_bounded_packet_when_requested",
+            Self::PartialMicroFlowFound => "treat_missing_or_unsupported_steps_as_explicit_gaps",
+            Self::NoMicroFlowPathFound => "preserve_no_proof_path_state_and_fallback_evidence",
+            Self::MicroFlowUnavailable => "index_or_enable_micro_flow_packet_layer_when_available",
+            Self::MicroFlowTruncated => {
+                "use_audit_expansion_or_reduce_scope_before_claiming_complete_flow"
+            }
+            Self::MicroFlowUnsupported => {
+                "report_unsupported_language_or_shape_without_source_blocker"
+            }
+            Self::MicroFlowStale => "reindex_or_refresh_codegraph_packet_state",
+            Self::MicroFlowCorrupt => "repair_or_rebuild_codegraph_packet_state",
+            Self::MicroFlowIncompatible => "upgrade_or_rebuild_packet_layer_with_current_schema",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "micro_flow_found" => Some(Self::MicroFlowFound),
+            "partial_micro_flow_found" | "partial_local_flow" => Some(Self::PartialMicroFlowFound),
+            "no_micro_flow_path_found" => Some(Self::NoMicroFlowPathFound),
+            "micro_flow_unavailable" => Some(Self::MicroFlowUnavailable),
+            "micro_flow_truncated" | "truncated" => Some(Self::MicroFlowTruncated),
+            "micro_flow_unsupported" | "unsupported" => Some(Self::MicroFlowUnsupported),
+            "micro_flow_stale" | "stale" => Some(Self::MicroFlowStale),
+            "micro_flow_corrupt" | "corrupt" => Some(Self::MicroFlowCorrupt),
+            "micro_flow_incompatible" | "incompatible" => Some(Self::MicroFlowIncompatible),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for LocalMicroFlowPacketStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalMicroFlowProofRequirement {
+    DeterministicProofBearingSteps,
+    SourceSpannedProofBearingSteps,
+    BackedByCurrentPersistedMicroFacts,
+    DerivedStepsHaveProvenance,
+    ExactStepsPreserveExactness,
+    EndpointFactsCurrentAndClaimable,
+    ProductionSafeSourceRole,
+    BranchIdentityPreserved,
+    ReturnPathIdentityPreserved,
+    ShadowedBindingIdentityPreserved,
+    ClaimedPathNotTruncated,
+    CapOmissionsOutsideClaimedSegment,
+    GapsOutsideClaimedPath,
+    ClaimableLifecyclePassport,
+    DictV1LosslessToAuditOrderedSteps,
+    NoPacketIntegrityFinding,
+    IncludesLocalFlowsTo,
+    IncludesRequiredReadsAndWrites,
+    NotLocalReturnsToOnly,
+}
+
+impl LocalMicroFlowProofRequirement {
+    pub const ALL: &'static [Self] = &[
+        Self::DeterministicProofBearingSteps,
+        Self::SourceSpannedProofBearingSteps,
+        Self::BackedByCurrentPersistedMicroFacts,
+        Self::DerivedStepsHaveProvenance,
+        Self::ExactStepsPreserveExactness,
+        Self::EndpointFactsCurrentAndClaimable,
+        Self::ProductionSafeSourceRole,
+        Self::BranchIdentityPreserved,
+        Self::ReturnPathIdentityPreserved,
+        Self::ShadowedBindingIdentityPreserved,
+        Self::ClaimedPathNotTruncated,
+        Self::CapOmissionsOutsideClaimedSegment,
+        Self::GapsOutsideClaimedPath,
+        Self::ClaimableLifecyclePassport,
+        Self::DictV1LosslessToAuditOrderedSteps,
+        Self::NoPacketIntegrityFinding,
+        Self::IncludesLocalFlowsTo,
+        Self::IncludesRequiredReadsAndWrites,
+        Self::NotLocalReturnsToOnly,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DeterministicProofBearingSteps => "deterministic_proof_bearing_steps",
+            Self::SourceSpannedProofBearingSteps => "source_spanned_proof_bearing_steps",
+            Self::BackedByCurrentPersistedMicroFacts => "backed_by_current_persisted_micro_facts",
+            Self::DerivedStepsHaveProvenance => "derived_steps_have_provenance",
+            Self::ExactStepsPreserveExactness => "exact_steps_preserve_exactness",
+            Self::EndpointFactsCurrentAndClaimable => "endpoint_facts_current_and_claimable",
+            Self::ProductionSafeSourceRole => "production_safe_source_role",
+            Self::BranchIdentityPreserved => "branch_identity_preserved",
+            Self::ReturnPathIdentityPreserved => "return_path_identity_preserved",
+            Self::ShadowedBindingIdentityPreserved => "shadowed_binding_identity_preserved",
+            Self::ClaimedPathNotTruncated => "claimed_path_not_truncated",
+            Self::CapOmissionsOutsideClaimedSegment => "cap_omissions_outside_claimed_segment",
+            Self::GapsOutsideClaimedPath => "gaps_outside_claimed_path",
+            Self::ClaimableLifecyclePassport => "claimable_lifecycle_passport",
+            Self::DictV1LosslessToAuditOrderedSteps => "dict_v1_lossless_to_audit_ordered_steps",
+            Self::NoPacketIntegrityFinding => "no_packet_integrity_finding",
+            Self::IncludesLocalFlowsTo => "includes_local_flows_to",
+            Self::IncludesRequiredReadsAndWrites => "includes_required_reads_and_writes",
+            Self::NotLocalReturnsToOnly => "not_local_returns_to_only",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalMicroFlowProofEligibilityInput {
+    pub deterministic_proof_bearing_steps: bool,
+    pub source_spanned_proof_bearing_steps: bool,
+    pub backed_by_current_persisted_micro_facts: bool,
+    pub derived_steps_have_provenance: bool,
+    pub exact_steps_preserve_exactness: bool,
+    pub endpoint_facts_current_and_claimable: bool,
+    pub production_safe_source_role: bool,
+    pub branch_identity_preserved: bool,
+    pub return_path_identity_preserved: bool,
+    pub shadowed_binding_identity_preserved: bool,
+    pub claimed_path_not_truncated: bool,
+    pub cap_omissions_outside_claimed_segment: bool,
+    pub gaps_outside_claimed_path: bool,
+    pub claimable_lifecycle_passport: bool,
+    pub dict_v1_lossless_to_audit_ordered_steps: bool,
+    pub no_packet_integrity_finding: bool,
+    pub includes_local_flows_to: bool,
+    pub includes_required_reads_and_writes: bool,
+    pub local_returns_to_only: bool,
+    pub contains_claimable_graph_relation_summary: bool,
+}
+
+impl LocalMicroFlowProofEligibilityInput {
+    pub const fn complete_local_assignment_chain() -> Self {
+        Self {
+            deterministic_proof_bearing_steps: true,
+            source_spanned_proof_bearing_steps: true,
+            backed_by_current_persisted_micro_facts: true,
+            derived_steps_have_provenance: true,
+            exact_steps_preserve_exactness: true,
+            endpoint_facts_current_and_claimable: true,
+            production_safe_source_role: true,
+            branch_identity_preserved: true,
+            return_path_identity_preserved: true,
+            shadowed_binding_identity_preserved: true,
+            claimed_path_not_truncated: true,
+            cap_omissions_outside_claimed_segment: true,
+            gaps_outside_claimed_path: true,
+            claimable_lifecycle_passport: true,
+            dict_v1_lossless_to_audit_ordered_steps: true,
+            no_packet_integrity_finding: true,
+            includes_local_flows_to: true,
+            includes_required_reads_and_writes: true,
+            local_returns_to_only: false,
+            contains_claimable_graph_relation_summary: true,
+        }
+    }
+
+    pub const fn local_returns_to_only() -> Self {
+        Self {
+            includes_local_flows_to: false,
+            includes_required_reads_and_writes: false,
+            local_returns_to_only: true,
+            contains_claimable_graph_relation_summary: true,
+            ..Self::complete_local_assignment_chain()
+        }
+    }
+
+    pub fn missing_requirements(&self) -> Vec<LocalMicroFlowProofRequirement> {
+        let checks = [
+            (
+                LocalMicroFlowProofRequirement::DeterministicProofBearingSteps,
+                self.deterministic_proof_bearing_steps,
+            ),
+            (
+                LocalMicroFlowProofRequirement::SourceSpannedProofBearingSteps,
+                self.source_spanned_proof_bearing_steps,
+            ),
+            (
+                LocalMicroFlowProofRequirement::BackedByCurrentPersistedMicroFacts,
+                self.backed_by_current_persisted_micro_facts,
+            ),
+            (
+                LocalMicroFlowProofRequirement::DerivedStepsHaveProvenance,
+                self.derived_steps_have_provenance,
+            ),
+            (
+                LocalMicroFlowProofRequirement::ExactStepsPreserveExactness,
+                self.exact_steps_preserve_exactness,
+            ),
+            (
+                LocalMicroFlowProofRequirement::EndpointFactsCurrentAndClaimable,
+                self.endpoint_facts_current_and_claimable,
+            ),
+            (
+                LocalMicroFlowProofRequirement::ProductionSafeSourceRole,
+                self.production_safe_source_role,
+            ),
+            (
+                LocalMicroFlowProofRequirement::BranchIdentityPreserved,
+                self.branch_identity_preserved,
+            ),
+            (
+                LocalMicroFlowProofRequirement::ReturnPathIdentityPreserved,
+                self.return_path_identity_preserved,
+            ),
+            (
+                LocalMicroFlowProofRequirement::ShadowedBindingIdentityPreserved,
+                self.shadowed_binding_identity_preserved,
+            ),
+            (
+                LocalMicroFlowProofRequirement::ClaimedPathNotTruncated,
+                self.claimed_path_not_truncated,
+            ),
+            (
+                LocalMicroFlowProofRequirement::CapOmissionsOutsideClaimedSegment,
+                self.cap_omissions_outside_claimed_segment,
+            ),
+            (
+                LocalMicroFlowProofRequirement::GapsOutsideClaimedPath,
+                self.gaps_outside_claimed_path,
+            ),
+            (
+                LocalMicroFlowProofRequirement::ClaimableLifecyclePassport,
+                self.claimable_lifecycle_passport,
+            ),
+            (
+                LocalMicroFlowProofRequirement::DictV1LosslessToAuditOrderedSteps,
+                self.dict_v1_lossless_to_audit_ordered_steps,
+            ),
+            (
+                LocalMicroFlowProofRequirement::NoPacketIntegrityFinding,
+                self.no_packet_integrity_finding,
+            ),
+            (
+                LocalMicroFlowProofRequirement::IncludesLocalFlowsTo,
+                self.includes_local_flows_to,
+            ),
+            (
+                LocalMicroFlowProofRequirement::IncludesRequiredReadsAndWrites,
+                self.includes_required_reads_and_writes,
+            ),
+            (
+                LocalMicroFlowProofRequirement::NotLocalReturnsToOnly,
+                !self.local_returns_to_only,
+            ),
+        ];
+
+        checks
+            .into_iter()
+            .filter_map(|(requirement, present)| (!present).then_some(requirement))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalMicroFlowProofEligibilityDecision {
+    pub flow_proof_eligible: bool,
+    pub packet_status: LocalMicroFlowPacketStatus,
+    pub proof_ladder_level: ProofLadderLevel,
+    pub missing_requirements: Vec<LocalMicroFlowProofRequirement>,
+    pub dict_v1_representation_only: bool,
+    pub failure_action: &'static str,
+}
+
+pub fn decide_local_micro_flow_proof_eligibility(
+    input: &LocalMicroFlowProofEligibilityInput,
+) -> LocalMicroFlowProofEligibilityDecision {
+    let missing = input.missing_requirements();
+    if missing.is_empty() {
+        return LocalMicroFlowProofEligibilityDecision {
+            flow_proof_eligible: true,
+            packet_status: LocalMicroFlowPacketStatus::MicroFlowFound,
+            proof_ladder_level: ProofLadderLevel::FlowProof,
+            missing_requirements: missing,
+            dict_v1_representation_only: true,
+            failure_action: "packet_path_may_claim_flow_proof_after_packet_generation_gate",
+        };
+    }
+
+    let packet_status =
+        if !input.claimed_path_not_truncated || !input.cap_omissions_outside_claimed_segment {
+            LocalMicroFlowPacketStatus::MicroFlowTruncated
+        } else if !input.backed_by_current_persisted_micro_facts
+            || !input.endpoint_facts_current_and_claimable
+            || !input.claimable_lifecycle_passport
+        {
+            LocalMicroFlowPacketStatus::MicroFlowStale
+        } else if input.contains_claimable_graph_relation_summary {
+            LocalMicroFlowPacketStatus::PartialMicroFlowFound
+        } else {
+            LocalMicroFlowPacketStatus::NoMicroFlowPathFound
+        };
+
+    let proof_ladder_level = if input.contains_claimable_graph_relation_summary {
+        ProofLadderLevel::GraphRelationProof
+    } else {
+        ProofLadderLevel::Unknown
+    };
+
+    LocalMicroFlowProofEligibilityDecision {
+        flow_proof_eligible: false,
+        packet_status,
+        proof_ladder_level,
+        missing_requirements: missing,
+        dict_v1_representation_only: true,
+        failure_action: "downgrade_or_omit_flow_proof_and_preserve_explicit_gap_state",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalMicroFlowPacketLinterClass {
+    NormalSourceDelta,
+    PacketProofIntegrityFinding,
+    UnsupportedDegradedState,
+}
+
+impl LocalMicroFlowPacketLinterClass {
+    pub const fn validation_classification(self) -> ValidationClassification {
+        match self {
+            Self::NormalSourceDelta => ValidationClassification::Diagnostic,
+            Self::PacketProofIntegrityFinding => ValidationClassification::Block,
+            Self::UnsupportedDegradedState => ValidationClassification::Degraded,
+        }
+    }
+
+    pub const fn is_user_source_defect_by_default(self) -> bool {
+        false
+    }
+
+    pub const fn may_block_packet_proof_availability(self) -> bool {
+        matches!(self, Self::PacketProofIntegrityFinding)
+    }
+
+    pub const fn may_create_source_code_hard_interrupt_without_reverification(self) -> bool {
+        false
+    }
+
+    pub const fn recommended_action_kind(self) -> &'static str {
+        match self {
+            Self::NormalSourceDelta => "safe_to_continue",
+            Self::PacketProofIntegrityFinding => "reindex_or_repair_codegraph_state",
+            Self::UnsupportedDegradedState => "unsupported_or_unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalMicroFlowSourceDeltaKind {
+    AssignmentAdded,
+    AssignmentRemoved,
+    ReturnAdded,
+    BranchAdded,
+    PathChanged,
+    PacketAddedRemovedOrRekeyed,
+}
+
+impl LocalMicroFlowSourceDeltaKind {
+    pub const fn linter_class(self) -> LocalMicroFlowPacketLinterClass {
+        LocalMicroFlowPacketLinterClass::NormalSourceDelta
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalMicroFlowIntegrityFindingKind {
+    PacketReferencesMissingNode,
+    PacketReferencesMissingEdge,
+    PacketReferencesStaleEdge,
+    FlowProofWithUnknownGap,
+    FlowProofAfterTruncation,
+    BranchIdentityOmitted,
+    ReturnPathIdOmitted,
+    ShadowedBindingCollapsed,
+    PacketMissingSourceSpan,
+    PacketMissingProvenance,
+    DictV1BodyFailsAuditExpansion,
+}
+
+impl LocalMicroFlowIntegrityFindingKind {
+    pub const fn linter_class(self) -> LocalMicroFlowPacketLinterClass {
+        LocalMicroFlowPacketLinterClass::PacketProofIntegrityFinding
+    }
+
+    pub const fn recommended_action(self) -> &'static str {
+        "reindex_or_repair_codegraph_packet_state"
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalMicroFlowUnsupportedConditionKind {
+    LanguageUnsupported,
+    DynamicUnresolvedRelation,
+    ParserRecovery,
+    CapOmission,
+    StaleOptionalLayer,
+    OldDbWithoutPacketTable,
+}
+
+impl LocalMicroFlowUnsupportedConditionKind {
+    pub const fn linter_class(self) -> LocalMicroFlowPacketLinterClass {
+        LocalMicroFlowPacketLinterClass::UnsupportedDegradedState
     }
 }
 
@@ -1762,24 +2363,319 @@ mod tests {
     }
 
     #[test]
+    fn mvp4_3_packet_status_contract_is_explicit_and_non_activating() {
+        let names = LocalMicroFlowPacketStatus::ALL
+            .iter()
+            .map(|status| status.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "micro_flow_found",
+                "partial_micro_flow_found",
+                "no_micro_flow_path_found",
+                "micro_flow_unavailable",
+                "micro_flow_truncated",
+                "micro_flow_unsupported",
+                "micro_flow_stale",
+                "micro_flow_corrupt",
+                "micro_flow_incompatible"
+            ]
+        );
+        assert_eq!(
+            LocalMicroFlowPacketStatus::from_storage_str("partial_local_flow"),
+            Some(LocalMicroFlowPacketStatus::PartialMicroFlowFound)
+        );
+        assert!(LocalMicroFlowPacketStatus::MicroFlowFound.rows_may_be_claimable());
+        assert!(
+            LocalMicroFlowPacketStatus::PartialMicroFlowFound.rows_may_be_claimable(),
+            "partial rows may claim exact graph-relation segments, not complete flow"
+        );
+        assert!(!LocalMicroFlowPacketStatus::NoMicroFlowPathFound.rows_may_be_claimable());
+        for status in LocalMicroFlowPacketStatus::ALL {
+            assert!(status.compact_output_allowed());
+            assert!(!status.hard_interrupt_eligible_from_status_only());
+            assert!(!status.recommended_action().is_empty());
+        }
+        assert!(LocalMicroFlowPacketStatus::MicroFlowTruncated.validate_edit_should_warn());
+        assert!(!LocalMicroFlowPacketStatus::MicroFlowFound.validate_edit_should_warn());
+    }
+
+    #[test]
+    fn mvp4_3_complete_local_chain_is_flow_proof_eligible_only_with_all_evidence() {
+        let decision = decide_local_micro_flow_proof_eligibility(
+            &LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain(),
+        );
+        assert!(decision.flow_proof_eligible);
+        assert_eq!(
+            decision.packet_status,
+            LocalMicroFlowPacketStatus::MicroFlowFound
+        );
+        assert_eq!(decision.proof_ladder_level, ProofLadderLevel::FlowProof);
+        assert!(decision.missing_requirements.is_empty());
+        assert!(decision.dict_v1_representation_only);
+        assert_eq!(
+            decision.failure_action,
+            "packet_path_may_claim_flow_proof_after_packet_generation_gate"
+        );
+    }
+
+    #[test]
+    fn mvp4_3_local_returns_to_only_packet_cannot_claim_flow_proof() {
+        let decision = decide_local_micro_flow_proof_eligibility(
+            &LocalMicroFlowProofEligibilityInput::local_returns_to_only(),
+        );
+        assert!(!decision.flow_proof_eligible);
+        assert_eq!(
+            decision.packet_status,
+            LocalMicroFlowPacketStatus::PartialMicroFlowFound
+        );
+        assert_eq!(
+            decision.proof_ladder_level,
+            ProofLadderLevel::GraphRelationProof
+        );
+        assert!(decision
+            .missing_requirements
+            .contains(&LocalMicroFlowProofRequirement::IncludesLocalFlowsTo));
+        assert!(decision
+            .missing_requirements
+            .contains(&LocalMicroFlowProofRequirement::IncludesRequiredReadsAndWrites));
+        assert!(decision
+            .missing_requirements
+            .contains(&LocalMicroFlowProofRequirement::NotLocalReturnsToOnly));
+    }
+
+    #[test]
+    fn mvp4_3_missing_read_write_flow_and_lifecycle_downgrade_packet_proof() {
+        let mut missing_read_write =
+            LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+        missing_read_write.includes_required_reads_and_writes = false;
+        let decision = decide_local_micro_flow_proof_eligibility(&missing_read_write);
+        assert!(!decision.flow_proof_eligible);
+        assert_eq!(
+            decision.packet_status,
+            LocalMicroFlowPacketStatus::PartialMicroFlowFound
+        );
+        assert_eq!(
+            decision.proof_ladder_level,
+            ProofLadderLevel::GraphRelationProof
+        );
+
+        let mut stale_fact = LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+        stale_fact.backed_by_current_persisted_micro_facts = false;
+        let decision = decide_local_micro_flow_proof_eligibility(&stale_fact);
+        assert_eq!(
+            decision.packet_status,
+            LocalMicroFlowPacketStatus::MicroFlowStale
+        );
+        assert!(!decision.flow_proof_eligible);
+
+        let mut no_graph_summary =
+            LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+        no_graph_summary.contains_claimable_graph_relation_summary = false;
+        no_graph_summary.includes_local_flows_to = false;
+        no_graph_summary.includes_required_reads_and_writes = false;
+        let decision = decide_local_micro_flow_proof_eligibility(&no_graph_summary);
+        assert_eq!(
+            decision.packet_status,
+            LocalMicroFlowPacketStatus::NoMicroFlowPathFound
+        );
+        assert_eq!(decision.proof_ladder_level, ProofLadderLevel::Unknown);
+    }
+
+    #[test]
+    fn mvp4_3_branch_return_shadow_cap_recovery_and_dict_v1_boundaries_are_required() {
+        for (input, expected) in [
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.branch_identity_preserved = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::BranchIdentityPreserved,
+            ),
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.return_path_identity_preserved = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::ReturnPathIdentityPreserved,
+            ),
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.shadowed_binding_identity_preserved = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::ShadowedBindingIdentityPreserved,
+            ),
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.gaps_outside_claimed_path = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::GapsOutsideClaimedPath,
+            ),
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.dict_v1_lossless_to_audit_ordered_steps = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::DictV1LosslessToAuditOrderedSteps,
+            ),
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.source_spanned_proof_bearing_steps = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::SourceSpannedProofBearingSteps,
+            ),
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.production_safe_source_role = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::ProductionSafeSourceRole,
+            ),
+            (
+                {
+                    let mut input =
+                        LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+                    input.no_packet_integrity_finding = false;
+                    input
+                },
+                LocalMicroFlowProofRequirement::NoPacketIntegrityFinding,
+            ),
+        ] {
+            let decision = decide_local_micro_flow_proof_eligibility(&input);
+            assert!(
+                !decision.flow_proof_eligible,
+                "{expected:?} must downgrade flow proof"
+            );
+            assert!(
+                decision.missing_requirements.contains(&expected),
+                "missing {expected:?}"
+            );
+            assert!(decision.dict_v1_representation_only);
+        }
+
+        let mut truncated = LocalMicroFlowProofEligibilityInput::complete_local_assignment_chain();
+        truncated.claimed_path_not_truncated = false;
+        let decision = decide_local_micro_flow_proof_eligibility(&truncated);
+        assert_eq!(
+            decision.packet_status,
+            LocalMicroFlowPacketStatus::MicroFlowTruncated
+        );
+        assert!(!decision.flow_proof_eligible);
+    }
+
+    #[test]
+    fn mvp4_3_packet_linter_contract_separates_source_deltas_from_tool_integrity() {
+        let normal = LocalMicroFlowSourceDeltaKind::AssignmentAdded.linter_class();
+        assert_eq!(normal, LocalMicroFlowPacketLinterClass::NormalSourceDelta);
+        assert_eq!(
+            normal.validation_classification(),
+            ValidationClassification::Diagnostic
+        );
+        assert_eq!(normal.recommended_action_kind(), "safe_to_continue");
+        assert!(!normal.is_user_source_defect_by_default());
+        assert!(!normal.may_create_source_code_hard_interrupt_without_reverification());
+
+        let integrity = LocalMicroFlowIntegrityFindingKind::FlowProofWithUnknownGap;
+        assert_eq!(
+            integrity.linter_class(),
+            LocalMicroFlowPacketLinterClass::PacketProofIntegrityFinding
+        );
+        assert_eq!(
+            integrity.linter_class().validation_classification(),
+            ValidationClassification::Block
+        );
+        assert!(integrity
+            .linter_class()
+            .may_block_packet_proof_availability());
+        assert_eq!(
+            integrity.recommended_action(),
+            "reindex_or_repair_codegraph_packet_state"
+        );
+        assert!(!integrity
+            .linter_class()
+            .may_create_source_code_hard_interrupt_without_reverification());
+
+        let unsupported = LocalMicroFlowUnsupportedConditionKind::CapOmission.linter_class();
+        assert_eq!(
+            unsupported,
+            LocalMicroFlowPacketLinterClass::UnsupportedDegradedState
+        );
+        assert_eq!(
+            unsupported.validation_classification(),
+            ValidationClassification::Degraded
+        );
+        assert_eq!(
+            unsupported.recommended_action_kind(),
+            "unsupported_or_unknown"
+        );
+        assert!(!unsupported.may_create_source_code_hard_interrupt_without_reverification());
+    }
+
+    #[test]
+    fn mvp4_3_first_slice_scope_is_typescript_function_local_and_non_mutation() {
+        assert_eq!(
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+            "function_local_micro_flow_packet"
+        );
+        assert_eq!(MVP4_3_LOCAL_MICRO_FLOW_PACKET_ENCODING, "dict_v1");
+        assert_eq!(
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            "mvp4.3-typescript-local-micro-flow-packets-v1"
+        );
+        assert_eq!(
+            MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS,
+            &[
+                MicroEdgeKind::LocalReads,
+                MicroEdgeKind::LocalWrites,
+                MicroEdgeKind::LocalFlowsTo,
+                MicroEdgeKind::LocalReturnsTo
+            ]
+        );
+        assert!(!MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS.contains(&MicroEdgeKind::LocalMutates));
+        assert!(!MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS.contains(&MicroEdgeKind::LocalCalls));
+    }
+
+    #[test]
     fn micro_edge_language_capability_registry_defaults_to_not_implemented() {
         let active = MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES;
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].micro_edge_kind, MicroEdgeKind::LocalReturnsTo);
-        assert_eq!(active[0].language, "typescript");
+        // LOCAL_RETURNS_TO (MVP4.2) plus LOCAL_READS / LOCAL_WRITES (exact) and
+        // LOCAL_FLOWS_TO (derived_with_provenance) (MVP4.2b).
+        assert_eq!(active.len(), 4);
+        assert!(active.iter().all(|capability| {
+            capability.language == "typescript"
+                && matches!(
+                    capability.activation_status,
+                    MicroEdgeSupportStatus::ExactCapable
+                        | MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+                )
+        }));
+
+        let returns_to =
+            mvp4_micro_edge_language_capability("typescript", MicroEdgeKind::LocalReturnsTo);
+        assert_eq!(returns_to.micro_edge_kind, MicroEdgeKind::LocalReturnsTo);
         assert_eq!(
-            active[0].activation_status,
-            MicroEdgeSupportStatus::ExactCapable
-        );
-        assert_eq!(
-            active[0].endpoint_node_requirements,
+            returns_to.endpoint_node_requirements,
             &[MicroNodeKind::ReturnSite, MicroNodeKind::FunctionFrame]
         );
-        assert_eq!(
-            active[0].claimability_label,
-            Some(MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY)
-        );
-        assert!(active[0].supports_claimable_exact(
+        assert!(returns_to.supports_claimable_exact(
             "tree-sitter-typescript",
             MicroSourceRole::Production,
             MicroExactness::Exact,
@@ -1787,22 +2683,81 @@ mod tests {
             MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
         ));
 
+        let reads = mvp4_micro_edge_language_capability("typescript", MicroEdgeKind::LocalReads);
+        assert_eq!(
+            reads.activation_status,
+            MicroEdgeSupportStatus::ExactCapable
+        );
+        assert!(reads.supports_claimable_exact(
+            "tree-sitter-typescript",
+            MicroSourceRole::Production,
+            MicroExactness::Exact,
+            MVP4_2B_LOCAL_READS_CLAIMABILITY,
+            MVP4_2B_LOCAL_READS_EXTRACTION_VERSION,
+        ));
+
+        let writes = mvp4_micro_edge_language_capability("typescript", MicroEdgeKind::LocalWrites);
+        assert_eq!(
+            writes.activation_status,
+            MicroEdgeSupportStatus::ExactCapable
+        );
+        assert!(writes.supports_claimable_exact(
+            "tree-sitter-typescript",
+            MicroSourceRole::Production,
+            MicroExactness::Exact,
+            MVP4_2B_LOCAL_WRITES_CLAIMABILITY,
+            MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION,
+        ));
+
+        // LOCAL_FLOWS_TO is DERIVED, not exact: it must NOT report exact support,
+        // and carries derived_with_provenance exactness + binding endpoints.
+        let flows_to =
+            mvp4_micro_edge_language_capability("typescript", MicroEdgeKind::LocalFlowsTo);
+        assert_eq!(
+            flows_to.activation_status,
+            MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+        );
+        assert_eq!(
+            flows_to.exactness_capability,
+            MicroExactness::DerivedWithProvenance
+        );
+        assert_eq!(
+            flows_to.endpoint_node_requirements,
+            &[MicroNodeKind::Parameter, MicroNodeKind::LocalBinding]
+        );
+        assert_eq!(
+            flows_to.claimability_label,
+            Some(MVP4_2B_LOCAL_FLOWS_TO_CLAIMABILITY)
+        );
+        assert_eq!(
+            flows_to.extraction_version,
+            Some(MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION)
+        );
+        assert!(!flows_to.activation_status.default_exact_support());
+        assert!(!flows_to.supports_claimable_exact(
+            "tree-sitter-typescript",
+            MicroSourceRole::Production,
+            MicroExactness::DerivedWithProvenance,
+            MVP4_2B_LOCAL_FLOWS_TO_CLAIMABILITY,
+            MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION,
+        ));
+
+        // Other languages do not inherit TypeScript exact support for any kind.
         for language in ["javascript", "rust", "python", "go", "java"] {
-            let capability =
-                mvp4_micro_edge_language_capability(language, MicroEdgeKind::LocalReturnsTo);
-            assert_eq!(
-                capability.activation_status,
-                MicroEdgeSupportStatus::NotImplemented,
-                "{language} should not inherit TypeScript exact support"
-            );
-            assert!(!capability.activation_status.default_exact_support());
-            assert!(!capability.supports_claimable_exact(
-                "tree-sitter-typescript",
-                MicroSourceRole::Production,
-                MicroExactness::Exact,
-                MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY,
-                MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
-            ));
+            for kind in [
+                MicroEdgeKind::LocalReturnsTo,
+                MicroEdgeKind::LocalReads,
+                MicroEdgeKind::LocalWrites,
+                MicroEdgeKind::LocalFlowsTo,
+            ] {
+                let capability = mvp4_micro_edge_language_capability(language, kind);
+                assert_eq!(
+                    capability.activation_status,
+                    MicroEdgeSupportStatus::NotImplemented,
+                    "{language}/{kind:?} should not inherit TypeScript exact support"
+                );
+                assert!(!capability.activation_status.default_exact_support());
+            }
         }
     }
 

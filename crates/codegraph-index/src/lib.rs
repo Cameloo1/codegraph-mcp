@@ -28,30 +28,32 @@ use codegraph_core::{
     normalize_repo_relative_path as normalize_graph_path, stable_edge_id,
     stable_entity_id_for_kind, validate_micro_fact_provenance, Edge, EdgeClass, EdgeContext,
     Entity, EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, MicroDerivationKind,
-    MicroEdgeCandidate, MicroEdgeKind, MicroNodeKind, MicroSourceRole,
+    MicroEdgeCandidate, MicroEdgeKind, MicroEdgeSupportStatus, MicroNodeKind, MicroSourceRole,
     NormalizedClaimabilityMetadata, NormalizedEdgeFact, NormalizedEntityFact,
-    NormalizedFactEnvelope, NormalizedFactOmission, NormalizedFileFact, NormalizedMicroEdgeFact,
-    NormalizedPathEvidenceFact, NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact,
-    NormalizedSourceSpanFact, NormalizedTextEvidenceFact, NormalizedUnresolvedReferenceFact,
-    PathEvidence, RelationKind, RepoIndexState, RetrievalCandidate,
-    RetrievalCandidateLifecycleBinding, RetrievalCandidateLifecycleStatus,
-    RetrievalCandidateSource, RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan,
-    VectorEmbeddingSource, MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
+    NormalizedFactEnvelope, NormalizedFactOmission, NormalizedFileFact,
+    NormalizedLocalFlowPacketFact, NormalizedMicroEdgeFact, NormalizedPathEvidenceFact,
+    NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact, NormalizedSourceSpanFact,
+    NormalizedTextEvidenceFact, NormalizedUnresolvedReferenceFact, PathEvidence, RelationKind,
+    RepoIndexState, RetrievalCandidate, RetrievalCandidateLifecycleBinding,
+    RetrievalCandidateLifecycleStatus, RetrievalCandidateSource, RetrievalProofStatus,
+    RetrievalVerificationStatus, SourceSpan, VectorEmbeddingSource,
+    MVP4_2_LOCAL_RETURNS_TO_CLAIMABILITY, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
     MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
 };
 use codegraph_parser::{
-    content_hash, detect_language, emit_mvp4_typescript_in_memory_first_slice_inventory,
-    emit_mvp4_typescript_local_returns_to_in_memory_candidates, extract_entities_and_relations,
-    BasicExtraction, LanguageParser, Mvp4TypeScriptMicroNodeCandidate,
-    Mvp4TypeScriptMicroNodeCapHit, TreeSitterParser,
+    content_hash, detect_language, detect_language_with_source,
+    emit_mvp4_typescript_micro_flow_extraction_context, extract_entities_and_relations,
+    BasicExtraction, LanguageParser, Mvp4TypeScriptMicroFlowExtractionContext,
+    Mvp4TypeScriptMicroNodeCandidate, Mvp4TypeScriptMicroNodeCapHit, SourceLanguage,
+    TreeSitterParser,
 };
 use codegraph_query::{
     is_proof_path_relation, ExactGraphQueryEngine, GraphPath, TraversalDirection, TraversalStep,
 };
 use codegraph_store::{
     classify_sqlite_access_problem, inspect_db_preflight, AstMicroEdgeRow, AstMicroNodeRow,
-    DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore, SqliteGraphStore, StoreError,
-    DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore, LocalFlowPacketRow,
+    SqliteGraphStore, StoreError, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
 use codegraph_vector::{
@@ -1267,6 +1269,13 @@ struct TextEvidenceCandidate {
     kind: TextEvidenceFileKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceIndexCandidate {
+    file_path: PathBuf,
+    repo_relative_path: String,
+    language: SourceLanguage,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextEvidenceFileKind {
     MakefileFragment,
@@ -1339,6 +1348,10 @@ pub struct NormalizedFactSnapshotOptions {
     /// and keep their old behavior.
     #[serde(default)]
     pub include_micro_edges: bool,
+    /// Pre-MVP4.3 serialized options deserialize without packet capture and
+    /// keep their old behavior.
+    #[serde(default)]
+    pub include_local_flow_packets: bool,
     /// Pre-9.5.4 serialized options (e.g. an in-flight validation journal)
     /// deserialize without the lane and keep their old behavior.
     #[serde(default)]
@@ -1353,6 +1366,7 @@ impl Default for NormalizedFactSnapshotOptions {
             include_path_evidence: true,
             include_sidecar_freshness: true,
             include_micro_edges: true,
+            include_local_flow_packets: true,
             include_unresolved_references: true,
         }
     }
@@ -1365,6 +1379,8 @@ pub struct NormalizedFactSnapshotFacts {
     pub edges: Vec<NormalizedEdgeFact>,
     #[serde(default)]
     pub micro_edges: Vec<NormalizedMicroEdgeFact>,
+    #[serde(default)]
+    pub local_flow_packets: Vec<NormalizedLocalFlowPacketFact>,
     pub source_spans: Vec<NormalizedSourceSpanFact>,
     pub source_roles: Vec<NormalizedSourceRoleFact>,
     pub text_evidence: Vec<NormalizedTextEvidenceFact>,
@@ -2278,6 +2294,241 @@ impl MicroEdgeDeltaEntry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocalFlowPacketDeltaFactSummary {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub packet_id: String,
+    pub packet_kind: String,
+    pub repo_relative_path: String,
+    pub function_identity: String,
+    pub function_frame_micro_node_id: Option<String>,
+    pub encoding: String,
+    pub packet_body_hash: String,
+    pub proof_status: String,
+    pub proof_strength: String,
+    pub packet_status: String,
+    pub primary_source_span_id: Option<String>,
+    pub provenance_id: Option<String>,
+    pub exactness: String,
+    pub claimability_label: String,
+    pub source_role: EvidenceRole,
+    pub language: String,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub omitted_count: u64,
+    pub lifecycle_status: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub warnings: Vec<String>,
+}
+
+impl LocalFlowPacketDeltaFactSummary {
+    fn from_fact(fact: &NormalizedLocalFlowPacketFact) -> Self {
+        let mut warnings = normalized_local_flow_packet_fact_warnings(fact);
+        warnings.sort();
+        warnings.dedup();
+        Self {
+            stable_identity_key: fact.stable_identity_key.clone(),
+            fact_hash: fact.fact_hash.clone(),
+            packet_id: fact.packet_id.clone(),
+            packet_kind: fact.packet_kind.clone(),
+            repo_relative_path: fact.repo_relative_path.clone(),
+            function_identity: fact.function_identity.clone(),
+            function_frame_micro_node_id: fact.function_frame_micro_node_id.clone(),
+            encoding: fact.encoding.clone(),
+            packet_body_hash: fact.packet_body_hash.clone(),
+            proof_status: fact.proof_status.clone(),
+            proof_strength: fact.proof_strength.clone(),
+            packet_status: fact.packet_status.clone(),
+            primary_source_span_id: fact.primary_source_span_id.clone(),
+            provenance_id: fact.provenance_id.clone(),
+            exactness: fact.exactness.clone(),
+            claimability_label: fact.claimability_label.clone(),
+            source_role: fact.source_role,
+            language: fact.language.clone(),
+            row_schema_version: fact.row_schema_version,
+            payload_version: fact.payload_version,
+            extraction_version: fact.extraction_version.clone(),
+            omitted_count: fact.omitted_count,
+            lifecycle_status: fact.lifecycle_status.clone(),
+            claimability: fact.claimability.clone(),
+            warnings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocalFlowPacketDeltaEntry {
+    pub stable_identity_key: String,
+    pub old_stable_identity_key: Option<String>,
+    pub new_stable_identity_key: Option<String>,
+    pub old: Option<LocalFlowPacketDeltaFactSummary>,
+    pub new: Option<LocalFlowPacketDeltaFactSummary>,
+    pub packet_id: String,
+    pub packet_kind: String,
+    pub repo_relative_path: String,
+    pub function_identity: String,
+    pub function_frame_micro_node_id: Option<String>,
+    pub encoding: String,
+    pub proof_status: String,
+    pub proof_strength: String,
+    pub packet_status: String,
+    pub primary_source_span_id: Option<String>,
+    pub provenance_id: Option<String>,
+    pub exactness: String,
+    pub claimability_label: String,
+    pub source_role: EvidenceRole,
+    pub language: String,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub omitted_count: u64,
+    pub lifecycle_status: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub change_kind: String,
+    pub reason: String,
+    pub proof_strength_changed: bool,
+    pub proof_status_changed: bool,
+    pub flow_proof_changed: bool,
+    pub validation_error: bool,
+    pub warnings: Vec<String>,
+}
+
+impl LocalFlowPacketDeltaEntry {
+    fn added(fact: &NormalizedLocalFlowPacketFact) -> Self {
+        let summary = LocalFlowPacketDeltaFactSummary::from_fact(fact);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            None,
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            "added",
+            "normalized local micro-flow packet was absent before update and present after update",
+        )
+    }
+
+    fn removed(fact: &NormalizedLocalFlowPacketFact) -> Self {
+        let summary = LocalFlowPacketDeltaFactSummary::from_fact(fact);
+        Self::from_summary(
+            summary.stable_identity_key.clone(),
+            Some(summary.stable_identity_key.clone()),
+            None,
+            Some(summary),
+            None,
+            "removed",
+            "normalized local micro-flow packet was present before update and absent after update",
+        )
+    }
+
+    fn changed(old: &NormalizedLocalFlowPacketFact, new: &NormalizedLocalFlowPacketFact) -> Self {
+        let old_summary = LocalFlowPacketDeltaFactSummary::from_fact(old);
+        let new_summary = LocalFlowPacketDeltaFactSummary::from_fact(new);
+        Self::from_summary(
+            new_summary.stable_identity_key.clone(),
+            Some(old_summary.stable_identity_key.clone()),
+            Some(new_summary.stable_identity_key.clone()),
+            Some(old_summary),
+            Some(new_summary),
+            "changed",
+            local_flow_packet_change_reason(old, new),
+        )
+    }
+
+    fn from_summary(
+        stable_identity_key: String,
+        old_stable_identity_key: Option<String>,
+        new_stable_identity_key: Option<String>,
+        old: Option<LocalFlowPacketDeltaFactSummary>,
+        new: Option<LocalFlowPacketDeltaFactSummary>,
+        change_kind: &str,
+        reason: impl Into<String>,
+    ) -> Self {
+        let representative = new
+            .as_ref()
+            .or(old.as_ref())
+            .expect("local-flow packet summary");
+        let mut warnings = representative.warnings.clone();
+        if let (Some(old_summary), Some(new_summary)) = (&old, &new) {
+            warnings.extend(old_summary.warnings.iter().cloned());
+            warnings.extend(new_summary.warnings.iter().cloned());
+        }
+        warnings.push("normal_local_flow_packet_delta_is_not_a_validation_error".to_string());
+        warnings.sort();
+        warnings.dedup();
+        let proof_strength_changed =
+            old.as_ref()
+                .zip(new.as_ref())
+                .is_some_and(|(old_summary, new_summary)| {
+                    old_summary.proof_strength != new_summary.proof_strength
+                });
+        let proof_status_changed =
+            old.as_ref()
+                .zip(new.as_ref())
+                .is_some_and(|(old_summary, new_summary)| {
+                    old_summary.proof_status != new_summary.proof_status
+                });
+        let flow_proof_changed = local_flow_packet_summary_is_flow_proof(representative);
+        let packet_id = representative.packet_id.clone();
+        let packet_kind = representative.packet_kind.clone();
+        let repo_relative_path = representative.repo_relative_path.clone();
+        let function_identity = representative.function_identity.clone();
+        let function_frame_micro_node_id = representative.function_frame_micro_node_id.clone();
+        let encoding = representative.encoding.clone();
+        let proof_status = representative.proof_status.clone();
+        let proof_strength = representative.proof_strength.clone();
+        let packet_status = representative.packet_status.clone();
+        let primary_source_span_id = representative.primary_source_span_id.clone();
+        let provenance_id = representative.provenance_id.clone();
+        let exactness = representative.exactness.clone();
+        let claimability_label = representative.claimability_label.clone();
+        let source_role = representative.source_role;
+        let language = representative.language.clone();
+        let row_schema_version = representative.row_schema_version;
+        let payload_version = representative.payload_version;
+        let extraction_version = representative.extraction_version.clone();
+        let omitted_count = representative.omitted_count;
+        let lifecycle_status = representative.lifecycle_status.clone();
+        let claimability = representative.claimability.clone();
+        Self {
+            stable_identity_key,
+            old_stable_identity_key,
+            new_stable_identity_key,
+            old,
+            new,
+            packet_id,
+            packet_kind,
+            repo_relative_path,
+            function_identity,
+            function_frame_micro_node_id,
+            encoding,
+            proof_status,
+            proof_strength,
+            packet_status,
+            primary_source_span_id,
+            provenance_id,
+            exactness,
+            claimability_label,
+            source_role,
+            language,
+            row_schema_version,
+            payload_version,
+            extraction_version,
+            omitted_count,
+            lifecycle_status,
+            claimability,
+            change_kind: change_kind.to_string(),
+            reason: reason.into(),
+            proof_strength_changed,
+            proof_status_changed,
+            flow_proof_changed,
+            validation_error: false,
+            warnings,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntitySourceRoleDeltaOmission {
     pub truncated: bool,
@@ -2294,6 +2545,12 @@ pub struct EntitySourceRoleDeltaOmission {
     pub micro_edges_removed_omitted: usize,
     #[serde(default)]
     pub micro_edges_changed_omitted: usize,
+    #[serde(default)]
+    pub local_flow_packets_added_omitted: usize,
+    #[serde(default)]
+    pub local_flow_packets_removed_omitted: usize,
+    #[serde(default)]
+    pub local_flow_packets_changed_omitted: usize,
     pub source_spans_added_omitted: usize,
     pub source_spans_removed_omitted: usize,
     pub source_spans_changed_omitted: usize,
@@ -2859,6 +3116,12 @@ pub struct EntitySourceRoleDeltaReport {
     pub micro_edges_removed_count: usize,
     #[serde(default)]
     pub micro_edges_changed_count: usize,
+    #[serde(default)]
+    pub local_flow_packets_added_count: usize,
+    #[serde(default)]
+    pub local_flow_packets_removed_count: usize,
+    #[serde(default)]
+    pub local_flow_packets_changed_count: usize,
     pub source_roles_changed_count: usize,
     pub source_spans_added_count: usize,
     pub source_spans_removed_count: usize,
@@ -2890,6 +3153,12 @@ pub struct EntitySourceRoleDeltaReport {
     pub micro_edges_removed: Vec<MicroEdgeDeltaEntry>,
     #[serde(default)]
     pub micro_edges_changed: Vec<MicroEdgeDeltaEntry>,
+    #[serde(default)]
+    pub local_flow_packets_added: Vec<LocalFlowPacketDeltaEntry>,
+    #[serde(default)]
+    pub local_flow_packets_removed: Vec<LocalFlowPacketDeltaEntry>,
+    #[serde(default)]
+    pub local_flow_packets_changed: Vec<LocalFlowPacketDeltaEntry>,
     pub source_spans_added: Vec<SourceSpanDeltaEntry>,
     pub source_spans_removed: Vec<SourceSpanDeltaEntry>,
     pub source_spans_changed: Vec<SourceSpanDeltaEntry>,
@@ -2905,6 +3174,8 @@ pub struct EntitySourceRoleDeltaReport {
     pub routing_handles_invalidated: FreshnessLayerDelta,
     #[serde(default)]
     pub micro_edge_layer_status_change: Option<FreshnessLayerDelta>,
+    #[serde(default)]
+    pub local_flow_packet_layer_status_change: Option<FreshnessLayerDelta>,
     pub proof_ladder_changes: BTreeMap<String, ProofLadderChange>,
     pub file_renames_detected: Vec<FileRenameDeltaEntry>,
     pub rename_ambiguities: Vec<FileRenameDeltaEntry>,
@@ -2930,6 +3201,16 @@ pub struct EntitySourceRoleDeltaReport {
     pub micro_edge_cap_omissions: usize,
     #[serde(default)]
     pub normal_micro_edge_delta_not_validation_error: bool,
+    #[serde(default)]
+    pub local_flow_packet_counts_by_proof_strength: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub local_flow_packet_counts_by_status: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub local_flow_packet_integrity_changes: Vec<String>,
+    #[serde(default)]
+    pub local_flow_packet_cap_omissions: usize,
+    #[serde(default)]
+    pub normal_local_flow_packet_delta_not_validation_error: bool,
     pub degraded_relation_classes: BTreeMap<String, usize>,
     pub unsupported_relation_classes: BTreeMap<String, usize>,
     pub source_roles_changed: Vec<SourceRoleDeltaEntry>,
@@ -3076,6 +3357,21 @@ impl EntitySourceRoleDeltaReport {
             &mut report.micro_edges_changed,
             max_items,
             &mut omission.micro_edges_changed_omitted,
+        );
+        truncate_tracked(
+            &mut report.local_flow_packets_added,
+            max_items,
+            &mut omission.local_flow_packets_added_omitted,
+        );
+        truncate_tracked(
+            &mut report.local_flow_packets_removed,
+            max_items,
+            &mut omission.local_flow_packets_removed_omitted,
+        );
+        truncate_tracked(
+            &mut report.local_flow_packets_changed,
+            max_items,
+            &mut omission.local_flow_packets_changed_omitted,
         );
         truncate_tracked(
             &mut report.source_spans_added,
@@ -3454,6 +3750,14 @@ pub fn compute_entity_source_role_delta(
     );
     let (micro_edges_added_all, micro_edges_removed_all, micro_edges_changed_all) =
         classify_micro_edge_delta_entries(&old.facts.micro_edges, &new.facts.micro_edges);
+    let (
+        local_flow_packets_added_all,
+        local_flow_packets_removed_all,
+        local_flow_packets_changed_all,
+    ) = classify_local_flow_packet_delta_entries(
+        &old.facts.local_flow_packets,
+        &new.facts.local_flow_packets,
+    );
     let relation_kind_counts =
         edge_relation_kind_counts(&edges_added_all, &edges_removed_all, &edges_changed_all);
     let exactness_counts =
@@ -3481,6 +3785,21 @@ pub fn compute_entity_source_role_delta(
         &micro_edges_added_all,
         &micro_edges_removed_all,
         &micro_edges_changed_all,
+    );
+    let local_flow_packet_counts_by_proof_strength = local_flow_packet_counts_by_proof_strength(
+        &local_flow_packets_added_all,
+        &local_flow_packets_removed_all,
+        &local_flow_packets_changed_all,
+    );
+    let local_flow_packet_counts_by_status = local_flow_packet_counts_by_status(
+        &local_flow_packets_added_all,
+        &local_flow_packets_removed_all,
+        &local_flow_packets_changed_all,
+    );
+    let local_flow_packet_integrity_changes = local_flow_packet_integrity_changes(
+        &local_flow_packets_added_all,
+        &local_flow_packets_removed_all,
+        &local_flow_packets_changed_all,
     );
     let degraded_relation_classes =
         edge_degraded_relation_classes(&edges_added_all, &edges_removed_all, &edges_changed_all);
@@ -3562,10 +3881,19 @@ pub fn compute_entity_source_role_delta(
         &old.facts.sidecar_freshness,
         &new.facts.sidecar_freshness,
     );
+    let local_flow_packet_layer_status_change = sidecar_layer_delta(
+        "local_flow_packets",
+        &old.facts.sidecar_freshness,
+        &new.facts.sidecar_freshness,
+    );
     let micro_edge_cap_omissions =
         micro_edge_cap_omissions_from_sidecar_freshness(&new.facts.sidecar_freshness);
+    let local_flow_packet_cap_omissions =
+        local_flow_packet_cap_omissions_from_sidecar_freshness(&new.facts.sidecar_freshness);
     let micro_edge_layer_proof_ready =
         micro_edge_layer_status_is_proof_ready(&new.facts.sidecar_freshness);
+    let local_flow_packet_layer_proof_ready =
+        local_flow_packet_layer_status_is_proof_ready(&new.facts.sidecar_freshness);
     let proof_ladder_changes = proof_ladder_changes_for_delta(
         &entities_added_all,
         &entities_removed_all,
@@ -3577,6 +3905,10 @@ pub fn compute_entity_source_role_delta(
         &micro_edges_removed_all,
         &micro_edges_changed_all,
         micro_edge_layer_proof_ready,
+        &local_flow_packets_added_all,
+        &local_flow_packets_removed_all,
+        &local_flow_packets_changed_all,
+        local_flow_packet_layer_proof_ready,
         &source_spans_added_all,
         &source_spans_removed_all,
         &source_spans_changed_all,
@@ -3603,6 +3935,12 @@ pub fn compute_entity_source_role_delta(
     let micro_edges_added_omitted = omitted_after_limit(micro_edges_added_all.len(), max_items);
     let micro_edges_removed_omitted = omitted_after_limit(micro_edges_removed_all.len(), max_items);
     let micro_edges_changed_omitted = omitted_after_limit(micro_edges_changed_all.len(), max_items);
+    let local_flow_packets_added_omitted =
+        omitted_after_limit(local_flow_packets_added_all.len(), max_items);
+    let local_flow_packets_removed_omitted =
+        omitted_after_limit(local_flow_packets_removed_all.len(), max_items);
+    let local_flow_packets_changed_omitted =
+        omitted_after_limit(local_flow_packets_changed_all.len(), max_items);
     let source_spans_added_omitted = omitted_after_limit(source_spans_added_all.len(), max_items);
     let source_spans_removed_omitted =
         omitted_after_limit(source_spans_removed_all.len(), max_items);
@@ -3632,6 +3970,9 @@ pub fn compute_entity_source_role_delta(
         + micro_edges_added_omitted
         + micro_edges_removed_omitted
         + micro_edges_changed_omitted
+        + local_flow_packets_added_omitted
+        + local_flow_packets_removed_omitted
+        + local_flow_packets_changed_omitted
         + source_spans_added_omitted
         + source_spans_removed_omitted
         + source_spans_changed_omitted
@@ -3694,6 +4035,9 @@ pub fn compute_entity_source_role_delta(
         micro_edges_added_count: micro_edges_added_all.len(),
         micro_edges_removed_count: micro_edges_removed_all.len(),
         micro_edges_changed_count: micro_edges_changed_all.len(),
+        local_flow_packets_added_count: local_flow_packets_added_all.len(),
+        local_flow_packets_removed_count: local_flow_packets_removed_all.len(),
+        local_flow_packets_changed_count: local_flow_packets_changed_all.len(),
         source_roles_changed_count: source_roles_changed_all.len(),
         source_spans_added_count: source_spans_added_all.len(),
         source_spans_removed_count: source_spans_removed_all.len(),
@@ -3719,6 +4063,9 @@ pub fn compute_entity_source_role_delta(
         micro_edges_added: take_delta_items(micro_edges_added_all, max_items),
         micro_edges_removed: take_delta_items(micro_edges_removed_all, max_items),
         micro_edges_changed: take_delta_items(micro_edges_changed_all, max_items),
+        local_flow_packets_added: take_delta_items(local_flow_packets_added_all, max_items),
+        local_flow_packets_removed: take_delta_items(local_flow_packets_removed_all, max_items),
+        local_flow_packets_changed: take_delta_items(local_flow_packets_changed_all, max_items),
         source_spans_added: take_delta_items(source_spans_added_all, max_items),
         source_spans_removed: take_delta_items(source_spans_removed_all, max_items),
         source_spans_changed: take_delta_items(source_spans_changed_all, max_items),
@@ -3733,6 +4080,7 @@ pub fn compute_entity_source_role_delta(
         nuance_tokens_invalidated,
         routing_handles_invalidated,
         micro_edge_layer_status_change: Some(micro_edge_layer_status_change),
+        local_flow_packet_layer_status_change: Some(local_flow_packet_layer_status_change),
         proof_ladder_changes,
         file_renames_detected: take_delta_items(file_renames_detected_all, max_items),
         rename_ambiguities: take_delta_items(rename_ambiguities_all, max_items),
@@ -3752,6 +4100,11 @@ pub fn compute_entity_source_role_delta(
         micro_edge_integrity_changes,
         micro_edge_cap_omissions,
         normal_micro_edge_delta_not_validation_error: true,
+        local_flow_packet_counts_by_proof_strength,
+        local_flow_packet_counts_by_status,
+        local_flow_packet_integrity_changes,
+        local_flow_packet_cap_omissions,
+        normal_local_flow_packet_delta_not_validation_error: true,
         degraded_relation_classes,
         unsupported_relation_classes,
         source_roles_changed: take_delta_items(source_roles_changed_all, max_items),
@@ -3829,6 +4182,9 @@ pub fn compute_entity_source_role_delta(
             micro_edges_added_omitted,
             micro_edges_removed_omitted,
             micro_edges_changed_omitted,
+            local_flow_packets_added_omitted,
+            local_flow_packets_removed_omitted,
+            local_flow_packets_changed_omitted,
             source_spans_added_omitted,
             source_spans_removed_omitted,
             source_spans_changed_omitted,
@@ -3873,6 +4229,14 @@ fn claimable_graph_fact_keys(snapshot: &NormalizedFactSnapshot) -> BTreeSet<Stri
             snapshot
                 .facts
                 .micro_edges
+                .iter()
+                .filter(|fact| fact.claimability.graph_proof && fact.claimability.claimable)
+                .map(|fact| fact.stable_identity_key.clone()),
+        )
+        .chain(
+            snapshot
+                .facts
+                .local_flow_packets
                 .iter()
                 .filter(|fact| fact.claimability.graph_proof && fact.claimability.claimable)
                 .map(|fact| fact.stable_identity_key.clone()),
@@ -4101,6 +4465,7 @@ fn classify_sidecar_freshness_delta_entries(
         "nuance_tokens",
         "routing_handles",
         "ast_micro_edges",
+        "local_flow_packets",
         "path_evidence",
     ]
     .into_iter()
@@ -4164,12 +4529,32 @@ fn micro_edge_layer_status_is_proof_ready(sidecars: &[NormalizedSidecarFreshness
         .all(|fact| matches!(fact.freshness_status.as_str(), "ready" | "current"))
 }
 
+fn local_flow_packet_layer_status_is_proof_ready(
+    sidecars: &[NormalizedSidecarFreshnessFact],
+) -> bool {
+    sidecars
+        .iter()
+        .filter(|fact| fact.sidecar_layer == "local_flow_packets")
+        .all(|fact| matches!(fact.freshness_status.as_str(), "ready" | "current"))
+}
+
 fn micro_edge_cap_omissions_from_sidecar_freshness(
     sidecars: &[NormalizedSidecarFreshnessFact],
 ) -> usize {
     sidecars
         .iter()
         .filter(|fact| fact.sidecar_layer == "ast_micro_edges")
+        .filter_map(|fact| fact.lifecycle.stale_reason.as_deref())
+        .filter_map(parse_first_omitted_count)
+        .sum()
+}
+
+fn local_flow_packet_cap_omissions_from_sidecar_freshness(
+    sidecars: &[NormalizedSidecarFreshnessFact],
+) -> usize {
+    sidecars
+        .iter()
+        .filter(|fact| fact.sidecar_layer == "local_flow_packets")
         .filter_map(|fact| fact.lifecycle.stale_reason.as_deref())
         .filter_map(parse_first_omitted_count)
         .sum()
@@ -4280,6 +4665,10 @@ fn proof_ladder_changes_for_delta(
     micro_edges_removed: &[MicroEdgeDeltaEntry],
     micro_edges_changed: &[MicroEdgeDeltaEntry],
     micro_edge_layer_proof_ready: bool,
+    local_flow_packets_added: &[LocalFlowPacketDeltaEntry],
+    local_flow_packets_removed: &[LocalFlowPacketDeltaEntry],
+    local_flow_packets_changed: &[LocalFlowPacketDeltaEntry],
+    local_flow_packet_layer_proof_ready: bool,
     source_spans_added: &[SourceSpanDeltaEntry],
     source_spans_removed: &[SourceSpanDeltaEntry],
     source_spans_changed: &[SourceSpanDeltaEntry],
@@ -4300,6 +4689,12 @@ fn proof_ladder_changes_for_delta(
             .chain(micro_edges_removed)
             .chain(micro_edges_changed)
             .any(micro_edge_delta_is_graph_relation_proof);
+    let local_flow_proof_changed = local_flow_packet_layer_proof_ready
+        && local_flow_packets_added
+            .iter()
+            .chain(local_flow_packets_removed)
+            .chain(local_flow_packets_changed)
+            .any(|entry| entry.flow_proof_changed);
     let source_span_changed = !source_spans_added.is_empty()
         || !source_spans_removed.is_empty()
         || !source_spans_changed.is_empty();
@@ -4386,16 +4781,21 @@ fn proof_ladder_changes_for_delta(
     }
     if edge_delta_contains_relation(edges_added, edges_removed, edges_changed, |relation| {
         matches!(relation, RelationKind::FlowsTo)
-    }) {
+    }) || local_flow_proof_changed
+    {
         changes.insert(
             "flow_proof".to_string(),
             proof_ladder_change(
                 "flow_proof",
                 true,
-                "supported_relation_present",
+                if local_flow_proof_changed {
+                    "local_micro_flow_packet_proof_changed"
+                } else {
+                    "supported_relation_present"
+                },
                 true,
-                "graph_source_span_proof",
-                "flow proof is emitted only when supported flow relations are present",
+                "flow_proof",
+                "flow proof changes require current claimable local micro-flow packets or supported flow relations",
             ),
         );
     }
@@ -4870,6 +5270,46 @@ fn classify_micro_edge_delta_entries(
     (added, removed, changed)
 }
 
+fn classify_local_flow_packet_delta_entries(
+    old_packets: &[NormalizedLocalFlowPacketFact],
+    new_packets: &[NormalizedLocalFlowPacketFact],
+) -> (
+    Vec<LocalFlowPacketDeltaEntry>,
+    Vec<LocalFlowPacketDeltaEntry>,
+    Vec<LocalFlowPacketDeltaEntry>,
+) {
+    let old_by_key = old_packets
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let new_by_key = new_packets
+        .iter()
+        .map(|fact| (fact.stable_identity_key.clone(), fact))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    for (key, new_fact) in &new_by_key {
+        match old_by_key.get(key) {
+            None => added.push(LocalFlowPacketDeltaEntry::added(new_fact)),
+            Some(old_fact) if old_fact.fact_hash != new_fact.fact_hash => {
+                changed.push(LocalFlowPacketDeltaEntry::changed(old_fact, new_fact));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, old_fact) in &old_by_key {
+        if !new_by_key.contains_key(key) {
+            removed.push(LocalFlowPacketDeltaEntry::removed(old_fact));
+        }
+    }
+    added.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    removed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    changed.sort_by(|left, right| left.stable_identity_key.cmp(&right.stable_identity_key));
+    (added, removed, changed)
+}
+
 fn micro_edge_change_reason(
     old: &NormalizedMicroEdgeFact,
     new: &NormalizedMicroEdgeFact,
@@ -4914,6 +5354,63 @@ fn micro_edge_change_reason(
     }
 }
 
+fn local_flow_packet_change_reason(
+    old: &NormalizedLocalFlowPacketFact,
+    new: &NormalizedLocalFlowPacketFact,
+) -> String {
+    let mut reasons = Vec::new();
+    if old.packet_body_hash != new.packet_body_hash {
+        reasons.push("packet_body_hash_changed");
+    }
+    if old.proof_strength != new.proof_strength {
+        reasons.push("proof_strength_changed");
+    }
+    if old.proof_status != new.proof_status {
+        reasons.push("proof_status_changed");
+    }
+    if old.packet_status != new.packet_status {
+        reasons.push("packet_status_changed");
+    }
+    if old.primary_source_span_id != new.primary_source_span_id
+        || old.source_span_ids != new.source_span_ids
+    {
+        reasons.push("source_span_refs_changed");
+    }
+    if old.provenance_id != new.provenance_id {
+        reasons.push("provenance_changed");
+    }
+    if old.exactness != new.exactness {
+        reasons.push("exactness_changed");
+    }
+    if old.claimability_label != new.claimability_label || old.claimability != new.claimability {
+        reasons.push("claimability_changed");
+    }
+    if old.omitted_count != new.omitted_count || old.cap_state_hash != new.cap_state_hash {
+        reasons.push("cap_or_omission_state_changed");
+    }
+    if old.source_role != new.source_role {
+        reasons.push("source_role_changed");
+    }
+    if old.row_schema_version != new.row_schema_version
+        || old.payload_version != new.payload_version
+        || old.extraction_version != new.extraction_version
+        || old.source_micro_node_extraction_versions_hash
+            != new.source_micro_node_extraction_versions_hash
+        || old.source_micro_edge_extraction_versions_hash
+            != new.source_micro_edge_extraction_versions_hash
+    {
+        reasons.push("version_changed");
+    }
+    if old.lifecycle_status != new.lifecycle_status || old.lifecycle != new.lifecycle {
+        reasons.push("lifecycle_changed");
+    }
+    if reasons.is_empty() {
+        "normalized_local_flow_packet_fact_hash_changed".to_string()
+    } else {
+        reasons.join("+")
+    }
+}
+
 fn normalized_micro_edge_fact_warnings(fact: &NormalizedMicroEdgeFact) -> Vec<String> {
     let mut warnings = Vec::new();
     if fact.relation_source_span.is_none() {
@@ -4938,6 +5435,46 @@ fn normalized_micro_edge_fact_warnings(fact: &NormalizedMicroEdgeFact) -> Vec<St
         warnings.push("micro_edge_relation_not_authorized_for_mvp4_2_first_slice".to_string());
     }
     warnings
+}
+
+fn normalized_local_flow_packet_fact_warnings(fact: &NormalizedLocalFlowPacketFact) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if fact.encoding != "dict_v1" {
+        warnings.push("local_flow_packet_encoding_not_dict_v1".to_string());
+    }
+    if fact.primary_source_span_id.is_none() {
+        warnings.push("local_flow_packet_missing_primary_source_span".to_string());
+    }
+    if fact.provenance_id.is_none() {
+        warnings.push("local_flow_packet_missing_provenance".to_string());
+    }
+    if fact.proof_strength == "flow_proof" && fact.omitted_count > 0 {
+        warnings.push("flow_proof_packet_has_cap_omission".to_string());
+    }
+    if fact.proof_strength == "flow_proof" && !fact.claimability.graph_proof {
+        warnings.push("flow_proof_packet_not_claimable_graph_proof".to_string());
+    }
+    if matches!(
+        fact.packet_status.as_str(),
+        "truncated" | "micro_flow_truncated"
+    ) {
+        warnings.push("local_flow_packet_truncated".to_string());
+    }
+    if !matches!(
+        fact.lifecycle_status.as_str(),
+        "db_passport" | "current" | "ready"
+    ) {
+        warnings.push("local_flow_packet_lifecycle_not_current".to_string());
+    }
+    warnings
+}
+
+fn local_flow_packet_summary_is_flow_proof(summary: &LocalFlowPacketDeltaFactSummary) -> bool {
+    summary.proof_strength == "flow_proof"
+        && summary.claimability.graph_proof
+        && summary.primary_source_span_id.is_some()
+        && summary.provenance_id.is_some()
+        && summary.omitted_count == 0
 }
 
 fn micro_edge_summary_is_graph_relation_proof(summary: &MicroEdgeDeltaFactSummary) -> bool {
@@ -5084,6 +5621,39 @@ fn micro_edge_counts_by_language(
     count_micro_edge_delta_labels(added, removed, changed, |entry| entry.language.clone())
 }
 
+fn local_flow_packet_counts_by_proof_strength(
+    added: &[LocalFlowPacketDeltaEntry],
+    removed: &[LocalFlowPacketDeltaEntry],
+    changed: &[LocalFlowPacketDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_local_flow_packet_delta_labels(added, removed, changed, |entry| {
+        entry.proof_strength.clone()
+    })
+}
+
+fn local_flow_packet_counts_by_status(
+    added: &[LocalFlowPacketDeltaEntry],
+    removed: &[LocalFlowPacketDeltaEntry],
+    changed: &[LocalFlowPacketDeltaEntry],
+) -> BTreeMap<String, usize> {
+    count_local_flow_packet_delta_labels(added, removed, changed, |entry| {
+        entry.packet_status.clone()
+    })
+}
+
+fn count_local_flow_packet_delta_labels(
+    added: &[LocalFlowPacketDeltaEntry],
+    removed: &[LocalFlowPacketDeltaEntry],
+    changed: &[LocalFlowPacketDeltaEntry],
+    label: fn(&LocalFlowPacketDeltaEntry) -> String,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in added.iter().chain(removed).chain(changed) {
+        *counts.entry(label(entry)).or_insert(0) += 1;
+    }
+    counts
+}
+
 fn count_micro_edge_delta_labels(
     added: &[MicroEdgeDeltaEntry],
     removed: &[MicroEdgeDeltaEntry],
@@ -5097,14 +5667,57 @@ fn count_micro_edge_delta_labels(
     counts
 }
 
+fn local_flow_packet_integrity_changes(
+    added: &[LocalFlowPacketDeltaEntry],
+    removed: &[LocalFlowPacketDeltaEntry],
+    changed: &[LocalFlowPacketDeltaEntry],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for entry in added.iter().chain(removed).chain(changed) {
+        if entry.encoding != "dict_v1" {
+            findings.push(format!("{}:encoding_not_dict_v1", entry.packet_id));
+        }
+        if entry.primary_source_span_id.is_none() {
+            findings.push(format!("{}:missing_source_span", entry.packet_id));
+        }
+        if entry.provenance_id.is_none() {
+            findings.push(format!("{}:missing_provenance", entry.packet_id));
+        }
+        if entry.proof_strength == "flow_proof" && entry.omitted_count > 0 {
+            findings.push(format!("{}:flow_proof_with_cap_omission", entry.packet_id));
+        }
+        if entry.proof_strength == "flow_proof" && !entry.claimability.graph_proof {
+            findings.push(format!("{}:flow_proof_not_claimable", entry.packet_id));
+        }
+        if matches!(
+            entry.packet_status.as_str(),
+            "truncated" | "micro_flow_truncated"
+        ) {
+            findings.push(format!("{}:packet_truncated", entry.packet_id));
+        }
+    }
+    findings.sort();
+    findings.dedup();
+    findings
+}
+
 fn micro_edge_integrity_changes(
     added: &[MicroEdgeDeltaEntry],
     removed: &[MicroEdgeDeltaEntry],
     changed: &[MicroEdgeDeltaEntry],
 ) -> Vec<String> {
     let mut findings = Vec::new();
+    // The active MVP4.2/4.2b micro-edge relations persisted to ast_micro_edges.
+    // Exact relations stay exact; LOCAL_FLOWS_TO is derived_with_provenance.
+    // Keep in sync with `mvp4_2_micro_edge_endpoint_kinds`.
+    let supported_micro_edge_kind = |kind: &str| {
+        kind == MicroEdgeKind::LocalReturnsTo.as_str()
+            || kind == MicroEdgeKind::LocalReads.as_str()
+            || kind == MicroEdgeKind::LocalWrites.as_str()
+            || kind == MicroEdgeKind::LocalFlowsTo.as_str()
+    };
     for entry in added.iter().chain(removed).chain(changed) {
-        if entry.micro_edge_kind != MicroEdgeKind::LocalReturnsTo.as_str() {
+        if !supported_micro_edge_kind(&entry.micro_edge_kind) {
             findings.push(format!(
                 "{}:unsupported_micro_edge_kind:{}",
                 entry.micro_edge_id, entry.micro_edge_kind
@@ -5119,8 +5732,16 @@ fn micro_edge_integrity_changes(
         if entry.provenance_id.is_none() {
             findings.push(format!("{}:missing_provenance", entry.micro_edge_id));
         }
-        if !entry.exactness.eq_ignore_ascii_case("exact") {
-            findings.push(format!("{}:non_exact_micro_edge", entry.micro_edge_id));
+        let expected_exactness = if entry.micro_edge_kind == MicroEdgeKind::LocalFlowsTo.as_str() {
+            "derived_with_provenance"
+        } else {
+            "exact"
+        };
+        if !entry.exactness.eq_ignore_ascii_case(expected_exactness) {
+            findings.push(format!(
+                "{}:unexpected_micro_edge_exactness:{}",
+                entry.micro_edge_id, entry.exactness
+            ));
         }
         if !entry.claimability.graph_proof || !entry.claimability.claimable {
             findings.push(format!("{}:non_claimable_micro_edge", entry.micro_edge_id));
@@ -5552,6 +6173,7 @@ fn collect_normalized_facts_for_path(
         .map(|(id, span)| (id.clone(), span.clone()))
         .collect::<BTreeMap<_, _>>();
     let micro_edge_table_available = store.table_exists("ast_micro_edges")?;
+    let local_flow_packet_table_available = store.table_exists("local_flow_packets")?;
     let extraction_warnings = if options.include_micro_edges || options.include_sidecar_freshness {
         store.list_extraction_warnings_by_file(repo_relative_path)?
     } else {
@@ -5687,6 +6309,47 @@ fn collect_normalized_facts_for_path(
                     ),
                     |facts, fact| facts.source_spans.push(fact),
                 );
+            }
+        }
+    }
+
+    if options.include_local_flow_packets && local_flow_packet_table_available {
+        for row in store.local_flow_packets_for_file(repo_relative_path)? {
+            let fact = normalized_local_flow_packet_fact_from_row(&row);
+            let packet_source_role = fact.source_role;
+            let packet_key = fact.stable_identity_key.clone();
+            let packet_id = fact.packet_id.clone();
+            let primary_source_span_id = fact.primary_source_span_id.clone();
+            push_fact(budget, facts, fact, |facts, fact| {
+                facts.local_flow_packets.push(fact)
+            });
+            push_fact(
+                budget,
+                facts,
+                NormalizedSourceRoleFact::new(
+                    repo_relative_path,
+                    "local_flow_packet",
+                    packet_id.clone(),
+                    packet_source_role,
+                    "local micro-flow packet source role",
+                ),
+                |facts, fact| facts.source_roles.push(fact),
+            );
+            if let Some(span_id) = primary_source_span_id {
+                if let Some(span) = source_spans_by_id.get(&span_id).cloned() {
+                    push_fact(
+                        budget,
+                        facts,
+                        NormalizedSourceSpanFact::new(
+                            span_id,
+                            packet_key,
+                            "local_flow_packet",
+                            span,
+                            packet_source_role,
+                        ),
+                        |facts, fact| facts.source_spans.push(fact),
+                    );
+                }
             }
         }
     }
@@ -5865,6 +6528,44 @@ fn normalized_micro_edge_fact_from_row(
         row.schema_version,
         row.payload_version,
         row.extraction_version.clone(),
+        row.lifecycle_binding.clone(),
+    )
+}
+
+fn normalized_local_flow_packet_fact_from_row(
+    row: &LocalFlowPacketRow,
+) -> NormalizedLocalFlowPacketFact {
+    let source_role = EvidenceRole::from_str(&row.source_role).unwrap_or(EvidenceRole::Unknown);
+    let source_span_ids = serde_json::from_str::<Vec<String>>(&row.source_span_ids_json)
+        .unwrap_or_else(|_| Vec::new())
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>();
+    NormalizedLocalFlowPacketFact::new(
+        row.packet_id.clone(),
+        &row.file_id,
+        row.function_entity_id.clone(),
+        row.function_frame_micro_node_id.clone(),
+        row.packet_kind.clone(),
+        row.encoding.clone(),
+        row.packet_body_hash.clone(),
+        row.primary_source_span_id.clone(),
+        source_span_ids,
+        row.proof_status.clone(),
+        row.proof_strength.clone(),
+        row.packet_status.clone(),
+        row.provenance_id.clone(),
+        row.exactness.clone(),
+        row.claimability.clone(),
+        source_role,
+        row.language.clone(),
+        row.row_schema_version,
+        row.payload_version,
+        row.extraction_version.clone(),
+        &row.source_micro_node_extraction_versions_json,
+        &row.source_micro_edge_extraction_versions_json,
+        &row.cap_state_json,
+        row.omitted_count,
         row.lifecycle_binding.clone(),
     )
 }
@@ -8077,10 +8778,17 @@ fn classify_file_profile_source_role(
         return TEXT_EVIDENCE_KIND.to_string();
     }
     let normalized = normalize_graph_path(repo_relative_path).to_ascii_lowercase();
-    if normalized.contains("/generated/") || normalized.contains(".generated.") {
+    if is_generated_file_path_for_index(&normalized) {
         return "generated".to_string();
     }
-    if normalized.contains("/fixtures/") {
+    if is_vendor_file_path_for_index(&normalized) {
+        return "vendor".to_string();
+    }
+    if is_mock_file_path_for_index(&normalized) || source.is_some_and(source_may_have_mock_relation)
+    {
+        return "mock".to_string();
+    }
+    if is_fixture_file_path_for_index(&normalized) {
         return "fixture".to_string();
     }
     if is_test_file_path_for_index(repo_relative_path)
@@ -8597,8 +9305,14 @@ fn index_repo_to_existing_db_with_options(
         summary.files_seen += 1;
         summary.files_walked += 1;
         let repo_relative_path = repo_relative_path(repo_root, &file_path)?;
-        if detect_language(&file_path).is_some() {
-            source_candidates.push((file_path, repo_relative_path));
+        if let Some(language) = detect_language(&file_path)
+            .or_else(|| detect_language_from_file_header(&file_path, &repo_relative_path))
+        {
+            source_candidates.push(SourceIndexCandidate {
+                file_path,
+                repo_relative_path,
+                language,
+            });
             continue;
         }
         if let Some(kind) = classify_scoped_text_evidence_path(&repo_relative_path) {
@@ -8614,7 +9328,7 @@ fn index_repo_to_existing_db_with_options(
 
     let current_repo_paths = source_candidates
         .iter()
-        .map(|(_, repo_relative_path)| repo_relative_path.clone())
+        .map(|candidate| candidate.repo_relative_path.clone())
         .chain(
             text_evidence_candidates
                 .iter()
@@ -8986,12 +9700,15 @@ fn index_repo_to_existing_db_with_options(
         }
     }
 
-    for (file_path, repo_relative_path) in source_candidates {
+    for candidate in source_candidates {
+        let file_path = candidate.file_path;
+        let repo_relative_path = candidate.repo_relative_path;
+        let mut detected_language = candidate.language;
         let metadata_start = Instant::now();
         let file_metadata = fs::metadata(&file_path)?;
         let size_bytes = file_metadata.len();
-        let language = detect_language(&file_path).map(|language| language.as_str().to_string());
-        let file_kind = language.clone().unwrap_or_else(|| "source".to_string());
+        let mut language = Some(detected_language.as_str().to_string());
+        let mut file_kind = detected_language.as_str().to_string();
         let existing_file = manifest_diff.existing_file(&repo_relative_path).cloned();
         if manifest_diff.classify_file(&repo_relative_path, size_bytes, &file_metadata)
             == ManifestFileDecision::MetadataUnchanged
@@ -9084,6 +9801,10 @@ fn index_repo_to_existing_db_with_options(
         let hash_elapsed = hash_start.elapsed();
         phase_profile.add_duration("file_hash", hash_elapsed, 1, source.len() as u64);
         summary.files_hashed += 1;
+        detected_language =
+            detect_language_with_source(&repo_relative_path, &source).unwrap_or(detected_language);
+        language = Some(detected_language.as_str().to_string());
+        file_kind = detected_language.as_str().to_string();
         let source_role_start = Instant::now();
         let source_role =
             classify_file_profile_source_role(&repo_relative_path, Some(&source), &file_kind);
@@ -12922,6 +13643,112 @@ fn is_mvp4_1_persistable_micro_node_candidate(
         && candidate.extraction_version == MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION
 }
 
+/// MVP4.2b `ValueUse` micro-node persistence gate. Kept SEPARATE from the frozen
+/// MVP4.1 first-slice inventory (`is_mvp4_1_*`): the MVP4.1 authorized-kind set is
+/// untouched, and `ValueUse` rows persist only through this dedicated path. These
+/// rows are the head endpoints required by persisted `LOCAL_READS` edges. They
+/// share the TypeScript micro-node extractor's row/payload/extraction versions
+/// (same emitter module) and are distinguished by `micro_kind = "value_use"` and
+/// their value-use claimability; existence-only (no resolved binding).
+fn is_mvp4_2b_persistable_value_use_candidate(
+    candidate: &Mvp4TypeScriptMicroNodeCandidate,
+) -> bool {
+    candidate.source_role == MicroSourceRole::Production
+        && candidate.node_kind == MicroNodeKind::ValueUse
+        && candidate.language == "typescript"
+        && candidate.row_schema_version == MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION
+        && candidate.payload_version == MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION
+        && candidate.extraction_version == MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION
+}
+
+/// Persist MVP4.2b `ValueUse` micro-nodes as `ast_micro_nodes` rows. Mirrors
+/// `persist_mvp4_1_ast_micro_nodes_for_file` but gates on `ValueUse` only, so the
+/// frozen MVP4.1 path stays byte-identical. Parse-recovery candidates never reach
+/// here (the persistable emitter drops them). No cap warning: the per-function
+/// cap is applied in the emitter and value-use existence is supporting structure
+/// for `LOCAL_READS`, not an independently-claimed inventory.
+fn persist_mvp4_2b_ast_value_use_nodes_for_file(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    candidates: &[Mvp4TypeScriptMicroNodeCandidate],
+    profile: &mut IndexPhaseRecorder,
+) -> Result<usize, StoreError> {
+    let mut inserted = 0usize;
+    let mut seen = BTreeSet::new();
+    let file_id = normalize_graph_path(repo_relative_path);
+    for candidate in candidates {
+        if !is_mvp4_2b_persistable_value_use_candidate(candidate) {
+            continue;
+        }
+        if normalize_graph_path(&candidate.repo_relative_path) != file_id {
+            return Err(StoreError::Message(format!(
+                "mvp4.2b value-use node {} file mismatch: candidate {}, bundle {}",
+                candidate.micro_node_id, candidate.repo_relative_path, file_id
+            )));
+        }
+        if normalize_graph_path(&candidate.source_span.repo_relative_path) != file_id {
+            return Err(StoreError::Message(format!(
+                "mvp4.2b value-use node {} source span path mismatch: span {}, bundle {}",
+                candidate.micro_node_id, candidate.source_span.repo_relative_path, file_id
+            )));
+        }
+        if !seen.insert(candidate.micro_node_id.as_str()) {
+            return Err(StoreError::Message(format!(
+                "duplicate mvp4.2b value-use node candidate id {}",
+                candidate.micro_node_id
+            )));
+        }
+
+        let source_span_start = Instant::now();
+        writer.insert_source_span_after_file_delete(
+            &candidate.micro_node_id,
+            &candidate.source_span,
+        )?;
+        profile.add_duration(
+            "mvp4_2b_value_use_node_source_span_insert",
+            source_span_start.elapsed(),
+            1,
+            1,
+        );
+
+        let row = AstMicroNodeRow {
+            micro_node_id: candidate.micro_node_id.clone(),
+            file_id: file_id.clone(),
+            function_entity_id: candidate
+                .function_entity_id
+                .clone()
+                .or_else(|| Some(candidate.enclosing_function_identity.clone())),
+            scope_entity_id: None,
+            micro_kind: candidate.node_kind.as_str().to_string(),
+            symbol: if candidate.name_or_literal.is_empty() {
+                None
+            } else {
+                Some(candidate.name_or_literal.clone())
+            },
+            source_span_id: candidate.micro_node_id.clone(),
+            schema_version: candidate.row_schema_version,
+            extraction_version: candidate.extraction_version.clone(),
+            exactness: candidate.exactness.as_str().to_string(),
+            provenance_id: Some(candidate.micro_node_id.clone()),
+            source_role: candidate.source_role.as_str().to_string(),
+            language: candidate.language.clone(),
+            payload_version: candidate.payload_version,
+            claimability: candidate.claimability.clone(),
+            lifecycle_binding: "db_passport".to_string(),
+        };
+        let insert_start = Instant::now();
+        writer.insert_ast_micro_node(&row)?;
+        profile.add_duration(
+            "mvp4_2b_value_use_node_insert",
+            insert_start.elapsed(),
+            1,
+            1,
+        );
+        inserted += 1;
+    }
+    Ok(inserted)
+}
+
 fn source_span_is_bounded(span: &SourceSpan) -> bool {
     !span.repo_relative_path.trim().is_empty()
         && (span.end_line > span.start_line
@@ -12929,6 +13756,32 @@ fn source_span_is_bounded(span: &SourceSpan) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Allowed (head, tail) micro-node kinds for each persisted exact micro-edge
+/// relation. `None` rejects the relation as unauthorized for persistence.
+fn mvp4_2_micro_edge_endpoint_kinds(
+    kind: MicroEdgeKind,
+) -> Option<(&'static [MicroNodeKind], &'static [MicroNodeKind])> {
+    match kind {
+        MicroEdgeKind::LocalReturnsTo => Some((
+            &[MicroNodeKind::ReturnSite],
+            &[MicroNodeKind::FunctionFrame],
+        )),
+        MicroEdgeKind::LocalReads => Some((
+            &[MicroNodeKind::ValueUse],
+            &[MicroNodeKind::Parameter, MicroNodeKind::LocalBinding],
+        )),
+        MicroEdgeKind::LocalWrites => Some((
+            &[MicroNodeKind::AssignmentSite],
+            &[MicroNodeKind::Parameter, MicroNodeKind::LocalBinding],
+        )),
+        MicroEdgeKind::LocalFlowsTo => Some((
+            &[MicroNodeKind::Parameter, MicroNodeKind::LocalBinding],
+            &[MicroNodeKind::Parameter, MicroNodeKind::LocalBinding],
+        )),
+        _ => None,
+    }
+}
+
 fn persist_mvp4_2_ast_micro_edges_for_file(
     writer: &SqliteGraphStore,
     repo_relative_path: &str,
@@ -12943,21 +13796,36 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
     let file_id = normalize_graph_path(repo_relative_path);
     let retained_nodes = retained_micro_nodes
         .iter()
-        .filter(|candidate| is_mvp4_1_persistable_micro_node_candidate(candidate))
+        .filter(|candidate| {
+            is_mvp4_1_persistable_micro_node_candidate(candidate)
+                || is_mvp4_2b_persistable_value_use_candidate(candidate)
+        })
         .map(|candidate| (candidate.micro_node_id.as_str(), candidate))
         .collect::<BTreeMap<_, _>>();
     let mut inserted = 0usize;
     let mut seen = BTreeSet::new();
 
     for candidate in candidates {
-        if candidate.micro_edge_kind != MicroEdgeKind::LocalReturnsTo {
+        let capability =
+            mvp4_micro_edge_language_capability(&candidate.language, candidate.micro_edge_kind);
+        let Some((head_kinds, tail_kinds)) =
+            mvp4_2_micro_edge_endpoint_kinds(candidate.micro_edge_kind)
+        else {
             return Err(StoreError::Message(format!(
                 "unauthorized mvp4.2 micro-edge relation for {}: {}",
                 candidate.micro_edge_id, candidate.micro_edge_kind
             )));
+        };
+        if !matches!(
+            capability.activation_status,
+            MicroEdgeSupportStatus::ExactCapable
+                | MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+        ) {
+            return Err(StoreError::Message(format!(
+                "mvp4.2 micro-edge relation {} is not persistence-capable under the registry",
+                candidate.micro_edge_id
+            )));
         }
-        let capability =
-            mvp4_micro_edge_language_capability(&candidate.language, candidate.micro_edge_kind);
         if !capability.matches_frontend(&candidate.frontend)
             || normalize_graph_path(&candidate.repo_relative_path) != file_id
             || normalize_graph_path(&candidate.relation_source_span.repo_relative_path) != file_id
@@ -12965,7 +13833,7 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
             || normalize_graph_path(&candidate.tail_source_span.repo_relative_path) != file_id
         {
             return Err(StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO candidate {} has invalid file/language/source-role/frontend",
+                "mvp4.2 micro-edge candidate {} has invalid file/language/source-role/frontend",
                 candidate.micro_edge_id
             )));
         }
@@ -12974,31 +13842,50 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
             || Some(candidate.extraction_version.as_str()) != capability.extraction_version
         {
             return Err(StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO version drift for {}",
+                "mvp4.2 micro-edge version drift for {}",
                 candidate.micro_edge_id
             )));
         }
-        if !capability.supports_claimable_exact(
-            &candidate.frontend,
-            candidate.source_role,
-            candidate.exactness,
-            &candidate.claimability,
-            &candidate.extraction_version,
-        ) {
+        if candidate.source_role != MicroSourceRole::Production
+            || candidate.exactness != capability.exactness_capability
+            || !capability
+                .claimability_label
+                .is_some_and(|expected| candidate.claimability.trim() == expected)
+            || !capability
+                .extraction_version
+                .is_some_and(|expected| candidate.extraction_version.trim() == expected)
+        {
             return Err(StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO candidate {} is not exact claimable containment",
+                "mvp4.2 micro-edge candidate {} does not match its registry exactness/claimability",
                 candidate.micro_edge_id
             )));
         }
-        if candidate.provenance.derivation_kind != MicroDerivationKind::DirectAstExtraction {
-            return Err(StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO candidate {} lacks direct-AST provenance",
-                candidate.micro_edge_id
-            )));
+        match capability.activation_status {
+            MicroEdgeSupportStatus::ExactCapable => {
+                if candidate.provenance.derivation_kind != MicroDerivationKind::DirectAstExtraction
+                {
+                    return Err(StoreError::Message(format!(
+                        "mvp4.2 exact micro-edge candidate {} lacks direct-AST provenance",
+                        candidate.micro_edge_id
+                    )));
+                }
+            }
+            MicroEdgeSupportStatus::DerivedWithProvenanceCapable => {
+                if candidate.provenance.derivation_kind
+                    != MicroDerivationKind::LocalAssignmentChainDerivation
+                    || candidate.provenance.source_fact_ids.is_empty()
+                {
+                    return Err(StoreError::Message(format!(
+                        "mvp4.2 derived micro-edge candidate {} lacks derived provenance",
+                        candidate.micro_edge_id
+                    )));
+                }
+            }
+            _ => {}
         }
         validate_micro_fact_provenance(&candidate.provenance).map_err(|error| {
             StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO candidate {} provenance invalid: {error}",
+                "mvp4.2 micro-edge candidate {} provenance invalid: {error}",
                 candidate.micro_edge_id
             ))
         })?;
@@ -13007,13 +13894,13 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
             || !source_span_is_bounded(&candidate.tail_source_span)
         {
             return Err(StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO candidate {} is missing bounded spans",
+                "mvp4.2 micro-edge candidate {} is missing bounded spans",
                 candidate.micro_edge_id
             )));
         }
         if !seen.insert(candidate.micro_edge_id.as_str()) {
             return Err(StoreError::Message(format!(
-                "duplicate mvp4.2 LOCAL_RETURNS_TO candidate id {}",
+                "duplicate mvp4.2 micro-edge candidate id {}",
                 candidate.micro_edge_id
             )));
         }
@@ -13022,7 +13909,7 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
             .get(candidate.head_micro_node_id.as_str())
             .ok_or_else(|| {
                 StoreError::Message(format!(
-                    "mvp4.2 LOCAL_RETURNS_TO {} missing retained ReturnSite endpoint {}",
+                    "mvp4.2 micro-edge {} missing retained head endpoint {}",
                     candidate.micro_edge_id, candidate.head_micro_node_id
                 ))
             })?;
@@ -13030,12 +13917,12 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
             .get(candidate.tail_micro_node_id.as_str())
             .ok_or_else(|| {
                 StoreError::Message(format!(
-                    "mvp4.2 LOCAL_RETURNS_TO {} missing retained FunctionFrame endpoint {}",
+                    "mvp4.2 micro-edge {} missing retained tail endpoint {}",
                     candidate.micro_edge_id, candidate.tail_micro_node_id
                 ))
             })?;
-        if head.node_kind != MicroNodeKind::ReturnSite
-            || tail.node_kind != MicroNodeKind::FunctionFrame
+        if !head_kinds.contains(&head.node_kind)
+            || !tail_kinds.contains(&tail.node_kind)
             || head.parse_recovery
             || tail.parse_recovery
             || head.enclosing_function_identity != candidate.function_identity
@@ -13045,7 +13932,7 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
             || normalize_graph_path(&tail.repo_relative_path) != file_id
         {
             return Err(StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO {} endpoint integrity failed",
+                "mvp4.2 micro-edge {} endpoint integrity failed",
                 candidate.micro_edge_id
             )));
         }
@@ -13059,7 +13946,7 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
             .or_else(|| Some(tail.enclosing_function_identity.clone()));
         if head_function_link != tail_function_link {
             return Err(StoreError::Message(format!(
-                "mvp4.2 LOCAL_RETURNS_TO {} endpoint function linkage mismatch",
+                "mvp4.2 micro-edge {} endpoint function linkage mismatch",
                 candidate.micro_edge_id
             )));
         }
@@ -13116,6 +14003,42 @@ fn persist_mvp4_2_ast_micro_edges_for_file(
         candidates,
         profile,
     )?;
+    Ok(inserted)
+}
+
+fn persist_mvp4_3_local_flow_packets_for_file(
+    writer: &SqliteGraphStore,
+    repo_relative_path: &str,
+    profile: &mut IndexPhaseRecorder,
+) -> Result<usize, StoreError> {
+    let candidate_start = Instant::now();
+    let candidates = writer.local_micro_flow_packet_candidates_for_file(repo_relative_path)?;
+    profile.add_duration(
+        "mvp4_3_local_flow_packet_candidate_read",
+        candidate_start.elapsed(),
+        1,
+        candidates.candidates.len() as u64,
+    );
+
+    let row_start = Instant::now();
+    write_path_chaos_store_failpoint("incremental_during_local_flow_packet_encode")?;
+    let rows = writer.local_flow_packet_rows_from_candidates(&candidates)?;
+    profile.add_duration(
+        "mvp4_3_local_flow_packet_row_validation",
+        row_start.elapsed(),
+        1,
+        rows.len() as u64,
+    );
+
+    let insert_start = Instant::now();
+    write_path_chaos_store_failpoint("incremental_before_local_flow_packet_delete")?;
+    let inserted = writer.replace_local_flow_packets_for_file(repo_relative_path, &rows)?;
+    profile.add_duration(
+        "mvp4_3_local_flow_packet_insert",
+        insert_start.elapsed(),
+        1,
+        inserted as u64,
+    );
     Ok(inserted)
 }
 
@@ -13521,6 +14444,12 @@ fn persist_local_fact_bundles(
             &indexed.mvp4_micro_node_completeness_label,
             profile,
         )?;
+        persist_mvp4_2b_ast_value_use_nodes_for_file(
+            store,
+            &indexed.repo_relative_path,
+            &indexed.mvp4_micro_nodes,
+            profile,
+        )?;
         persist_mvp4_2_ast_micro_edges_for_file(
             store,
             &indexed.repo_relative_path,
@@ -13532,6 +14461,7 @@ fn persist_local_fact_bundles(
             &indexed.mvp4_micro_nodes,
             profile,
         )?;
+        persist_mvp4_3_local_flow_packets_for_file(store, &indexed.repo_relative_path, profile)?;
 
         let preparation_start = Instant::now();
         let proof_edges = extraction
@@ -13947,6 +14877,9 @@ impl UnresolvedReferenceClassifier {
         if name.is_empty() || name == "unknown_callee" {
             return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
         }
+        if language == ReferenceLanguage::JsTs && name == "import" {
+            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+        }
         if language == ReferenceLanguage::Rust && name.ends_with('!') {
             let macro_name = name.trim_end_matches('!');
             if RUST_BUILTIN_MACROS.contains(&macro_name) {
@@ -14050,6 +14983,8 @@ impl UnresolvedReferenceClassifier {
             ReferenceLanguage::Python => vec![
                 dir.join(format!("{first_segment}.py")),
                 dir.join(first_segment).join("__init__.py"),
+                self.repo_root.join(format!("{first_segment}.py")),
+                self.repo_root.join(first_segment).join("__init__.py"),
             ],
             ReferenceLanguage::JsTs => vec![
                 dir.join(format!("{first_segment}.ts")),
@@ -14774,16 +15709,20 @@ fn parse_extract_pending_files_with_progress(
                         let edge_count = extraction.edges.len();
                         let source_span_count = extraction_source_span_count(&extraction);
                         let local_fact_count = entity_count + edge_count + source_span_count;
-                        let mvp4_micro_node_report =
-                            emit_mvp4_typescript_in_memory_first_slice_inventory(
-                                &parsed,
-                                &file.source,
-                            );
-                        let mvp4_micro_edge_report =
-                            emit_mvp4_typescript_local_returns_to_in_memory_candidates(
-                                &parsed,
-                                &file.source,
-                            );
+                        let Mvp4TypeScriptMicroFlowExtractionContext {
+                            inventory: mvp4_micro_node_report,
+                            persistable_value_uses,
+                            micro_edges: mvp4_micro_edge_report,
+                        } = emit_mvp4_typescript_micro_flow_extraction_context(
+                            &parsed,
+                            &file.source,
+                        );
+                        // MVP4.2b: append capped ValueUse nodes so persisted
+                        // LOCAL_READS edges can resolve their head endpoint. The
+                        // MVP4.1 persist path ignores them (kind filter); a
+                        // dedicated MVP4.2b path persists them.
+                        let mut mvp4_micro_node_candidates = mvp4_micro_node_report.candidates;
+                        mvp4_micro_node_candidates.extend(persistable_value_uses);
                         let bundle_start = Instant::now();
                         outputs.push(LocalFactBundle::new(
                             file.repo_relative_path,
@@ -14792,7 +15731,7 @@ fn parse_extract_pending_files_with_progress(
                             None,
                             file.template_required,
                             extraction,
-                            mvp4_micro_node_report.candidates,
+                            mvp4_micro_node_candidates,
                             mvp4_micro_node_report.omitted_count,
                             mvp4_micro_node_report.cap_hits,
                             mvp4_micro_node_report.completeness_label,
@@ -15371,7 +16310,9 @@ pub fn update_changed_files_with_cache_to_db(
                 continue;
             }
 
-            let Some(language) = detect_language(file_path) else {
+            let Some(mut language) = detect_language(file_path)
+                .or_else(|| detect_language_from_file_header(file_path, repo_relative_path))
+            else {
                 let Some(kind) = classify_scoped_text_evidence_path(repo_relative_path) else {
                     summary.files_skipped += 1;
                     continue;
@@ -15549,6 +16490,7 @@ pub fn update_changed_files_with_cache_to_db(
                 .map_err(|error| StoreError::Message(error.to_string()))?;
             phase_profile.add_duration("file_read", read_start.elapsed(), 1, source.len() as u64);
             summary.files_read += 1;
+            language = detect_language_with_source(repo_relative_path, &source).unwrap_or(language);
             let hash_start = Instant::now();
             let hash = content_hash(&source);
             phase_profile.add_duration("file_hash", hash_start.elapsed(), 1, source.len() as u64);
@@ -15707,10 +16649,16 @@ pub fn update_changed_files_with_cache_to_db(
 
             let extraction_start = Instant::now();
             let mut extraction = extract_entities_and_relations(&parsed, &source);
-            let mvp4_micro_node_report =
-                emit_mvp4_typescript_in_memory_first_slice_inventory(&parsed, &source);
-            let mvp4_micro_edge_report =
-                emit_mvp4_typescript_local_returns_to_in_memory_candidates(&parsed, &source);
+            let Mvp4TypeScriptMicroFlowExtractionContext {
+                inventory: mvp4_micro_node_report,
+                persistable_value_uses,
+                micro_edges: mvp4_micro_edge_report,
+            } = emit_mvp4_typescript_micro_flow_extraction_context(&parsed, &source);
+            // MVP4.2b: keep ValueUse persistence separate from the frozen MVP4.1
+            // authorized-kind gate, while sharing the retained-node list used by
+            // exact micro-edge endpoint integrity.
+            let mut mvp4_micro_node_candidates = mvp4_micro_node_report.candidates;
+            mvp4_micro_node_candidates.extend(persistable_value_uses);
             phase_profile.add_duration(
                 "extract_entities_and_relations",
                 extraction_start.elapsed(),
@@ -15785,10 +16733,16 @@ pub fn update_changed_files_with_cache_to_db(
                 tx,
                 repo_relative_path,
                 Some(&hash),
-                &mvp4_micro_node_report.candidates,
+                &mvp4_micro_node_candidates,
                 mvp4_micro_node_report.omitted_count,
                 &mvp4_micro_node_report.cap_hits,
                 &mvp4_micro_node_report.completeness_label,
+                &mut phase_profile,
+            )?;
+            persist_mvp4_2b_ast_value_use_nodes_for_file(
+                tx,
+                repo_relative_path,
+                &mvp4_micro_node_candidates,
                 &mut phase_profile,
             )?;
             write_path_chaos_failpoint("incremental_during_micro_edge_insert")?;
@@ -15800,8 +16754,13 @@ pub fn update_changed_files_with_cache_to_db(
                 mvp4_micro_edge_report.omitted_edge_count,
                 mvp4_micro_edge_report.diagnostics.len() as u64,
                 &mvp4_micro_edge_report.completeness_label,
-                &mvp4_micro_node_report.candidates,
+                &mvp4_micro_node_candidates,
                 &mut phase_profile,
+            )?;
+            write_path_chaos_failpoint("incremental_during_local_flow_packet_insert")?;
+            persist_mvp4_3_local_flow_packets_for_file(tx, repo_relative_path, &mut phase_profile)?;
+            write_path_chaos_failpoint(
+                "incremental_after_local_flow_packet_insert_before_integrity_check",
             )?;
             write_path_chaos_failpoint(
                 "incremental_after_micro_edge_insert_before_integrity_check",
@@ -16497,12 +17456,20 @@ fn rtds_path_is_text_evidence_or_non_graph(
     repo_relative_path: &str,
 ) -> Result<bool, IndexError> {
     if let Some(kind) = classify_scoped_text_evidence_path(repo_relative_path) {
-        if store
-            .get_file(repo_relative_path)?
+        let file_record = store.get_file(repo_relative_path)?;
+        if file_record
             .as_ref()
             .is_some_and(|record| file_record_is_text_evidence_kind(record, kind))
-            || detect_language(Path::new(repo_relative_path)).is_none()
         {
+            return Ok(true);
+        }
+        if file_record
+            .as_ref()
+            .is_some_and(|record| record.language.is_some())
+        {
+            return Ok(false);
+        }
+        if detect_language(Path::new(repo_relative_path)).is_none() {
             return Ok(true);
         }
     }
@@ -20114,10 +21081,18 @@ fn containing_test_case(test_cases: &[Entity], span: &SourceSpan) -> Option<Enti
 fn is_test_file_path_for_index(path: &str) -> bool {
     let normalized = normalize_graph_path(path).to_ascii_lowercase();
     let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
-    normalized.contains("/tests/")
-        || normalized.contains("/test/")
-        || normalized.contains("/spec/")
-        || normalized.ends_with(".test.ts")
+    path_has_component_for_index(
+        &normalized,
+        &[
+            "tests",
+            "test",
+            "__tests__",
+            "spec",
+            "specs",
+            "examples",
+            "benches",
+        ],
+    ) || normalized.ends_with(".test.ts")
         || normalized.ends_with(".test.tsx")
         || normalized.ends_with(".test.js")
         || normalized.ends_with(".test.jsx")
@@ -20146,6 +21121,58 @@ fn is_test_file_path_for_index(path: &str) -> bool {
         || file_name.ends_with("spec.rb")
 }
 
+fn is_fixture_file_path_for_index(normalized_path: &str) -> bool {
+    path_has_component_for_index(normalized_path, &["fixtures", "fixture"])
+}
+
+fn is_mock_file_path_for_index(normalized_path: &str) -> bool {
+    let file_name = normalized_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized_path);
+    path_has_component_for_index(
+        normalized_path,
+        &[
+            "__mocks__",
+            "mocks",
+            "mock",
+            "stubs",
+            "stub",
+            "fakes",
+            "fake",
+        ],
+    ) || file_name.contains(".mock.")
+        || file_name.contains(".stub.")
+        || file_name.ends_with("_mock.py")
+        || file_name.ends_with("_stub.py")
+}
+
+fn is_generated_file_path_for_index(normalized_path: &str) -> bool {
+    let file_name = normalized_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized_path);
+    path_has_component_for_index(normalized_path, &["generated", "gen"])
+        || file_name.ends_with(".d.ts")
+        || file_name.contains(".generated.")
+        || file_name.contains(".gen.")
+        || file_name.ends_with(".generated.ts")
+        || file_name.ends_with(".gen.ts")
+}
+
+fn is_vendor_file_path_for_index(normalized_path: &str) -> bool {
+    path_has_component_for_index(
+        normalized_path,
+        &["vendor", "vendored", "third_party", "node_modules"],
+    )
+}
+
+fn path_has_component_for_index(normalized_path: &str, components: &[&str]) -> bool {
+    normalized_path
+        .split('/')
+        .any(|part| components.iter().any(|component| part == *component))
+}
+
 fn source_may_have_test_relation(source: &str) -> bool {
     let lower = source.to_ascii_lowercase();
     lower.contains("expect(")
@@ -20160,6 +21187,16 @@ fn source_may_have_test_relation(source: &str) -> bool {
         || lower.contains(".mock(")
         || lower.contains("jest.mock")
         || lower.contains("vi.mock")
+        || lower.contains("stub")
+}
+
+fn source_may_have_mock_relation(source: &str) -> bool {
+    let lower = source.to_ascii_lowercase();
+    lower.contains(".mock(")
+        || lower.contains("jest.mock")
+        || lower.contains("vi.mock")
+        || lower.contains("mockito")
+        || lower.contains("unittest.mock")
         || lower.contains("stub")
 }
 
@@ -20410,6 +21447,21 @@ fn classify_scoped_text_evidence_path(repo_relative_path: &str) -> Option<TextEv
     }
 
     None
+}
+
+fn detect_language_from_file_header(
+    file_path: &Path,
+    repo_relative_path: &str,
+) -> Option<SourceLanguage> {
+    if Path::new(repo_relative_path).extension().is_some() {
+        return None;
+    }
+
+    let file = fs::File::open(file_path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line).ok()?;
+    detect_language_with_source(repo_relative_path, &first_line)
 }
 
 fn is_text_evidence_hard_excluded_path(lower: &str) -> bool {
@@ -26943,6 +27995,90 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn source_role_file_profile_classifier_covers_language_matrix_boundaries() {
+        let cases = [
+            (
+                "src/service.ts",
+                Some("export const ok = 1;"),
+                "typescript",
+                "production",
+            ),
+            (
+                "tests/service.test.ts",
+                Some("test('ok', () => expect(1).toBe(1));"),
+                "typescript",
+                "test",
+            ),
+            (
+                "__tests__/service.spec.js",
+                Some("describe('ok', () => it('works', () => expect(1).toBe(1)));"),
+                "javascript",
+                "test",
+            ),
+            (
+                "src/__mocks__/service.ts",
+                Some("export const mockValue = 1;"),
+                "typescript",
+                "mock",
+            ),
+            (
+                "src/service.stub.ts",
+                Some("export const stubValue = 1;"),
+                "typescript",
+                "mock",
+            ),
+            (
+                "src/generated/client.d.ts",
+                Some("export declare const generatedValue: number;"),
+                "typescript",
+                "generated",
+            ),
+            (
+                "vendor/service.ts",
+                Some("export const vendoredValue = 1;"),
+                "typescript",
+                "vendor",
+            ),
+            (
+                "fixtures/sample.py",
+                Some("def fixture_value():\n    return 1\n"),
+                "python",
+                "fixture",
+            ),
+            (
+                "pkg/service_test.go",
+                Some("package pkg\nfunc TestService() {}\n"),
+                "go",
+                "test",
+            ),
+            (
+                "src/test/java/AppTest.java",
+                Some("public class AppTest {}"),
+                "java",
+                "test",
+            ),
+            (
+                "src/service.py",
+                Some("from unittest.mock import Mock\n"),
+                "python",
+                "mock",
+            ),
+        ];
+
+        for (path, source, language, expected) in cases {
+            assert_eq!(
+                classify_file_profile_source_role(path, source, language),
+                expected,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            classify_file_profile_source_role("notes/plain.txt", Some("test("), TEXT_EVIDENCE_KIND),
+            TEXT_EVIDENCE_KIND
+        );
+    }
+
     fn temp_repo(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "codegraph-index-test-{}-{name}-{}",
@@ -27608,6 +28744,31 @@ mod tests {
         rows.iter().filter(|row| row.micro_kind == kind).count()
     }
 
+    fn assert_mvp4_2b_value_use_rows(rows: &[AstMicroNodeRow], label: &str) -> usize {
+        let mut count = 0usize;
+        for row in rows.iter().filter(|row| row.micro_kind == "value_use") {
+            count += 1;
+            assert_eq!(row.exactness, "exact", "{label}: value_use exactness");
+            assert_eq!(row.source_role, "production", "{label}: value_use role");
+            assert_eq!(row.language, "typescript", "{label}: value_use language");
+            assert_eq!(
+                row.claimability, "claimable_source_spanned_value_use_existence",
+                "{label}: value_use claimability"
+            );
+            assert_eq!(
+                row.lifecycle_binding, "db_passport",
+                "{label}: value_use lifecycle"
+            );
+            assert!(
+                row.function_entity_id.is_some(),
+                "{label}: value_use function endpoint"
+            );
+            assert!(row.provenance_id.is_some(), "{label}: value_use provenance");
+        }
+        assert!(count > 0, "{label}: expected persisted ValueUse rows");
+        count
+    }
+
     fn assert_mvp4_micro_node_integrity(store: &SqliteGraphStore, rows: &[AstMicroNodeRow]) {
         let mut seen = BTreeSet::new();
         for row in rows {
@@ -27649,13 +28810,19 @@ mod tests {
             .map(|row| (row.micro_node_id.as_str(), row))
             .collect::<BTreeMap<_, _>>();
         let return_count = ast_micro_node_kind_count(node_rows, "return_site");
+        // This helper validates LOCAL_RETURNS_TO specifically; LOCAL_READS /
+        // LOCAL_WRITES rows are validated by the persist path + store endpoint check.
+        let returns_to_rows: Vec<&AstMicroEdgeRow> = edge_rows
+            .iter()
+            .filter(|row| row.relation_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+            .collect();
         assert_eq!(
-            edge_rows.len(),
+            returns_to_rows.len(),
             return_count,
             "one LOCAL_RETURNS_TO edge per persisted ReturnSite"
         );
         let mut seen = BTreeSet::new();
-        for row in edge_rows {
+        for row in returns_to_rows {
             assert!(
                 seen.insert(row.micro_edge_id.as_str()),
                 "duplicate micro-edge id"
@@ -27703,7 +28870,6 @@ mod tests {
 
     fn assert_forbidden_mvp4_sidecars_empty(store: &SqliteGraphStore) {
         let counts = store.sparse_sidecar_counts().expect("sidecar counts");
-        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
         assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
     }
 
@@ -27725,20 +28891,32 @@ mod tests {
             expected_return_sites,
             "{repo_relative_path}: retained ReturnSite count"
         );
+        let returns_to_count = edges
+            .iter()
+            .filter(|row| row.relation_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+            .count();
         assert_eq!(
-            edges.len(),
-            expected_return_sites,
+            returns_to_count, expected_return_sites,
             "{repo_relative_path}: persisted LOCAL_RETURNS_TO count"
         );
         assert_eq!(
             store
                 .ast_micro_edge_count_for_file(repo_relative_path)
                 .expect("micro-edge count"),
-            expected_return_sites as u64,
-            "{repo_relative_path}: counted LOCAL_RETURNS_TO rows"
+            edges.len() as u64,
+            "{repo_relative_path}: counted ast_micro_edge rows match read rows"
         );
         assert_forbidden_mvp4_sidecars_empty(store);
-        (ast_micro_node_ids(&rows), ast_micro_edge_ids(&edges))
+        // This helper tracks LOCAL_RETURNS_TO edge identity/lifecycle (its
+        // `expected_return_sites` contract), so it returns only LOCAL_RETURNS_TO
+        // edge ids. LOCAL_READS / LOCAL_WRITES rows (now also persisted) are
+        // validated by the persist path + store endpoint check.
+        let returns_to_edge_ids = edges
+            .iter()
+            .filter(|row| row.relation_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+            .map(|row| row.micro_edge_id.clone())
+            .collect::<Vec<_>>();
+        (ast_micro_node_ids(&rows), returns_to_edge_ids)
     }
 
     fn assert_mvp4_2_changed_file_summary(
@@ -27832,6 +29010,7 @@ mod tests {
         ] {
             assert!(kinds.contains(kind), "missing persisted node kind {kind}");
         }
+        assert_mvp4_2b_value_use_rows(&rows, "cold src/service.ts");
         let mut seen_ids = BTreeSet::new();
         for row in &rows {
             assert!(
@@ -27884,6 +29063,13 @@ mod tests {
                 0,
                 "{forbidden} must not persist MVP4.2 production edges"
             );
+            assert_eq!(
+                store
+                    .local_flow_packet_count_for_file(forbidden)
+                    .expect("packet count"),
+                0,
+                "{forbidden} must not persist MVP4.3 production packets"
+            );
         }
 
         let counts = store.sparse_sidecar_counts().expect("sidecar counts");
@@ -27899,10 +29085,338 @@ mod tests {
             counts.get("ast_micro_edges").copied(),
             Some(edge_rows.len() as u64)
         );
-        assert_eq!(counts.get("local_flow_packets").copied(), Some(0));
+        let packet_rows = store
+            .local_flow_packets_for_file("src/service.ts")
+            .expect("local flow packets");
+        assert!(
+            !packet_rows.is_empty(),
+            "MVP4.3 should persist approved TypeScript production packet rows"
+        );
+        for row in &packet_rows {
+            assert_eq!(row.encoding, "dict_v1");
+            assert_eq!(row.file_id, "src/service.ts");
+            assert_eq!(row.source_role, "production");
+            assert_eq!(row.language, "typescript");
+            assert_eq!(
+                row.extraction_version,
+                codegraph_core::MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+            );
+            assert!(!row.packet_body.contains("\"ordered_steps\""));
+            assert!(!row.packet_body.contains("\"full_source_body\""));
+            assert!(row.packet_body_hash.starts_with("fnv64:"));
+            assert!(row.compressed_steps.contains(&row.packet_body_hash));
+        }
+        assert_eq!(
+            counts.get("local_flow_packets").copied(),
+            Some(packet_rows.len() as u64)
+        );
         assert_eq!(counts.get("routing_packet_handles").copied(), Some(0));
         assert!(!repo.join(".codegraph").exists());
 
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    /// MVP4.2b B3c-4: exact LOCAL_READS / LOCAL_WRITES micro-edges persist with
+    /// correct endpoints + claim metadata, and follow the per-file lifecycle
+    /// (write removed when edited away; all micro-edges pruned on delete).
+    #[test]
+    fn mvp4_2b_local_reads_and_writes_persist_with_endpoints_and_lifecycle() {
+        let repo = temp_repo("mvp4-2b-reads-writes-lifecycle");
+        // Resolver-proven local read (`flag` in `let result = flag`), a
+        // resolver-proven local write (`result = flag`), and a read of the local
+        // `result` (`return result`).
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(flag: boolean) {\n\
+                 let result = flag;\n\
+                 result = flag;\n\
+                 return result;\n\
+             }\n",
+        );
+        let db = repo.join("target").join("mvp4-2b-reads-writes.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let node_kinds = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("nodes")
+            .into_iter()
+            .map(|row| (row.micro_node_id, row.micro_kind))
+            .collect::<BTreeMap<_, _>>();
+        let edges = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("edges");
+        let reads = edges
+            .iter()
+            .filter(|row| row.relation_kind == MicroEdgeKind::LocalReads.as_str())
+            .collect::<Vec<_>>();
+        let writes = edges
+            .iter()
+            .filter(|row| row.relation_kind == MicroEdgeKind::LocalWrites.as_str())
+            .collect::<Vec<_>>();
+        assert!(!reads.is_empty(), "expected persisted LOCAL_READS edges");
+        assert!(!writes.is_empty(), "expected persisted LOCAL_WRITES edges");
+
+        for row in &reads {
+            assert_eq!(
+                node_kinds
+                    .get(&row.source_micro_node_id)
+                    .map(String::as_str),
+                Some("value_use"),
+                "LOCAL_READS head must be a value_use node"
+            );
+            assert!(
+                matches!(
+                    node_kinds
+                        .get(&row.target_micro_node_id)
+                        .map(String::as_str),
+                    Some("parameter") | Some("local_binding")
+                ),
+                "LOCAL_READS tail must be a parameter/local_binding"
+            );
+            assert_eq!(row.exactness, MicroExactness::Exact.as_str());
+            assert_eq!(
+                row.claimability,
+                "claimable_source_spanned_resolver_proven_local_read"
+            );
+            assert_eq!(row.extraction_version, "mvp4.2b-typescript-local-reads-v1");
+            assert!(row.source_span_id.is_some());
+            assert!(row.provenance_id.is_some());
+        }
+        for row in &writes {
+            assert_eq!(
+                node_kinds
+                    .get(&row.source_micro_node_id)
+                    .map(String::as_str),
+                Some("assignment_site"),
+                "LOCAL_WRITES head must be an assignment_site node"
+            );
+            assert!(
+                matches!(
+                    node_kinds
+                        .get(&row.target_micro_node_id)
+                        .map(String::as_str),
+                    Some("parameter") | Some("local_binding")
+                ),
+                "LOCAL_WRITES tail must be a parameter/local_binding"
+            );
+            assert_eq!(row.exactness, MicroExactness::Exact.as_str());
+            assert_eq!(
+                row.claimability,
+                "claimable_source_spanned_resolver_proven_local_write"
+            );
+            assert_eq!(row.extraction_version, "mvp4.2b-typescript-local-writes-v1");
+        }
+        drop(store);
+
+        // Lifecycle: edit away the write and the `result` reads -> writes pruned,
+        // remaining edges stay endpoint-consistent.
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(flag: boolean) {\n  return flag;\n}\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("incremental update");
+        let store = SqliteGraphStore::open(&db).expect("store after edit");
+        let edges_after = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("edges after edit");
+        assert_eq!(
+            edges_after
+                .iter()
+                .filter(|row| row.relation_kind == MicroEdgeKind::LocalWrites.as_str())
+                .count(),
+            0,
+            "LOCAL_WRITES must be removed after the write is edited away"
+        );
+        drop(store);
+
+        // Delete the file -> every micro-edge for it is pruned.
+        fs::remove_file(repo.join("src").join("service.ts")).expect("delete source");
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delete update");
+        let store = SqliteGraphStore::open(&db).expect("store after delete");
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/service.ts")
+                .expect("edge count after delete"),
+            0
+        );
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    /// MVP4.2b B4: derived LOCAL_FLOWS_TO micro-edges persist with
+    /// binding-to-binding endpoints and derived provenance metadata. MVP4.3
+    /// may derive sparse local-flow packet rows from these facts, but this
+    /// relation still does not activate mutation proof.
+    #[test]
+    fn mvp4_2b_local_flows_to_persist_derived_with_provenance_and_lifecycle() {
+        let repo = temp_repo("mvp4-2b-local-flows-lifecycle");
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(seed: number, extra: number) {\n\
+                 const base = seed;\n\
+                 let total = base;\n\
+                 total = base + extra;\n\
+                 return total;\n\
+             }\n",
+        );
+        write_test_file(
+            &repo,
+            "src/other.ts",
+            "export function other(seed: number) {\n\
+                 const stable = seed;\n\
+                 return stable;\n\
+             }\n",
+        );
+        let db = repo.join("target").join("mvp4-2b-local-flows.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let node_kinds = store
+            .ast_micro_nodes_for_file("src/service.ts")
+            .expect("nodes")
+            .into_iter()
+            .map(|row| (row.micro_node_id, row.micro_kind))
+            .collect::<BTreeMap<_, _>>();
+        let edges = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("edges");
+        let flows = edges
+            .iter()
+            .filter(|row| row.relation_kind == MicroEdgeKind::LocalFlowsTo.as_str())
+            .collect::<Vec<_>>();
+        assert!(!flows.is_empty(), "expected persisted LOCAL_FLOWS_TO edges");
+        for row in &flows {
+            assert!(
+                matches!(
+                    node_kinds
+                        .get(&row.source_micro_node_id)
+                        .map(String::as_str),
+                    Some("parameter") | Some("local_binding")
+                ),
+                "LOCAL_FLOWS_TO head must be a parameter/local_binding"
+            );
+            assert!(
+                matches!(
+                    node_kinds
+                        .get(&row.target_micro_node_id)
+                        .map(String::as_str),
+                    Some("parameter") | Some("local_binding")
+                ),
+                "LOCAL_FLOWS_TO tail must be a parameter/local_binding"
+            );
+            assert_eq!(
+                row.exactness,
+                MicroExactness::DerivedWithProvenance.as_str()
+            );
+            assert_eq!(
+                row.claimability,
+                "claimable_source_spanned_derived_local_value_flow"
+            );
+            assert_eq!(
+                row.extraction_version,
+                "mvp4.2b-typescript-local-flows-to-v1"
+            );
+            assert!(row.source_span_id.is_some());
+            assert!(row.provenance_id.is_some());
+        }
+        let packets_before = store
+            .local_flow_packets_for_file("src/service.ts")
+            .expect("local flow packets before edit");
+        assert!(
+            !packets_before.is_empty(),
+            "MVP4.3 should persist packets from the complete local flow chain"
+        );
+        assert!(
+            packets_before
+                .iter()
+                .any(|row| row.proof_strength == "flow_proof"),
+            "complete retained local flow chain should produce at least one flow_proof packet"
+        );
+        let other_packets_before = store
+            .local_flow_packets_for_file("src/other.ts")
+            .expect("other local flow packets before edit");
+        assert!(
+            !other_packets_before.is_empty(),
+            "unchanged comparison file should have packet rows"
+        );
+        assert_forbidden_mvp4_sidecars_empty(&store);
+        drop(store);
+
+        // Removing initializer/reassignment RHS reads removes derived flow rows.
+        write_test_file(
+            &repo,
+            "src/service.ts",
+            "export function handle(seed: number, extra: number) {\n  return seed + extra;\n}\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("incremental update");
+        let store = SqliteGraphStore::open(&db).expect("store after edit");
+        let edges_after = store
+            .ast_micro_edges_for_file("src/service.ts")
+            .expect("edges after edit");
+        assert_eq!(
+            edges_after
+                .iter()
+                .filter(|row| row.relation_kind == MicroEdgeKind::LocalFlowsTo.as_str())
+                .count(),
+            0,
+            "LOCAL_FLOWS_TO rows must be removed when their base assignment chain is gone"
+        );
+        let packets_after = store
+            .local_flow_packets_for_file("src/service.ts")
+            .expect("local flow packets after edit");
+        assert_ne!(
+            packets_before, packets_after,
+            "changed-file update must refresh packet rows after the flow chain changes"
+        );
+        assert!(
+            packets_after
+                .iter()
+                .all(|row| row.proof_strength != "flow_proof"),
+            "packets must downgrade when the local flow chain is broken"
+        );
+        let other_packets_after = store
+            .local_flow_packets_for_file("src/other.ts")
+            .expect("other local flow packets after edit");
+        assert_eq!(
+            other_packets_before, other_packets_after,
+            "changed-file update must not rewrite unrelated file packet rows"
+        );
+        assert_forbidden_mvp4_sidecars_empty(&store);
+        drop(store);
+
+        fs::remove_file(repo.join("src").join("service.ts")).expect("delete source");
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/service.ts")], &db)
+            .expect("delete update");
+        let store = SqliteGraphStore::open(&db).expect("store after delete");
+        assert_eq!(
+            store
+                .ast_micro_edge_count_for_file("src/service.ts")
+                .expect("edge count after delete"),
+            0
+        );
+        assert_eq!(
+            store
+                .local_flow_packet_count_for_file("src/service.ts")
+                .expect("packet count after delete"),
+            0,
+            "file delete update must remove local_flow_packets for the deleted file"
+        );
+        assert_eq!(
+            other_packets_before,
+            store
+                .local_flow_packets_for_file("src/other.ts")
+                .expect("other local flow packets after service delete"),
+            "delete update for one file must not rewrite unrelated file packet rows"
+        );
+        assert_forbidden_mvp4_sidecars_empty(&store);
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -27998,6 +29512,7 @@ mod tests {
         let service_before = store
             .ast_micro_nodes_for_file("src/service.ts")
             .expect("service before");
+        assert_mvp4_2b_value_use_rows(&service_before, "cold src/service.ts before");
         let other_before = store
             .ast_micro_nodes_for_file("src/other.ts")
             .expect("other before");
@@ -28026,6 +29541,7 @@ mod tests {
             .ast_micro_edges_for_file("src/service.ts")
             .expect("service edges after");
         assert_mvp4_2_local_returns_to_integrity(&store, &service_after, &service_after_edges);
+        assert_mvp4_2b_value_use_rows(&service_after, "incremental src/service.ts after");
         assert_ne!(
             ast_micro_node_ids(&service_before),
             ast_micro_node_ids(&service_after)
@@ -28057,6 +29573,7 @@ mod tests {
         let service_preserved = store
             .ast_micro_nodes_for_file("src/service.ts")
             .expect("service preserved");
+        assert_mvp4_2b_value_use_rows(&service_preserved, "preserved src/service.ts after abort");
         assert_eq!(
             ast_micro_node_ids(&service_after),
             ast_micro_node_ids(&service_preserved)
@@ -28238,9 +29755,12 @@ mod tests {
                 expected_returns,
                 "{case_name}: return_site count"
             );
+            let returns_to_count = service_edges
+                .iter()
+                .filter(|row| row.relation_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+                .count();
             assert_eq!(
-                service_edges.len(),
-                expected_returns,
+                returns_to_count, expected_returns,
                 "{case_name}: LOCAL_RETURNS_TO count"
             );
             assert_eq!(
@@ -28700,8 +30220,12 @@ mod tests {
             .iter()
             .map(|row| (row.micro_node_id.as_str(), row))
             .collect::<BTreeMap<_, _>>();
+        let nested_returns_to = nested_edges
+            .iter()
+            .find(|row| row.relation_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+            .expect("nested LOCAL_RETURNS_TO edge");
         let nested_tail = nested_nodes
-            .get(nested_edges[0].target_micro_node_id.as_str())
+            .get(nested_returns_to.target_micro_node_id.as_str())
             .expect("nested edge tail");
         assert_eq!(
             nested_tail.symbol.as_deref(),
@@ -28733,8 +30257,12 @@ mod tests {
             .iter()
             .map(|row| (row.micro_node_id.as_str(), row))
             .collect::<BTreeMap<_, _>>();
+        let outer_returns_to = outer_edges
+            .iter()
+            .find(|row| row.relation_kind == MicroEdgeKind::LocalReturnsTo.as_str())
+            .expect("outer LOCAL_RETURNS_TO edge");
         let outer_tail = outer_nodes
-            .get(outer_edges[0].target_micro_node_id.as_str())
+            .get(outer_returns_to.target_micro_node_id.as_str())
             .expect("outer edge tail");
         assert_eq!(
             outer_tail.symbol.as_deref(),
@@ -33951,6 +35479,11 @@ pub fn caller() {
             "method on a local receiver is not escalation-eligible"
         );
         assert_eq!(
+            classify("import", "javascript", "src/app.js"),
+            REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+            "dynamic import() callee token is not escalation-eligible"
+        );
+        assert_eq!(
             classify("missingHelper", "typescript", "src/app.ts"),
             REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
         );
@@ -33972,6 +35505,27 @@ pub fn caller() {
         assert_eq!(
             classify("summarize_results", "python", "src/api.py"),
             REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+
+        // Go shapes.
+        write_test_file(&repo, "src/tools.go", "package main\nfunc helper() {}\n");
+        assert_eq!(
+            classify("fmt.Println", "go", "src/main.go"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("missingLocalGo", "go", "src/main.go"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+        assert_eq!(
+            classify("tools.missingLocalGo", "go", "src/main.go"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "sibling src/tools.go must make tools. repo-local"
+        );
+        assert_eq!(
+            classify("input.String", "go", "src/main.go"),
+            REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+            "method on a local receiver is not escalation-eligible"
         );
 
         // Guards.
@@ -34585,6 +36139,125 @@ pub fn caller() {
         }
 
         assert_db_integrity(&db);
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn cold_index_parses_supported_no_extension_shebangs_before_text_fallback() {
+        let repo = temp_repo("language-detection-shebang");
+        write_test_file(
+            &repo,
+            "scripts/run-python",
+            "#!/usr/bin/env python3\n\ndef shebang_entry():\n    return 1\n",
+        );
+        write_test_file(
+            &repo,
+            "support/scripts/pkg-stats",
+            "#!/bin/sh\n\
+             echo \"pkg-stats stays text evidence\"\n",
+        );
+        write_test_file(
+            &repo,
+            "docs/unknown.ext",
+            "UNKNOWN_TEXT_ONLY_SENTINEL should not become graph proof\n",
+        );
+
+        let db = repo.join("target").join("shebang.sqlite");
+        let summary = index_repo_to_db(&repo, &db).expect("index shebang fixture");
+        assert_eq!(summary.files_parsed, 1);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let script_file = store
+            .get_file("scripts/run-python")
+            .expect("script lookup")
+            .expect("script file");
+        assert_eq!(script_file.language.as_deref(), Some("python"));
+        assert!(store
+            .list_entities_by_file("scripts/run-python")
+            .expect("script entities")
+            .iter()
+            .any(|entity| {
+                entity.name == "shebang_entry"
+                    && entity.source_span.as_ref().is_some_and(|span| {
+                        span.repo_relative_path == "scripts/run-python" && span.start_line >= 3
+                    })
+            }));
+
+        assert_text_evidence_file(
+            &store,
+            "support/scripts/pkg-stats",
+            TextEvidenceFileKind::TextLikeSupportScript,
+        );
+        assert!(store
+            .list_entities_by_file("support/scripts/pkg-stats")
+            .expect("support script entities")
+            .is_empty());
+        assert!(store
+            .get_file("docs/unknown.ext")
+            .expect("unknown file lookup")
+            .is_none());
+        assert!(store
+            .search_text("UNKNOWN_TEXT_ONLY_SENTINEL", 20)
+            .expect("unknown search")
+            .is_empty());
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn incremental_update_keeps_shebang_language_and_clears_parser_diagnostics_on_restore() {
+        let repo = temp_repo("language-detection-shebang-incremental");
+        write_test_file(
+            &repo,
+            "scripts/run-python",
+            "#!/usr/bin/env python3\n\ndef shebang_entry():\n    return 1\n",
+        );
+        let db = repo.join("target").join("shebang-incremental.sqlite");
+        index_repo_to_db(&repo, &db).expect("initial index");
+
+        write_test_file(
+            &repo,
+            "scripts/run-python",
+            "#!/usr/bin/env python3\n\ndef shebang_entry(:\n    return 1\n",
+        );
+        let broken_summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("scripts/run-python")], &db)
+                .expect("broken update");
+        assert_eq!(broken_summary.files_parsed, 1);
+        assert_eq!(broken_summary.syntax_errors, 1);
+
+        write_test_file(
+            &repo,
+            "scripts/run-python",
+            "#!/usr/bin/env python3\n\ndef shebang_entry():\n    return 2\n",
+        );
+        let restored_summary =
+            update_changed_files_to_db(&repo, &[PathBuf::from("scripts/run-python")], &db)
+                .expect("restored update");
+        assert_eq!(restored_summary.files_parsed, 1);
+        assert_eq!(restored_summary.syntax_errors, 0);
+
+        let store = SqliteGraphStore::open(&db).expect("store");
+        let script_file = store
+            .get_file("scripts/run-python")
+            .expect("script lookup")
+            .expect("script file");
+        assert_eq!(script_file.language.as_deref(), Some("python"));
+        assert_eq!(
+            script_file
+                .metadata
+                .get("parser_status")
+                .and_then(Value::as_str),
+            Some("parsed")
+        );
+        assert!(store
+            .list_entities_by_file("scripts/run-python")
+            .expect("script entities")
+            .iter()
+            .any(|entity| entity.name == "shebang_entry"));
+
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -37916,6 +39589,43 @@ pub fn caller() {
         )
     }
 
+    fn local_flow_packet_delta_fact(
+        path: &str,
+        packet_id: &str,
+        proof_strength: &str,
+        omitted_count: u64,
+    ) -> NormalizedLocalFlowPacketFact {
+        NormalizedLocalFlowPacketFact::new(
+            packet_id,
+            path,
+            "function://service/handler",
+            Some("micro-node://function-frame/handler".to_string()),
+            "local_micro_flow_packet",
+            "dict_v1",
+            format!("sha256:{packet_id}"),
+            Some(format!("{packet_id}:span")),
+            vec![format!("{packet_id}:span")],
+            "micro_flow_found",
+            proof_strength,
+            "micro_flow_found",
+            Some(format!("{packet_id}:provenance")),
+            "derived_with_provenance",
+            "claimable_dict_v1_local_micro_flow_packet",
+            EvidenceRole::Production,
+            "typescript",
+            1,
+            1,
+            codegraph_core::MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            "[\"mvp4.1-typescript-micro-nodes-v1\"]",
+            "[\"mvp4.2b-typescript-local-flows-to-v1\"]",
+            format!(
+                "{{\"omitted_count\":{omitted_count},\"truncation_reason\":null,\"unknown_or_gap_count\":0}}"
+            ),
+            omitted_count,
+            "ready",
+        )
+    }
+
     #[test]
     fn micro_edge_delta_reports_graph_relation_proof_without_flow_or_error() {
         let repo = temp_repo("micro-edge-delta-proof");
@@ -38001,6 +39711,97 @@ pub fn caller() {
                 .get("flow_proof")
                 .is_some_and(|change| change.changed),
             "LOCAL_RETURNS_TO must not activate flow proof"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn local_flow_packet_delta_reports_flow_proof_without_validation_error() {
+        let repo = temp_repo("local-flow-packet-delta-proof");
+        let db = repo.join("target").join("local-flow-packet-delta.sqlite");
+        let mut old_snapshot = edge_delta_seed_snapshot(&repo, &db, "src/service.ts");
+        let mut new_snapshot = old_snapshot.clone();
+        old_snapshot
+            .facts
+            .sidecar_freshness
+            .push(NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "local_flow_packets",
+                Some("changed:src/service.ts".to_string()),
+                "ready",
+                None,
+            ));
+        new_snapshot
+            .facts
+            .sidecar_freshness
+            .push(NormalizedSidecarFreshnessFact::new(
+                "src/service.ts",
+                "local_flow_packets",
+                Some("changed:src/service.ts".to_string()),
+                "ready",
+                None,
+            ));
+        new_snapshot
+            .facts
+            .local_flow_packets
+            .push(local_flow_packet_delta_fact(
+                "src/service.ts",
+                "local-flow-packet://service/handler",
+                "flow_proof",
+                0,
+            ));
+
+        let delta = compute_entity_source_role_delta(
+            &old_snapshot,
+            &new_snapshot,
+            EntitySourceRoleDeltaOptions {
+                max_items_per_category: usize::MAX,
+            },
+        );
+
+        assert_eq!(delta.local_flow_packets_added_count, 1, "{delta:?}");
+        assert_eq!(delta.local_flow_packets_removed_count, 0);
+        assert_eq!(delta.local_flow_packets_changed_count, 0);
+        let entry = delta
+            .local_flow_packets_added
+            .iter()
+            .find(|entry| entry.packet_id == "local-flow-packet://service/handler")
+            .expect("local-flow packet delta");
+        assert_eq!(entry.proof_strength, "flow_proof");
+        assert!(entry.flow_proof_changed);
+        assert!(!entry.validation_error);
+        assert!(entry
+            .warnings
+            .contains(&"normal_local_flow_packet_delta_is_not_a_validation_error".to_string()));
+        assert_eq!(
+            delta
+                .local_flow_packet_counts_by_proof_strength
+                .get("flow_proof"),
+            Some(&1)
+        );
+        assert_eq!(
+            delta
+                .local_flow_packet_counts_by_status
+                .get("micro_flow_found"),
+            Some(&1)
+        );
+        assert!(delta.local_flow_packet_integrity_changes.is_empty());
+        assert_eq!(delta.local_flow_packet_cap_omissions, 0);
+        assert!(delta.normal_local_flow_packet_delta_not_validation_error);
+        assert_eq!(
+            delta
+                .proof_ladder_changes
+                .get("flow_proof")
+                .map(|change| change.changed),
+            Some(true)
+        );
+        assert!(
+            !delta
+                .proof_ladder_changes
+                .get("mutation_proof")
+                .is_some_and(|change| change.changed),
+            "local-flow packets must not activate mutation proof"
         );
 
         fs::remove_dir_all(repo).expect("cleanup");
@@ -38101,7 +39902,9 @@ pub fn caller() {
                 max_items_per_category: usize::MAX,
             },
         );
-        assert_eq!(delta.micro_edges_added_count, 1, "{delta:?}");
+        // 2 micro-edges: 1 LOCAL_RETURNS_TO + 1 LOCAL_READS (the `return value`
+        // both returns and reads the local binding `value`).
+        assert_eq!(delta.micro_edges_added_count, 2, "{delta:?}");
         assert_eq!(delta.micro_edges_removed_count, 0);
         assert_eq!(delta.micro_edges_changed_count, 0);
         assert_eq!(delta.micro_edge_cap_omissions, 0);

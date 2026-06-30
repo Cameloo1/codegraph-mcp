@@ -96,9 +96,12 @@ Three practical layers, one funnel:
                                             +----------------------+
 ```
 
-`*` Micro-flow packets are a future packet lane in this chart. Current MVP4.2
-data is `LOCAL_RETURNS_TO` structural containment only, surfaced through MVP3
-validation/status/watch/MCP paths without activating `flow_proof`.
+`*` Micro-flow packets are active only for the verified MVP4.3 TypeScript `.ts`
+production slice. MVP4.2 `LOCAL_RETURNS_TO` and related local micro-edge data
+remain separate from core graph claimability; `flow_proof` appears only through
+complete eligible TypeScript packet rows. Packet surfaces are handle-first;
+opened packet bodies are compact `dict_v1` dictionary/path programs, with
+verbose ordered steps reserved for explain/audit expansion.
 
 ## What Ships Today
 
@@ -255,6 +258,23 @@ The graph model currently defines 55 entity kinds, 67 relation kinds, and 8
 exactness labels in [crates/codegraph-core/src/kinds.rs](../crates/codegraph-core/src/kinds.rs).
 Relation coverage varies by language and extractor, and unsupported proof-mode
 relations do not receive precision claims.
+
+Registered frontend support is not a blanket exactness claim. Current verified
+support is surface-specific:
+
+- TypeScript `.ts` production files have the active MVP4.3 local-flow packet
+  slice: source-spanned local micro-nodes, local micro-edges, compact
+  `local_flow_packets`, and `flow_proof` only for complete eligible local
+  chains.
+- JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, and PHP keep
+  their verified parser/symbol/text/context/validate surfaces, but packet
+  support is `not_implemented` or `not_applicable` unless a later
+  fixture-backed gate changes that status.
+- Dynamic dispatch, reflection, macro/preprocessor expansion, runtime
+  dependency injection, compiler/LSP-only resolution, framework conventions,
+  and cross-language bridges remain unknown, heuristic, unsupported, or
+  externally required unless deterministic source-spanned resolver evidence is
+  present.
 
 Relation groups include:
 

@@ -16,8 +16,9 @@ pub use sqlite::{
     take_sqlite_profile, AstMicroEdgeRow, AstMicroEdgeVisibilitySample,
     AstMicroEdgeVisibilitySummary, AstMicroNodeRow, AstMicroNodeVisibilitySample,
     AstMicroNodeVisibilitySummary, DbPassport, DbPreflightReport, EntityFeatureRow,
-    ExpectedDbPassport, RoutingPacketHandleRow, SqliteAccessProblem, SqliteGraphStore,
-    SqliteProfileSpan, StorageAccountingRow, UnresolvedReferenceRecord, DB_PASSPORT_VERSION,
-    SCHEMA_VERSION,
+    ExpectedDbPassport, LocalFlowPacketQueryOptions, LocalFlowPacketRow,
+    LocalFlowPacketVisibilitySample, LocalFlowPacketVisibilitySummary, RoutingPacketHandleRow,
+    SqliteAccessProblem, SqliteGraphStore, SqliteProfileSpan, StorageAccountingRow,
+    UnresolvedReferenceRecord, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 pub use traits::{GraphStore, RetrievalTraceRecord, TextSearchHit, TextSearchKind};

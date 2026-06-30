@@ -22,6 +22,7 @@ pub(crate) struct RoutingPacketBudgets {
     validation_steps_budget: usize,
     edit_plan_budget: usize,
     expansion_handles_budget: usize,
+    micro_flow_handles_budget: usize,
     artifact_inspection_requirements_budget: usize,
     db_inspection_requirements_budget: usize,
     formulas_or_accounting_notes_budget: usize,
@@ -42,6 +43,7 @@ impl Default for RoutingPacketBudgets {
             validation_steps_budget: 6,
             edit_plan_budget: 6,
             expansion_handles_budget: 6,
+            micro_flow_handles_budget: 4,
             artifact_inspection_requirements_budget: 3,
             db_inspection_requirements_budget: 3,
             formulas_or_accounting_notes_budget: 4,
@@ -64,6 +66,7 @@ impl RoutingPacketBudgets {
             "validation_steps_budget": self.validation_steps_budget,
             "edit_plan_budget": self.edit_plan_budget,
             "expansion_handles_budget": self.expansion_handles_budget,
+            "micro_flow_handles_budget": self.micro_flow_handles_budget,
             "artifact_inspection_requirements_budget": self.artifact_inspection_requirements_budget,
             "db_inspection_requirements_budget": self.db_inspection_requirements_budget,
             "formulas_or_accounting_notes_budget": self.formulas_or_accounting_notes_budget,
@@ -194,6 +197,42 @@ pub(crate) fn context_pack_routing_packet_json(
     );
     let expansion_handles =
         routing_expansion_handles(&ranked_evidence, budgets.expansion_handles_budget);
+    let all_micro_flow_handles = packet
+        .metadata
+        .get("micro_flow_handles")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let micro_flow_handles = all_micro_flow_handles
+        .iter()
+        .take(budgets.micro_flow_handles_budget)
+        .cloned()
+        .collect::<Vec<_>>();
+    let omitted_micro_flow_handles = all_micro_flow_handles
+        .len()
+        .saturating_sub(micro_flow_handles.len());
+    let micro_flow_packet_summary = packet
+        .metadata
+        .get("micro_flow_packet_summary")
+        .cloned()
+        .unwrap_or_else(|| context_pack_micro_flow_handle_summary_json(&[]));
+    let implementation_trace_handles = matches!(
+        task_kind,
+        "implementation_trace"
+            | "persistence_path_trace"
+            | "indexing_summary_trace"
+            | "storage_accounting_trace"
+            | "artifact_math_trace"
+            | "benchmark_metric_trace"
+    )
+    .then(|| micro_flow_handles.clone())
+    .unwrap_or_default();
+    let agent_investigation_layer = routing_agent_investigation_layer_json(
+        task_kind,
+        &micro_flow_handles,
+        &micro_flow_packet_summary,
+        graph_proof,
+    );
     let retrieval_plan_summary =
         routing_retrieval_plan_summary(&retrieval_plan, &ranked_evidence, budgets);
     let claimability = routing_claimability_json(
@@ -234,6 +273,7 @@ pub(crate) fn context_pack_routing_packet_json(
         ),
         ("fallback_snippets", omitted_fallback_snippets),
         ("follow_up_queries", omitted_follow_up_queries),
+        ("micro_flow_handles", omitted_micro_flow_handles),
     ]);
     let omitted_by_budget = upstream_omitted_count
         + section_omitted_by_budget.values().copied().sum::<usize>()
@@ -283,6 +323,17 @@ pub(crate) fn context_pack_routing_packet_json(
         "text_evidence": text_evidence,
         "source_navigation_evidence": source_navigation_evidence,
         "fallback_snippets": fallback_snippets,
+        "micro_flow_handles": micro_flow_handles,
+        "micro_flow_packet_summary": micro_flow_packet_summary,
+        "implementation_trace_micro_flow_handles": implementation_trace_handles,
+        "agent_investigation_layer": agent_investigation_layer,
+        "micro_flow_handle_policy": {
+            "packet_handles_do_not_create_proof": true,
+            "compact_default_full_packet_body_inline": false,
+            "compact_default_ordered_steps_inline": false,
+            "context_entry_command_activated": false,
+            "route_bridge_pull_forward_count": 0
+        },
         "unknowns": unknowns,
         "risks": risks,
         "validation_steps": validation_steps,
@@ -1881,6 +1932,54 @@ pub(crate) fn routing_retrieval_plan_summary(
         "max_output_bytes": retrieval_plan.max_output_bytes,
         "explain_level": retrieval_plan.explain_level,
         "packet_role_budget": budgets.critical_files_budget,
+    })
+}
+
+pub(crate) fn routing_agent_investigation_layer_json(
+    task_kind: &str,
+    micro_flow_handles: &[Value],
+    micro_flow_packet_summary: &Value,
+    graph_proof: bool,
+) -> Value {
+    let handle_refs = micro_flow_handles
+        .iter()
+        .take(4)
+        .map(|handle| {
+            json!({
+                "handle_id": handle.get("handle_id").cloned().unwrap_or(Value::Null),
+                "packet_id": handle.get("packet_id").cloned().unwrap_or(Value::Null),
+                "file": handle.get("file").cloned().unwrap_or(Value::Null),
+                "function_identity": handle.get("function_identity").cloned().unwrap_or(Value::Null),
+                "proof_status": handle.get("proof_status").cloned().unwrap_or(Value::Null),
+                "proof_strength": handle.get("proof_strength").cloned().unwrap_or(Value::Null),
+                "unknown_count": handle.get("unknown_count").cloned().unwrap_or_else(|| json!(0)),
+                "omitted_count": handle.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
+                "expansion_handle": handle.get("expansion_handle").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "layer": "agent_investigation",
+        "task_kind": task_kind,
+        "micro_flow_handles": handle_refs,
+        "micro_flow_handle_count": micro_flow_handles.len(),
+        "micro_flow_packet_summary": micro_flow_packet_summary,
+        "usable_for": [
+            "trace_boundary",
+            "explain_behavior",
+            "verify_claim",
+            "plan_change",
+            "validate_change"
+        ],
+        "proof_boundary": {
+            "packet_handles_do_not_create_proof": true,
+            "handle_can_support_investigation": !micro_flow_handles.is_empty(),
+            "graph_proof_available": graph_proof,
+            "packet_proof_cannot_prove_runtime_or_external_behavior": true,
+            "candidate_evidence_not_raised_to_proof": true,
+        },
+        "expansion_required_for_dict_v1_body": true,
+        "ordered_steps_audit_only": true,
     })
 }
 

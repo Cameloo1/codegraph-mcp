@@ -29,6 +29,57 @@ After the user approves the target repo and config, index explicitly:
 codegraph-mcp agent-use index --repo <target-repo> --json
 ```
 
+## Windows WSL2 Path For WDAC/SAC Machines
+
+Use this path on Windows 10/11 machines where Windows Application Control,
+Smart App Control, WDAC, antivirus, or reputation checks block freshly built
+Rust executables. It is the issue #22 tester path for a fresh clone through a
+running `agent-use` profile without creating repo-local `.codegraph` state.
+
+From Windows PowerShell, install and enter Ubuntu if needed:
+
+```powershell
+wsl --install -d Ubuntu
+wsl -d Ubuntu
+```
+
+Inside Ubuntu, install prerequisites, clone on the Windows filesystem, keep
+Cargo build output on the Linux filesystem, and run the smoke:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y build-essential ca-certificates curl git
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+
+WINUSER="$(cmd.exe /C echo %USERNAME% 2>/dev/null | tr -d '\r')"
+mkdir -p "/mnt/c/Users/$WINUSER/source"
+git clone https://github.com/Cameloo1/codegraph-mcp.git "/mnt/c/Users/$WINUSER/source/codegraph-mcp"
+cd "/mnt/c/Users/$WINUSER/source/codegraph-mcp"
+
+export CARGO_TARGET_DIR="$HOME/cg-target/codegraph-mcp"
+export CODEGRAPH_AGENT_USE_DATA_ROOT="$HOME/.local/share/codegraph-agent-use"
+scripts/smoke_wsl2_agent_use.sh
+```
+
+The smoke builds `codegraph-mcp`, runs `agent-use status`, `mcp-config`,
+`index`, `query symbols`, and `validate-edit` against a disposable target repo,
+then fails if `.codegraph` appears in either checkout. Use the same exported
+paths for a real target repo:
+
+```sh
+binary="$CARGO_TARGET_DIR/release/codegraph-mcp"
+target_repo="/mnt/c/path/to/your/repo"
+
+"$binary" agent-use status --repo "$target_repo" --json
+"$binary" agent-use mcp-config --repo "$target_repo" --json
+"$binary" agent-use index --repo "$target_repo" --json
+```
+
+`agent-use status` and `agent-use mcp-config` are read-only. `agent-use index`
+is the first mutating command and writes to `CODEGRAPH_AGENT_USE_DATA_ROOT`, not
+to `<target-repo>/.codegraph`.
+
 ## Build
 
 ```powershell
@@ -40,7 +91,8 @@ On Windows, a failure that says `An Application Control policy has blocked this
 file. (os error 4551)` before a Rust test body runs is a Windows application
 control/WDAC policy block on a freshly built executable. Diagnose the blocked
 path and local policy first; do not treat that message as a product test
-assertion failure.
+assertion failure. On SAC/WDAC machines, prefer the WSL2 path above for the
+fresh-clone smoke and local verification.
 
 This checkout is not published as a `codegraph-mcp` crates.io package. For a
 local install from source, build the release binary or install the workspace

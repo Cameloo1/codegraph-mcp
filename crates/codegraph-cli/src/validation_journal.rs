@@ -425,6 +425,45 @@ fn short_symbol_name(name: &str) -> String {
 /// as a silent clear.
 fn missing_target_names_for_finding(finding: &ValidationFinding) -> Vec<String> {
     let mut names = BTreeSet::new();
+    let relation_kind = finding
+        .relation_kind
+        .as_ref()
+        .map(|kind| format!("{kind:?}"))
+        .or_else(|| {
+            finding
+                .affected_delta
+                .get("relation_kind")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            finding
+                .affected_edge
+                .get("relation_kind")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default();
+    let is_alias_edge = relation_kind == "AliasedBy" || relation_kind == "ALIASED_BY";
+    if is_alias_edge {
+        for source in [
+            finding
+                .affected_delta
+                .get("source_endpoint")
+                .and_then(|endpoint| endpoint.get("name")),
+            finding
+                .affected_delta
+                .get("source_endpoint")
+                .and_then(|endpoint| endpoint.get("qualified_name")),
+        ] {
+            if let Some(name) = source.and_then(Value::as_str) {
+                let short = short_symbol_name(name);
+                if short.len() >= 3 {
+                    names.insert(short);
+                }
+            }
+        }
+    }
     for source in [
         finding.affected_delta.get("name"),
         finding.affected_delta.get("qualified_name"),
@@ -982,6 +1021,75 @@ mod validation_stage_tracker_tests {
             binary_profile: "test".to_string(),
             scope_policy: IndexScopeOptions::default(),
         }
+    }
+
+    fn alias_open_blocker_finding() -> ValidationFinding {
+        ValidationFinding {
+            finding_id: "finding://test/alias".to_string(),
+            validation_rule_id: "CG_MVP3_IMPORTS_ALIAS_TARGET_MISMATCH".to_string(),
+            invariant: "exact import alias edges must resolve".to_string(),
+            classification: ValidationClassification::Block,
+            blocking_level: ValidationBlockingLevel::Blocking,
+            integrity_kind: Some("broken_contract".to_string()),
+            proof_level: "graph_source_reverified".to_string(),
+            proof_strength: "deterministic_graph_source".to_string(),
+            proof_status: codegraph_core::ValidationProofStatus::ReverifiedGraphSourceProof,
+            affected_evidence: json!([]),
+            affected_delta: json!({
+                "relation_kind": "ALIASED_BY",
+                "source_endpoint": {
+                    "name": "targetTs",
+                    "qualified_name": "src::ts::service.targetTs"
+                },
+                "target_endpoint": {
+                    "name": "callTarget",
+                    "qualified_name": "src::ts::consumer.import:callTarget"
+                }
+            }),
+            affected_edge: json!({
+                "relation_kind": "ALIASED_BY",
+                "target": {
+                    "name": "callTarget",
+                    "qualified_name": "src::ts::consumer.import:callTarget"
+                }
+            }),
+            affected_entity: json!({
+                "entity_id": "repo://e/targetTs",
+                "missing": true
+            }),
+            file: Some("src/ts/consumer.ts".to_string()),
+            affected_file: Some("src/ts/consumer.ts".to_string()),
+            source_span: None,
+            source_role: None,
+            relation_kind: Some(codegraph_core::RelationKind::AliasedBy),
+            exactness: None,
+            provenance: json!({}),
+            old_fact_claim_state: "unknown".to_string(),
+            new_fact_claim_state: "claimable_current".to_string(),
+            lifecycle: ValidationLifecycleState::claimable_current(),
+            reverified_graph_source_proof: true,
+            evidence_items: Vec::new(),
+            reason: "exact import alias edge points to a missing target".to_string(),
+            recommended_fix: None,
+            suggested_next_steps: Vec::new(),
+            unknowns: Vec::new(),
+            diagnostics: Vec::new(),
+            expansion_handle: None,
+        }
+    }
+
+    #[test]
+    fn alias_open_blocker_records_exported_target_name_for_reverify() {
+        let names = missing_target_names_for_finding(&alias_open_blocker_finding());
+
+        assert!(
+            names.iter().any(|name| name == "targetTs"),
+            "ALIASED_BY blockers must record the exported/source endpoint so restore reverify can clear: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == "callTarget"),
+            "alias binding name remains useful diagnostic context: {names:?}"
+        );
     }
 
     #[test]

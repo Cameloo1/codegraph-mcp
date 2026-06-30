@@ -1,0 +1,255 @@
+{
+  "fixture_id": "pre_mvp4_4_language_typescript_language_source_role",
+  "fixture_family": "pre_mvp4_4_language_linter_matrix",
+  "fixture_title": "TypeScript language_source_role contract fixture",
+  "description": "Pre-MVP4.4 language/linter fixture for TypeScript and language_source_role. This is a contract fixture for current support boundaries, not an MVP4.4 implementation.",
+  "language": "typescript",
+  "domain": "language_linter_contract",
+  "proof_boundary": "Text, candidate, vector, dynamic, macro, runtime, route, bridge, and unsupported packet evidence are non-proof unless current graph/source verification proves the relation.",
+  "required_support_status": "supported",
+  "unsupported_or_not_applicable_reason": "",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "pre_mvp4_4",
+    "language_fixture",
+    "pre_mvp4_4_language_fixture",
+    "language_source_role",
+    "typescript"
+  ],
+  "expected_mvp_phase": "pre_mvp4_4_language_linter_fixture_harness",
+  "initial_files": [
+    {
+      "path": "src/entry.ts",
+      "contents": "export function entry(value: number): number {\n  return value + 1;\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {},
+  "initial_text_evidence_expectations": {
+    "text_evidence_allowed": true,
+    "graph_proof_allowed_from_text": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fixture_contract"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_symbols",
+      "query": "entry",
+      "proof_tier": "text_evidence"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "text_fallback_allowed": true,
+    "graph_proof_required": false
+  },
+  "mutation_steps": [
+    {
+      "type": "no_op",
+      "reason": "Fixture asserts current language/support contract without starting MVP4.4."
+    }
+  ],
+  "changed_files": [
+    "src/entry.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/entry.ts"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {},
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "ok",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "Do not promote unsupported, dynamic, macro, runtime, route, bridge, or packet gaps to graph proof."
+  ],
+  "expected_source_spans": [],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fixture_contract"
+  },
+  "expected_proof_ladder_changes": {
+    "graph_relation_proof": {
+      "claimable": false
+    },
+    "text_evidence": {
+      "claimable_as_graph_proof": false
+    }
+  },
+  "expected_dirty_evidence_changes": {},
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "unsupported_language_claimable_graph_proof",
+    "dynamic_runtime_hard_interrupt"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "text_evidence_promoted_to_graph_proof",
+    "candidate_vector_promoted_to_graph_proof",
+    "unsupported_language_flow_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "unsupported_language_hard_interrupt",
+    "heuristic_dynamic_call_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [
+    "test_mock_generated_fixture_promoted_to_production_proof"
+  ],
+  "expected_cli_validate_edit_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "severity",
+      "proof_status"
+    ],
+    "forbidden_fields": [
+      "flow_proof"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_delta"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP parity is represented by planned command records in this fixture harness."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "proof_status"
+    ],
+    "forbidden_fields": [
+      "graph_proof_from_text"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "claimability"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "proof_status": true,
+    "omitted_count": true
+  },
+  "expected_explain_output": {
+    "unsupported_boundary_detail": true
+  },
+  "expected_audit_output": {
+    "validation_rule_id_detail": true,
+    "proof_boundary_detail": true
+  },
+  "fix_mutation_if_any": [],
+  "fix_steps": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "ok",
+  "post_fix_expected_severity": "ok",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [],
+  "post_fix_expected_graph_delta": {},
+  "post_fix_forbidden_stale_outputs": [
+    "stale_unsupported_graph_proof",
+    "stale_packet_flow_proof"
+  ],
+  "recovery_commands_expected": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true,
+  "frontend": "typescript",
+  "file_extensions": [
+    ".ts",
+    ".mts",
+    ".cts"
+  ],
+  "source_role": "production",
+  "source_role_expected": "production_source_only_can_be_claimable",
+  "surface": [
+    "index",
+    "context_pack"
+  ],
+  "proof_tier": [
+    "text_evidence"
+  ],
+  "fixture_group": "language_source_role",
+  "fixture_groups": [
+    "language_source_role"
+  ],
+  "expected_exact_relations": [],
+  "expected_blocking": [],
+  "forbidden_claims": [
+    "unsupported_behavior_hard_interrupt",
+    "text_candidate_vector_as_graph_proof"
+  ],
+  "expected_provenance": {
+    "required_for_claimable_graph_facts": true,
+    "missing_provenance_is_integrity_finding": true
+  },
+  "expected_packet_status": "not_applicable",
+  "expected_cli_mcp_parity": {
+    "cli_validate_edit": "planned",
+    "mcp_validate_edit": "not_applicable",
+    "hard_interrupt_policy": "same_eligibility_rules"
+  },
+  "expected_compact_fields": [
+    "status",
+    "severity",
+    "proof_status",
+    "omitted_count"
+  ],
+  "expected_audit_fields": [
+    "validation_rule_ids",
+    "proof_ladder_changes",
+    "dirty_evidence_summary"
+  ],
+  "language_support_status": "partial_supported",
+  "notes": [
+    "Generated by the pre-MVP4.4 fixture harness gate.",
+    "Synthetic contract fixture only; no public benchmark or MVP4.4 claim."
+  ]
+}

@@ -169,8 +169,21 @@ MVP4.2 micro-edge fields report exact `LOCAL_RETURNS_TO` graph-relation deltas
 and proof-integrity state. Normal add/remove/move deltas are not validation
 errors. Reverified persisted-edge contradictions are tool graph/proof integrity
 findings with a reindex/repair recovery action; they are not automatically
-source-code edit instructions. These fields do not activate `flow_proof`,
-`mutation_proof`, local-flow packets, or context-pack micro-flow enrichment.
+source-code edit instructions. These fields activate `flow_proof` only through
+the verified MVP4.3 TypeScript `.ts` production local-flow packet layer; they
+do not activate `mutation_proof`, route/auth semantics, context-entry, or
+packet support for other languages.
+
+MVP4.3 packet surfaces are handle-first in MCP results for TypeScript `.ts`
+production packets only. A context or validation packet may expose a
+micro-flow handle and bounded summary only; the opened packet body uses
+`encoding: "dict_v1"` and `packet_body` in
+`local_micro_flow_packet_agent_json`. JavaScript, JSX, TSX, Python, Go, Rust,
+C, C++, Java, C#, Ruby, PHP, and text-only/unsupported files do not emit
+local-flow packets or `flow_proof`. Missing packet support is
+`not_implemented`/`not_applicable`, not a source-code validation failure. MCP
+context-entry handles remain inactive and must not inline `packet_body`,
+`ordered_steps`, or a full packet body.
 
 Unresolved-reference findings are surfaced as non-graph evidence. They may warn
 or, under explicit policy, become blocking validation findings, but they are not

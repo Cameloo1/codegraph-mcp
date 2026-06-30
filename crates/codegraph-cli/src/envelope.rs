@@ -18,6 +18,9 @@ pub(crate) fn enforce_agent_use_context_pack_max_output_bytes(
         if compact_context_agent_staged_availability(value) {
             continue;
         }
+        if compact_context_agent_micro_flow_handles(value) {
+            continue;
+        }
         if compact_context_agent_db_lifecycle_read(value) {
             continue;
         }
@@ -36,7 +39,6 @@ pub(crate) fn enforce_agent_use_context_pack_max_output_bytes(
             "recommended_tests",
             "risks",
             "snippets",
-            "staged_availability",
             "agent_use_profile_root",
             "candidate_spool_query_index_path",
             "candidate_spool_query_index_bytes",
@@ -81,6 +83,60 @@ pub(crate) fn compact_context_agent_publish_state(value: &mut Value) -> bool {
     false
 }
 
+pub(crate) fn compact_context_agent_micro_flow_handles(value: &mut Value) -> bool {
+    let Some(handles) = value.get("micro_flow_handles").and_then(Value::as_array) else {
+        return false;
+    };
+    let handle_count = handles.len();
+    let compacted = handles
+        .iter()
+        .take(1)
+        .map(compact_context_agent_micro_flow_handle)
+        .collect::<Vec<_>>();
+    let returned_count = compacted.len();
+    let omitted_count = handle_count.saturating_sub(returned_count) as u64;
+    let changed = handle_count > returned_count
+        || handles
+            .iter()
+            .zip(compacted.iter())
+            .any(|(before, after)| before != after);
+    if !changed {
+        return false;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("micro_flow_handles".to_string(), json!(compacted));
+        if let Some(summary) = object
+            .get_mut("micro_flow_packet_summary")
+            .and_then(Value::as_object_mut)
+        {
+            summary.insert("handle_count_returned".to_string(), json!(returned_count));
+            summary.insert("handle_omitted_count".to_string(), json!(omitted_count));
+        }
+        return true;
+    }
+    false
+}
+
+fn compact_context_agent_micro_flow_handle(handle: &Value) -> Value {
+    json!({
+        "handle_id": handle.get("handle_id").cloned().unwrap_or(Value::Null),
+        "packet_id": handle.get("packet_id").cloned().unwrap_or(Value::Null),
+        "file": handle.get("file").cloned().unwrap_or(Value::Null),
+        "function_identity": handle.get("function_identity").cloned().unwrap_or(Value::Null),
+        "function_frame_micro_node_id": handle.get("function_frame_micro_node_id").cloned().unwrap_or(Value::Null),
+        "proof_status": handle.get("proof_status").cloned().unwrap_or(Value::Null),
+        "proof_strength": handle.get("proof_strength").cloned().unwrap_or(Value::Null),
+        "currentness": handle.get("currentness").cloned().unwrap_or(Value::Null),
+        "packet_kind": handle.get("packet_kind").cloned().unwrap_or(Value::Null),
+        "expansion_handle": handle.get("expansion_handle").cloned().unwrap_or(Value::Null),
+        "ordered_steps_inline": false,
+        "packet_body_inline": false,
+        "full_source_body_output": false,
+        "handle_creates_proof": false,
+        "agent_json_compacted": true,
+    })
+}
+
 pub(crate) fn compact_agent_use_agent_json_envelope(
     value: &mut Value,
     profile: &AgentUseProfile,
@@ -115,6 +171,11 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
         agent_use_compact_staged_availability_field(
             value,
             staged_availability,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+        agent_use_compact_local_flow_packet_visibility_field(
+            value,
             &mut truncated_sections,
             &mut omitted_count,
         );
@@ -438,14 +499,10 @@ pub(crate) fn compact_agent_use_recovery_commands_json() -> Value {
         "kind": "agent_use_recovery_commands",
         "repo_ref": "repo",
         "db_ref": "db",
-        "placeholder_policy": "substitute <repo> with the top-level repo field",
         "commands": {
             "status": format!("{BIN_NAME} agent-use status --repo <repo> --json"),
             "index": format!("{BIN_NAME} agent-use index --repo <repo> --json"),
             "mcp_config": format!("{BIN_NAME} agent-use mcp-config --repo <repo> --json"),
-            "query_symbols": format!("{BIN_NAME} agent-use query symbols <symbol> --repo <repo> --limit 5 --agent-json"),
-            "query_text": format!("{BIN_NAME} agent-use query text \"<text>\" --repo <repo> --limit 5 --agent-json"),
-            "query_files": format!("{BIN_NAME} agent-use query files <path-or-text> --repo <repo> --limit 5 --agent-json"),
             "context_pack": format!("{BIN_NAME} agent-use context-pack --repo <repo> --task \"<task>\" --agent-json"),
             "watch_once": format!("{BIN_NAME} agent-use watch --repo <repo> --once --changed <path> --json"),
         },
@@ -577,6 +634,41 @@ pub(crate) fn agent_use_compact_staged_availability_field(
     }
     truncated_sections.push("staged_availability".to_string());
     *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn agent_use_compact_local_flow_packet_visibility_field(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let Some(layer) = value.get("mvp4_local_flow_packets").cloned() else {
+        return;
+    };
+    let compact = compact_agent_use_local_flow_packet_visibility_summary(&layer);
+    if compact == layer {
+        return;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("mvp4_local_flow_packets".to_string(), compact);
+    }
+    truncated_sections.push("mvp4_local_flow_packets".to_string());
+    *omitted_count = omitted_count.saturating_add(1);
+}
+
+pub(crate) fn compact_agent_use_local_flow_packet_visibility_summary(layer: &Value) -> Value {
+    json!({
+        "status": layer.get("status").cloned().unwrap_or(Value::Null),
+        "ready": layer.get("ready").cloned().unwrap_or_else(|| json!(false)),
+        "schema_version": layer.get("schema_version").cloned().unwrap_or(Value::Null),
+        "total_rows": layer.get("total_rows").cloned().unwrap_or_else(|| json!(0)),
+        "cap_hit_count": layer.get("cap_hit_count").cloned().unwrap_or_else(|| json!(0)),
+        "omitted_count": layer.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
+        "currentness_status": layer.get("currentness_status").cloned().unwrap_or(Value::Null),
+        "ordered_steps_inline": false,
+        "packet_body_inline": false,
+        "proof_boundary_ref": "audit local-flow-packets",
+        "agent_json_compacted": true,
+    })
 }
 
 pub(crate) fn compact_agent_use_staged_availability_summary(staged: &Value) -> Value {
@@ -982,7 +1074,9 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
 ) {
     let command = value.get("command").and_then(Value::as_str);
     let preserve_update_safety_state = matches!(command, Some("status" | "watch"));
+    let preserve_staged_safety_state = matches!(command, Some("status" | "watch" | "context-pack"));
     let preserve_rtds_safety_state = matches!(command, Some("status" | "watch" | "context-pack"));
+    let preserve_recovery_commands = matches!(command, Some("status" | "watch" | "context-pack"));
     for key in [
         // Candidate diagnostics are large and not contract-required for compact
         // context-pack/status output, so they go before evidence and safety
@@ -1031,11 +1125,11 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
             return;
         }
         if preserve_update_safety_state
-            && matches!(
-                key,
-                "update_queue_state" | "lock_state" | "staged_availability" | "graph_db_status"
-            )
+            && matches!(key, "update_queue_state" | "lock_state" | "graph_db_status")
         {
+            continue;
+        }
+        if preserve_staged_safety_state && key == "staged_availability" {
             continue;
         }
         if preserve_rtds_safety_state
@@ -1077,7 +1171,7 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         *omitted_count = omitted_count.saturating_add(1);
     }
     if serialized_json_len(value) > max_output_bytes
-        && !preserve_update_safety_state
+        && !preserve_recovery_commands
         && agent_use_remove_field(value, "recovery_commands")
     {
         if let Some(recovery) = value.get_mut("recovery").and_then(Value::as_object_mut) {
@@ -1200,7 +1294,7 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
         }
     }
     let command = value.get("command").and_then(Value::as_str);
-    let preserve_recovery_commands = matches!(command, Some("status" | "watch"));
+    let preserve_recovery_commands = matches!(command, Some("status" | "watch" | "context-pack"));
     let preserve_status_safety_state = matches!(command, Some("status" | "watch"));
     let mut late_omitted = 0u64;
     if serialized_json_len(value) > max_output_bytes {

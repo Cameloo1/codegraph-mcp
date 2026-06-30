@@ -1,0 +1,292 @@
+{
+  "fixture_id": "mvp3_8_ambiguous_rename_unknown",
+  "fixture_family": "rename_unknown",
+  "fixture_title": "Ambiguous rename remains unknown and non-interrupting",
+  "description": "Duplicate possible rename targets make the old reference ambiguous; fixture expects unknown status, no hard interrupt, and no exact rename proof.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "File/symbol rename evidence alone is not graph relation proof; ambiguous rename evidence remains unknown and cannot block.",
+  "required_support_status": "degraded",
+  "unsupported_or_not_applicable_reason": "Current release output does not emit an explicit unknown rename finding for duplicate-content rename ambiguity without an exact stale reference; this fixture preserves the unknown contract for harness/schema coverage and must not create a release hard interrupt.",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "rename",
+    "unknown",
+    "non_interrupt"
+  ],
+  "expected_mvp_phase": "mvp3_8_validation_fixtures",
+  "initial_files": [
+    {
+      "path": "src/caller.ts",
+      "contents": "export function run(): string {\n  return 'rename ambiguity anchor';\n}\n",
+      "source_role": "production"
+    },
+    {
+      "path": "src/target_old.ts",
+      "contents": "export function chooseTarget(): string {\n  return 'same';\n}\n",
+      "source_role": "production"
+    },
+    {
+      "path": "src/target_candidate_a.ts",
+      "contents": "export function chooseTarget(): string {\n  return 'same';\n}\n",
+      "source_role": "production"
+    },
+    {
+      "path": "src/target_candidate_b.ts",
+      "contents": "export function chooseTarget(): string {\n  return 'same';\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "entities_present": [
+      "src/caller.run",
+      "src/target_old.chooseTarget"
+    ],
+    "duplicate_content_paths_distinct": true
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_symbols",
+      "query": "chooseTarget",
+      "expected_min_hits": 3
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+      "proof_path_required": false
+  },
+  "mutation_steps": [
+    {
+      "type": "delete_file",
+      "path": "src/target_old.ts",
+      "reason": "Delete old path while two same-content candidate paths exist."
+    }
+  ],
+  "changed_files": [
+    "src/target_old.ts",
+    "src/target_candidate_a.ts",
+    "src/target_candidate_b.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [
+    "src/target_old.ts"
+  ],
+  "renamed_files": [
+    {
+      "from": "src/target_old.ts",
+      "to": "src/target_candidate_a.ts",
+      "classification": "ambiguous"
+    },
+    {
+      "from": "src/target_old.ts",
+      "to": "src/target_candidate_b.ts",
+      "classification": "ambiguous"
+    }
+  ],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/target_old.ts",
+      "src/target_candidate_a.ts",
+      "src/target_candidate_b.ts"
+    ],
+    "rename_status": "unknown",
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 1,
+    "entities_changed": 0,
+    "edges_added": 0,
+    "edges_removed": 1,
+    "edges_changed": 0,
+    "source_spans_added": 0,
+    "source_spans_removed": 1,
+    "source_spans_changed": 0
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [
+    {
+      "validation_rule_id": "CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED",
+      "proof_ladder_level": "unknown",
+      "severity": "unknown",
+      "message_contains": "rename_status=unknown",
+      "source_file": "src/caller.ts"
+    }
+  ],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "unknown",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "Inspect the ambiguous rename candidates and update references if needed."
+  ],
+  "expected_source_spans": [],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "unknown": {
+      "invalidated": 1,
+      "refreshed": 0
+    },
+    "graph_relation_proof": {
+      "invalidated": 0,
+      "refreshed": 0
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 1,
+    "refreshed_count": 0,
+    "stale_count": 0,
+    "levels": [
+      "unknown"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "exact rename proof"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "ambiguous_rename_graph_proof",
+    "candidate_evidence_as_blocking_source",
+    "source_navigation_evidence_as_blocking_source"
+  ],
+  "forbidden_hard_interrupts": [
+    "ambiguous_rename_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [
+    "test_chooseTarget_as_production"
+  ],
+  "expected_cli_validate_edit_behavior": {
+    "status": "unknown",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "validation_rule_id",
+      "proof_ladder_changes",
+      "unknowns"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt",
+      "exact_rename_proof"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "unknown",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "proof_ladder_changes"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP execution is planned by this harness and exercised in the later release matrix."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "unknown",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "unknown"
+    ],
+    "forbidden_fields": [
+      "exact_rename_proof"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state",
+      "sidecar_statuses"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "unknown_count": 1
+  },
+  "expected_explain_output": {
+    "per_proof_ladder_change": true
+  },
+  "expected_audit_output": {
+    "rename_status": "unknown",
+    "exact_proof_reason": false
+  },
+  "fix_mutation_if_any": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "unknown",
+  "post_fix_expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 1,
+    "edges_added": 0,
+    "edges_removed": 1
+  },
+  "post_fix_forbidden_stale_outputs": [
+    "ambiguous rename exact proof"
+  ],
+  "recovery_commands_expected": [
+    "codegraph-mcp agent-use validate-edit --repo <fixture> --changed src/target_old.ts --json"
+  ],
+  "fix_steps": [],
+  "post_fix_expected_severity": "unknown",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [
+    {
+      "validation_rule_id": "CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED",
+      "proof_ladder_level": "unknown",
+      "severity": "unknown",
+      "message_contains": "rename_status=unknown",
+      "source_file": "src/caller.ts"
+    }
+  ],
+  "post_fix_expected_diagnostics": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "recovery_command_may_refresh_state": true,
+    "post_recovery_lifecycle": {
+      "claimable": true,
+      "status": "fresh_or_unchanged"
+    },
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

@@ -42,7 +42,9 @@ use codegraph_core::{
     ValidationReverificationInput, ValidationRule, ValidationRuleKind,
     ValidationSourceRoleRequirement, ValidationSourceSpanRequirement, VectorEmbeddingSource,
     MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
-    MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION, MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES,
+    MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+    MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES,
 };
 pub use codegraph_index::{
     add_index_profile_span_ms_to_summary, build_vector_chunk_index_artifacts_for_repo,
@@ -87,8 +89,8 @@ use codegraph_query::{
 };
 use codegraph_store::{
     classify_sqlite_access_problem, AstMicroEdgeRow, AstMicroNodeRow, DbPassport,
-    DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchKind, DB_PASSPORT_VERSION,
-    SCHEMA_VERSION,
+    DbPreflightReport, GraphStore, LocalFlowPacketVisibilitySummary, SqliteGraphStore,
+    TextSearchKind, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_trace::{
     append_trace_event, replay_trace_file, TraceAppendEvent, TraceConfig, TraceEventType,
@@ -325,7 +327,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "agent-use",
-        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
+        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
         description: "Use the production agent profile outside the source tree.",
     },
     CommandSpec {
@@ -340,7 +342,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--db <path>]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--db <path>]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
@@ -1575,6 +1577,8 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         add_mvp4_micro_node_visibility(&mut value, micro_nodes);
         let micro_edges = mvp4_micro_edge_visibility_for_preflight(&preflight);
         add_mvp4_micro_edge_visibility(&mut value, micro_edges);
+        let local_flow_packets = mvp4_local_flow_packet_visibility_for_preflight(&preflight);
+        add_mvp4_local_flow_packet_visibility(&mut value, local_flow_packets);
         add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
         merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
@@ -1602,6 +1606,8 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
         add_mvp4_micro_node_visibility(&mut value, micro_nodes);
         let micro_edges = mvp4_micro_edge_visibility_for_preflight(&preflight);
         add_mvp4_micro_edge_visibility(&mut value, micro_edges);
+        let local_flow_packets = mvp4_local_flow_packet_visibility_for_preflight(&preflight);
+        add_mvp4_local_flow_packet_visibility(&mut value, local_flow_packets);
         add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
         merge_json_object(&mut value, plain_status_agent_use_guidance_json(&repo_root));
         return Ok(value);
@@ -1690,6 +1696,9 @@ fn run_status_command(args: &[String]) -> Result<Value, String> {
     add_mvp4_micro_node_visibility(&mut value, micro_nodes);
     let micro_edges = mvp4_micro_edge_visibility_from_store(&store, &preflight, 0, false)?;
     add_mvp4_micro_edge_visibility(&mut value, micro_edges);
+    let local_flow_packets =
+        mvp4_local_flow_packet_visibility_from_store(&store, &preflight, 0, false)?;
+    add_mvp4_local_flow_packet_visibility(&mut value, local_flow_packets);
     add_agent_use_dirty_evidence_output_fields(&mut value, "status", false);
     Ok(value)
 }
@@ -2276,6 +2285,287 @@ fn add_mvp4_micro_edge_visibility(value: &mut Value, layer: Value) {
     }
 }
 
+pub(crate) fn mvp4_local_flow_packet_proof_boundary_json() -> Value {
+    json!({
+        "packet_layer_is_not_context_entry": true,
+        "dict_v1_is_representation_only": true,
+        "ordered_steps_default_inline": false,
+        "ordered_steps_explain_audit_only": true,
+        "full_source_body_output": false,
+        "flow_proof_requires_complete_current_claimable_local_chain": true,
+        "local_returns_to_only_flow_proof": false,
+        "graph_claimability_micro_edge_packet_availability_separate": true,
+        "mutation_proof_activated": false,
+        "context_entry_command_activated": false,
+    })
+}
+
+fn mvp4_local_flow_packet_visibility_for_preflight(preflight: &DbLifecyclePreflight) -> Value {
+    let status = mvp4_local_flow_packet_status_from_preflight(preflight);
+    json!({
+        "status": status,
+        "feature_status": status,
+        "ready": false,
+        "feature": "mvp4_3_local_flow_packets",
+        "supported_language_slice": "typescript_ts_function_local_packets_v1",
+        "supported_packet_kind": "local_micro_flow_packet",
+        "schema_version": preflight.db_health.schema_version,
+        "row_schema_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+        "payload_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+        "extraction_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+        "total_rows": 0,
+        "rows_by_packet_kind": {},
+        "rows_by_proof_status": {},
+        "rows_by_proof_strength": {},
+        "rows_by_packet_status": {},
+        "rows_by_language": {},
+        "rows_by_source_role": {},
+        "files_represented": 0,
+        "functions_represented": 0,
+        "cap_hit_count": 0,
+        "omitted_count": 0,
+        "compact_body_bytes": 0,
+        "audit_body_bytes": 0,
+        "sidecar_table_bytes": Value::Null,
+        "sidecar_table_bytes_measurement": "unavailable",
+        "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+        "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+        "core_graph_claimability_separate": true,
+        "micro_node_availability_separate": true,
+        "micro_edge_availability_separate": true,
+        "default_full_table_scan": false,
+        "bounded_summary": true,
+        "sample_available_in_audit": true,
+        "sample_count": 0,
+        "full_source_body_output": false,
+        "ordered_steps_default_inline": false,
+        "context_entry_command_activated": false,
+        "recovery_action": mvp4_local_flow_packet_recovery_action(status),
+        "proof_boundary": mvp4_local_flow_packet_proof_boundary_json(),
+    })
+}
+
+fn mvp4_local_flow_packet_status_from_preflight(preflight: &DbLifecyclePreflight) -> &'static str {
+    if preflight.path_access_status == "db_missing" {
+        return "not_applicable";
+    }
+    if preflight.schema_status != "ok" {
+        return "incompatible";
+    }
+    match preflight.db_problem_kind.as_deref() {
+        Some("db_locked" | "permission_denied" | "filesystem_inaccessible") => "unavailable",
+        Some("sqlite_corrupt" | "passport_corrupt") => "corrupt",
+        Some("schema_mismatch" | "passport_missing" | "passport_mismatch") => "incompatible",
+        Some("repo_mismatch" | "scope_mismatch" | "repo_head_mismatch") => "stale",
+        Some(_) => "unavailable",
+        None if preflight.safe => "not_applicable",
+        None => "unavailable",
+    }
+}
+
+fn mvp4_local_flow_packet_recovery_action(status: &str) -> &'static str {
+    match status {
+        "ready" => "none",
+        "not_applicable" => {
+            "run an MVP4.3-enabled index on production TypeScript .ts files if packet visibility is expected"
+        }
+        "unavailable" => {
+            "re-run index with a current writable schema if this DB should expose MVP4.3 packet availability"
+        }
+        "stale" => "refresh the DB for the current repo/head before trusting local-flow packets",
+        "incompatible" => "open with a writer/index path that performs the explicit schema migration, or rebuild the DB",
+        "corrupt" => "replace or rebuild the DB; do not use optional packet state as proof",
+        "truncated" => "inspect audit expansion and omitted counts before relying on packet completeness",
+        _ => "inspect DB lifecycle status",
+    }
+}
+
+fn mvp4_local_flow_packet_visibility_from_store(
+    store: &SqliteGraphStore,
+    preflight: &DbLifecyclePreflight,
+    sample_limit: usize,
+    include_sample: bool,
+) -> Result<Value, String> {
+    if !store
+        .table_exists("local_flow_packets")
+        .map_err(|error| error.to_string())?
+    {
+        let mut layer = mvp4_local_flow_packet_visibility_for_preflight(preflight);
+        if let Some(object) = layer.as_object_mut() {
+            object.insert("status".to_string(), json!("unavailable"));
+            object.insert("feature_status".to_string(), json!("unavailable"));
+            object.insert(
+                "recovery_action".to_string(),
+                json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+            );
+            object.insert(
+                "missing_reason".to_string(),
+                json!("local_flow_packets table missing"),
+            );
+        }
+        return Ok(layer);
+    }
+    if !store
+        .sparse_sidecar_schema_ready()
+        .map_err(|error| error.to_string())?
+    {
+        let mut layer = mvp4_local_flow_packet_visibility_for_preflight(preflight);
+        if let Some(object) = layer.as_object_mut() {
+            object.insert("status".to_string(), json!("unavailable"));
+            object.insert("feature_status".to_string(), json!("unavailable"));
+            object.insert(
+                "recovery_action".to_string(),
+                json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+            );
+            object.insert(
+                "missing_reason".to_string(),
+                json!("sparse sidecar schema incomplete"),
+            );
+        }
+        return Ok(layer);
+    }
+
+    let summary = store
+        .local_flow_packet_visibility_summary(if include_sample { sample_limit } else { 0 })
+        .map_err(|error| error.to_string())?;
+    Ok(mvp4_local_flow_packet_visibility_layer(
+        preflight,
+        summary,
+        include_sample,
+    )?)
+}
+
+fn mvp4_local_flow_packet_visibility_layer(
+    preflight: &DbLifecyclePreflight,
+    summary: LocalFlowPacketVisibilitySummary,
+    include_sample: bool,
+) -> Result<Value, String> {
+    let status = if summary.total_rows == 0 {
+        "not_applicable"
+    } else if summary.cap_hit_count > 0 || summary.omitted_count > 0 {
+        "truncated"
+    } else {
+        "ready"
+    };
+    let languages_active = summary.rows_by_language.keys().cloned().collect::<Vec<_>>();
+    let proof_strength_counts = summary.rows_by_proof_strength.clone();
+    let sample_count = summary.sample.len();
+    let mut layer = json!({
+        "status": status,
+        "feature_status": status,
+        "ready": status == "ready",
+        "feature": "mvp4_3_local_flow_packets",
+        "supported_language_slice": "typescript_ts_function_local_packets_v1",
+        "supported_packet_kind": "local_micro_flow_packet",
+        "schema_version": preflight.db_health.schema_version,
+        "row_schema_version": summary.row_schema_versions.first().copied().unwrap_or(MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION),
+        "row_schema_versions": summary.row_schema_versions,
+        "payload_version": summary.payload_versions.first().copied().unwrap_or(MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION),
+        "payload_versions": summary.payload_versions,
+        "extraction_version": summary.extraction_versions.first().cloned().unwrap_or_else(|| MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string()),
+        "extraction_versions": summary.extraction_versions,
+        "total_rows": summary.total_rows,
+        "rows_by_packet_kind": summary.rows_by_packet_kind,
+        "rows_by_proof_status": summary.rows_by_proof_status,
+        "rows_by_proof_strength": proof_strength_counts,
+        "rows_by_packet_status": summary.rows_by_packet_status,
+        "rows_by_language": summary.rows_by_language,
+        "rows_by_source_role": summary.rows_by_source_role,
+        "files_represented": summary.files_represented,
+        "functions_represented": summary.functions_represented,
+        "languages_active": languages_active,
+        "cap_hit_count": summary.cap_hit_count,
+        "omitted_count": summary.omitted_count,
+        "compact_body_bytes": summary.compact_body_bytes,
+        "audit_body_bytes": summary.audit_body_bytes,
+        "cap_hit_counts": {
+            "total": summary.cap_hit_count,
+            "omitted_count": summary.omitted_count,
+            "source": "MVP4.3 local_flow_packets persisted summary"
+        },
+        "exactness_counts": summary.exactness_counts,
+        "claimability_counts": summary.claimability_counts,
+        "sidecar_table_bytes": summary.estimated_payload_bytes,
+        "sidecar_table_bytes_measurement": "estimated_row_payload_bytes",
+        "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+        "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+        "core_graph_claimability_separate": true,
+        "micro_node_availability_separate": true,
+        "micro_edge_availability_separate": true,
+        "default_full_table_scan": summary.default_full_table_scan,
+        "bounded_summary": true,
+        "sample_limit": summary.sample_limit,
+        "sample_count": sample_count,
+        "sample_available_in_audit": true,
+        "full_source_body_output": summary.full_source_body_output,
+        "ordered_steps_default_inline": summary.ordered_steps_default_inline,
+        "query_plan": summary.query_plan,
+        "recovery_action": mvp4_local_flow_packet_recovery_action(status),
+        "proof_boundary": mvp4_local_flow_packet_proof_boundary_json(),
+        "context_entry_command_activated": false,
+    });
+    if include_sample {
+        if let Some(object) = layer.as_object_mut() {
+            object.insert(
+                "sample".to_string(),
+                serde_json::to_value(summary.sample).map_err(|error| error.to_string())?,
+            );
+        }
+    }
+    Ok(layer)
+}
+
+fn add_mvp4_local_flow_packet_visibility(value: &mut Value, layer: Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let status = layer
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let ready = layer.get("ready").and_then(Value::as_bool).unwrap_or(false);
+    object.insert("mvp4_local_flow_packets".to_string(), layer.clone());
+    object.insert(
+        "mvp4_local_flow_packet_status".to_string(),
+        json!(status.clone()),
+    );
+    object.insert(
+        "mvp4_local_flow_packet_rows".to_string(),
+        layer.get("total_rows").cloned().unwrap_or_else(|| json!(0)),
+    );
+
+    if let Some(staged) = object
+        .get_mut("staged_availability")
+        .and_then(Value::as_object_mut)
+    {
+        if let Some(layer_readiness) = staged
+            .get_mut("layer_readiness")
+            .and_then(Value::as_object_mut)
+        {
+            layer_readiness.insert("mvp4_local_flow_packets".to_string(), layer);
+        }
+        let target_array = if ready {
+            staged.get_mut("available_layers")
+        } else if matches!(
+            status.as_str(),
+            "unavailable" | "stale" | "incompatible" | "corrupt" | "truncated"
+        ) {
+            staged.get_mut("missing_layers")
+        } else {
+            None
+        };
+        if let Some(array) = target_array.and_then(Value::as_array_mut) {
+            if !array
+                .iter()
+                .any(|value| value.as_str() == Some("mvp4_local_flow_packets"))
+            {
+                array.push(json!("mvp4_local_flow_packets"));
+            }
+        }
+    }
+}
+
 fn run_languages_command(args: &[String]) -> CliOutput {
     match args {
         [] => success(render_languages_table()),
@@ -2533,6 +2823,49 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
         mvp4_micro_edge_visibility_for_preflight(&db_lifecycle.lifecycle_preflight)
     };
     add_mvp4_micro_edge_visibility(&mut value, micro_edges);
+    let local_flow_packets = if db_lifecycle.safe_to_read {
+        match SqliteGraphStore::open_read_only(&db_path) {
+            Ok(store) => mvp4_local_flow_packet_visibility_from_store(
+                &store,
+                &db_lifecycle.lifecycle_preflight,
+                0,
+                false,
+            )
+            .unwrap_or_else(|error| {
+                let mut layer = mvp4_local_flow_packet_visibility_for_preflight(
+                    &db_lifecycle.lifecycle_preflight,
+                );
+                if let Some(object) = layer.as_object_mut() {
+                    object.insert("status".to_string(), json!("unavailable"));
+                    object.insert("feature_status".to_string(), json!("unavailable"));
+                    object.insert("read_error".to_string(), json!(error));
+                    object.insert(
+                        "recovery_action".to_string(),
+                        json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+                    );
+                }
+                layer
+            }),
+            Err(error) => {
+                let mut layer = mvp4_local_flow_packet_visibility_for_preflight(
+                    &db_lifecycle.lifecycle_preflight,
+                );
+                if let Some(object) = layer.as_object_mut() {
+                    object.insert("status".to_string(), json!("unavailable"));
+                    object.insert("feature_status".to_string(), json!("unavailable"));
+                    object.insert("read_error".to_string(), json!(error.to_string()));
+                    object.insert(
+                        "recovery_action".to_string(),
+                        json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+                    );
+                }
+                layer
+            }
+        }
+    } else {
+        mvp4_local_flow_packet_visibility_for_preflight(&db_lifecycle.lifecycle_preflight)
+    };
+    add_mvp4_local_flow_packet_visibility(&mut value, local_flow_packets);
     add_agent_use_dirty_evidence_output_fields(&mut value, "doctor", false);
     Ok(value)
 }
@@ -6298,6 +6631,42 @@ fn run_context_pack_command(args: &[String]) -> Result<Value, String> {
     packet
         .metadata
         .insert("staged_availability".to_string(), staged_availability);
+    let micro_flow_handle_start = Instant::now();
+    let micro_flow_handle_count =
+        match attach_context_pack_micro_flow_handles(&mut packet, &db_path) {
+            Ok(count) => count,
+            Err(error) => {
+                packet.metadata.insert(
+                    "micro_flow_packet_summary".to_string(),
+                    json!({
+                        "handle_count": 0,
+                        "packet_layer_status": "unavailable",
+                        "reason": error,
+                        "compact_default_full_packet_body_inline": false,
+                        "compact_default_ordered_steps_inline": false,
+                        "packet_handles_do_not_create_proof": true,
+                        "context_entry_command_activated": false,
+                        "full_source_body_output": false,
+                    }),
+                );
+                packet
+                    .metadata
+                    .insert("micro_flow_handles".to_string(), json!([]));
+                0
+            }
+        };
+    profile_spans.push(profile_span_json(
+        "micro_flow_handle_lookup",
+        micro_flow_handle_start.elapsed(),
+        1,
+        micro_flow_handle_count as u64,
+        json!({
+            "query": "bounded_local_flow_packet_handle_lookup",
+            "rows_returned": micro_flow_handle_count,
+            "handle_limit": CONTEXT_PACK_MICRO_FLOW_HANDLE_LIMIT,
+            "policy": "context-pack exposes local micro-flow packet handles only; compact output does not inline dict_v1 bodies or ordered_steps"
+        }),
+    ));
     profile_spans.push(profile_span_json(
         "context_pack_graph_and_packet",
         context_start.elapsed(),

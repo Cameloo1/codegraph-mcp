@@ -323,6 +323,33 @@
         }
       }
     },
+    "micro_flow_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/micro_flow_handle"
+      }
+    },
+    "micro_flow_packet_summary": {
+      "$ref": "#/$defs/micro_flow_packet_summary"
+    },
+    "micro_flow_packet_proof_boundary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "handles_do_not_create_proof": {
+          "const": true
+        },
+        "full_packet_body_inline": {
+          "const": false
+        },
+        "ordered_steps_inline": {
+          "const": false
+        },
+        "context_entry_command_activated": {
+          "const": false
+        }
+      }
+    },
     "proof_failure_reason": {
       "type": ["string", "null"]
     },
@@ -582,6 +609,143 @@
       "maxItems": 12,
       "items": {
         "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "micro_flow_handle": {
+      "type": "object",
+      "required": [
+        "handle_id",
+        "packet_id",
+        "packet_kind",
+        "file",
+        "proof_status",
+        "proof_strength",
+        "source_role",
+        "language",
+        "expansion_handle",
+        "packet_body_inline",
+        "ordered_steps_inline",
+        "full_source_body_output",
+        "handle_creates_proof"
+      ],
+      "additionalProperties": true,
+      "not": {
+        "anyOf": [
+          {
+            "required": ["packet_body"]
+          },
+          {
+            "required": ["ordered_steps"]
+          },
+          {
+            "required": ["full_source_body"]
+          },
+          {
+            "required": ["source_body"]
+          }
+        ]
+      },
+      "properties": {
+        "handle_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 260
+        },
+        "packet_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 260
+        },
+        "packet_kind": {
+          "type": "string"
+        },
+        "function_identity": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "function_span": {
+          "type": ["string", "null"]
+        },
+        "proof_status": {
+          "type": "string"
+        },
+        "proof_strength": {
+          "type": "string"
+        },
+        "source_role": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "unknown_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "risk_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncation_reason": {
+          "type": ["string", "null"]
+        },
+        "expansion_handle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "packet_body_inline": {
+          "const": false
+        },
+        "ordered_steps_inline": {
+          "const": false
+        },
+        "full_source_body_output": {
+          "const": false
+        },
+        "handle_creates_proof": {
+          "const": false
+        }
+      }
+    },
+    "micro_flow_packet_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "handle_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compact_default_full_packet_body_inline": {
+          "const": false
+        },
+        "compact_default_ordered_steps_inline": {
+          "const": false
+        },
+        "packet_handles_do_not_create_proof": {
+          "const": true
+        },
+        "context_entry_command_activated": {
+          "const": false
+        },
+        "full_source_body_output": {
+          "const": false
+        }
       }
     }
   }

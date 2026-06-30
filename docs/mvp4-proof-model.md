@@ -1,14 +1,17 @@
 # MVP4 Proof Model Contract
 
-Status: pre-MVP4 preparation contract. This document freezes terminology,
-exactness, claimability, and prohibited proof transitions before MVP4 storage or
-parser design proceeds. It does not activate MVP4 extraction, packet fields, or
-production behavior.
+Status: current proof contract through MVP4.3 for the authorized TypeScript
+`.ts` production local-flow packet slice, plus the inactive boundary for later
+MVP4 work. This document freezes terminology, exactness, claimability, and
+prohibited proof transitions; it does not start MVP4.4 AST skeleton
+compression, route/bridge proof, context-entry activation, distribution, public
+benchmarking, or real-agent patch-quality claims.
 
-Current gate: `reports/final/pre_mvp4_prerequisite_start_policy_gate.json`
-allows design/preparation and additive inactive scaffolding, but blocks
-production MVP4.1 implementation while Benchmark v1 real external patch tasks
-remain unrun and the human start policy is unchanged.
+Current gate: `reports/final/mvp4_3_local_micro_flow_packet_quality_gate.json`
+and the Pre-MVP4.4 packet-language gate verify active TypeScript `.ts`
+production micro-node, micro-edge, and `local_flow_packets` behavior. Other
+registered languages remain `not_implemented` or `not_applicable` for packet
+support unless a later fixture-backed implementation changes that status.
 
 ## Existing Names
 
@@ -36,9 +39,10 @@ MVP4 reuses the existing public/domain vocabulary instead of replacing it.
 - `ValidationProofStatus`, `ValidationEvidenceKind`, and
   `ValidationFinding` define validation classifications, proof status,
   source-span/provenance requirements, and packet proof fields.
-- Dormant sparse sidecar tables already reserve `ast_micro_nodes`,
-  `ast_micro_edges`, and `local_flow_packets` with source-span/provenance
-  checks. These tables are inactive preparation, not MVP4 behavior.
+- Sparse sidecar tables `ast_micro_nodes`, `ast_micro_edges`, and
+  `local_flow_packets` are active for the verified TypeScript `.ts` production
+  MVP4.1-MVP4.3 slice. Their availability remains separate from core graph
+  claimability, and unsupported languages do not receive packet rows.
 
 ## Canonical Terms
 
@@ -64,6 +68,15 @@ derived-with-provenance micro-edges inside a local scope, usually a function or
 method. It proves only the local mechanics represented by its steps. It does
 not imply complete interprocedural behavior.
 
+Compact local micro-flow packet bodies use lossless dictionary compression:
+source spans, micro-node refs, micro-edge refs, provenance, branch identities,
+return-path identities, labels, and repeated proof metadata may be interned once
+and referenced by ordered path steps. This compression is only a representation
+choice. It must not remove source spans, provenance, exactness, source roles,
+shadowed binding identity, unknown/unsupported gaps, branch distinctions, return
+path distinctions, or cap omissions. Verbose `ordered_steps` are an explain/audit
+expansion of the same proof facts, not a stronger proof source.
+
 `AST skeleton`: a compressed local source representation that keeps names,
 bindings, calls, reads/writes, assignments, returns, mutations, literal keys,
 branch guards, and source spans while dropping syntactic noise. A skeleton is
@@ -71,10 +84,15 @@ not proof unless every proof-bearing step maps back to source-spanned
 micro-nodes/micro-edges.
 
 `mutation_proof`: future proof level for deterministic local write/mutation
-mechanics. It remains inactive until the MVP4 gate activates packet semantics.
+mechanics. It remains inactive. Current TypeScript local-flow packets may
+report local write/mutation relations as graph/local-flow evidence, but they do
+not activate mutation proof.
 
-`flow_proof`: future proof level for deterministic source-spanned local flow
-chains. It remains inactive until the MVP4 gate activates packet semantics.
+`flow_proof`: active only for verified MVP4.3 TypeScript `.ts` production
+local micro-flow packets whose every proof-bearing step is exact or
+derived-with-provenance, source-spanned, lifecycle-current, role-eligible, and
+bounded. It is downgraded for partial, stale, corrupt, truncated, unsupported,
+parser-recovery, non-production, dynamic, macro, runtime, or gap-bearing states.
 
 `exact`: current `Exactness` values `exact`, `compiler_verified`,
 `lsp_verified`, or `parser_verified` when all required source spans,
@@ -109,9 +127,11 @@ does not satisfy this label.
 exactness and role meet the relevant graph/source requirement. Claimability is
 bounded to the stated fact.
 
-`claimable local flow`: a future local micro-flow whose every proof-bearing
-step is exact or derived-with-provenance, source-spanned, lifecycle-current, and
-bounded. It does not claim runtime values or global program behavior.
+`claimable local flow`: a current TypeScript `.ts` production local micro-flow
+whose every proof-bearing step is exact or derived-with-provenance,
+source-spanned, lifecycle-current, role-eligible, and bounded. It does not claim
+runtime values, framework semantics, cross-language behavior, or global program
+behavior.
 
 `candidate micro-flow retrieval`: retrieval over micro-flow handles or features.
 It is candidate evidence until graph/source verification returns a claimable
@@ -136,8 +156,8 @@ micro-flow packet.
 | `candidate_evidence` | candidate for verification | graph/source verification over current DB | proof status by ranking, vector similarity, or candidate count |
 | `source_navigation_evidence` | walkthrough context | explicit source spans and labels | local flow proof without micro-edge extraction |
 | `graph_relation_proof` | current graph/source proof | proof-grade edges, source spans, lifecycle, allowed source role, provenance for derived edges | runtime/artifact values or complete flow semantics |
-| `mutation_proof` | future local mutation proof | active MVP4 gate plus deterministic source-spanned local mutation micro-edges | any current packet field or candidate evidence |
-| `flow_proof` | future local flow proof | active MVP4 gate plus bounded exact/derived local micro-flow packet | complete interprocedural/runtime behavior |
+| `mutation_proof` | future local mutation proof | future active gate plus deterministic source-spanned local mutation micro-edges | any current packet field or candidate evidence |
+| `flow_proof` | current TypeScript `.ts` local packet proof | verified MVP4.3 TypeScript production packet with bounded exact/derived local micro-flow steps | complete interprocedural/runtime behavior, unsupported languages, non-production source roles, or partial/gap-bearing packets |
 | `unknown` / `unsupported` | non-claimable status | explicit status and reason | proof by omission or fallback text |
 
 No lower rung may silently upgrade itself.
@@ -180,21 +200,26 @@ external evidence.
 
 | Surface | Contract |
 |---|---|
-| Parser | May eventually extract micro-node/micro-edge facts only when source-spanned and deterministic. Until MVP4 is authorized, no production parser emission of MVP4 facts. |
-| Store | Existing sparse sidecar table contracts are inactive, additive, and backward-compatible. Old DB compatibility must remain safe. |
-| Query | Candidate micro-flow retrieval remains candidate evidence until graph/source verification produces a bounded local micro-flow packet. |
+| Parser | May extract TypeScript `.ts` production micro-node/micro-edge facts only when source-spanned, deterministic, and within the verified MVP4.1-MVP4.2 slice. Other languages and future AST skeleton work remain inactive/not implemented. |
+| Store | Sparse sidecar tables are active only for the verified TypeScript packet slice and remain optional-layer state separate from core graph claimability. Old DB compatibility must remain safe. |
+| Query | Candidate micro-flow retrieval remains candidate evidence until graph/source verification produces a bounded local micro-flow packet; unsupported languages return no packet proof. |
 | CLI | `proof_status`, `proof_strength`, `claimability`, and proof-ladder counts must keep text/symbol/candidate/source-navigation/graph/mutation/flow rungs distinct. |
-| MCP | MCP surfaces mirror CLI proof boundaries and must not expose inactive MVP4 fields as active proof. |
+| MCP | MCP surfaces mirror CLI proof boundaries and must not expose inactive route/bridge/context-entry or unsupported-language packet fields as active proof. |
 | Docs | Public docs may describe this contract, but docs/text do not prove graph facts. |
-| Tests | Contract tests may validate inactive JSON/schema artifacts and current proof-ladder mappings. They must not require active MVP4 packet fields before the implementation gate. |
+| Tests | Contract tests validate current TypeScript packet schemas/mappings and inactive future JSON/schema artifacts without requiring unsupported-language packet fields. |
 
 ## Activation Invariants
 
 - `mutation_proof` remains inactive.
-- `flow_proof` remains inactive.
-- No production micro-node emission begins.
-- No production micro-edge emission begins.
-- No production local micro-flow packet emission begins.
+- `flow_proof` is active only for verified TypeScript `.ts` production local
+  micro-flow packets and remains inactive/not applicable for unsupported
+  languages and non-production source roles.
+- Production micro-node emission remains limited to the verified TypeScript
+  `.ts` production MVP4.1 slice.
+- Production micro-edge emission remains limited to the verified TypeScript
+  `.ts` production MVP4.2/MVP4.2b slice.
+- Production local micro-flow packet emission remains limited to the verified
+  TypeScript `.ts` production MVP4.3 slice.
 - No route/bridge extractor activation begins.
 - No context-entry command activation begins.
 - No distribution publication begins.

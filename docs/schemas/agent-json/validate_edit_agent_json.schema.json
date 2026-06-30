@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/validate_edit_agent_json.schema.json",
+  "title": "validate_edit_agent_json",
+  "description": "Top-level envelope emitted by `agent-use validate-edit --agent-json`. It wraps the inner validation_packet (validation_packet_agent_json.schema.json) and adds the agent decision/safety surface, evidence-first compaction handles, and the agent-use profile identity. additionalProperties is true: compact mode may shed optional metadata while retaining the required evidence/decision core (evidence-first shedding).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_name",
+    "schema_version",
+    "packet_kind",
+    "command",
+    "command_namespace",
+    "status",
+    "final_status",
+    "repo",
+    "db",
+    "validation_packet",
+    "claimability",
+    "lifecycle",
+    "can_continue_with_caution",
+    "should_recover_tool_state",
+    "should_rerun_validation",
+    "next_agent_action",
+    "hard_interrupt_available"
+  ],
+  "properties": {
+    "schema_name": {
+      "const": "validate_edit_agent_json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "packet_kind": {
+      "const": "validate_edit_packet"
+    },
+    "command": {
+      "const": "validate-edit"
+    },
+    "command_namespace": {
+      "const": "agent-use"
+    },
+    "agent_use_command": {
+      "type": "string"
+    },
+    "canonical_cli_surface": {
+      "type": "string"
+    },
+    "compatibility_alias_status": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "final_status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "severity_summary": {
+      "type": "object",
+      "description": "Counts and max_severity for blocking/warning/unknown/diagnostic findings."
+    },
+    "repo": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "repo_root": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "db_path": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "resolved_db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "claimability": {
+      "description": "Graph/source claimability summary for the validated edit; proof boundary is preserved."
+    },
+    "lifecycle": {
+      "$ref": "common.schema.json#/$defs/lifecycle_summary"
+    },
+    "can_continue_with_caution": {
+      "type": "boolean"
+    },
+    "should_recover_tool_state": {
+      "type": "boolean"
+    },
+    "should_run_tests": {
+      "type": "boolean"
+    },
+    "should_request_explain": {
+      "type": "boolean"
+    },
+    "should_rerun_validation": {
+      "type": "boolean"
+    },
+    "next_agent_action": {
+      "type": "string"
+    },
+    "aggregate_guidance": {
+      "type": "array"
+    },
+    "must_fix_before_continuing": {
+      "description": "Blocking findings the agent must resolve before continuing; empty/false when none."
+    },
+    "hard_interrupt_available": {
+      "type": "boolean"
+    },
+    "hard_interrupt": {
+      "type": ["object", "null"],
+      "description": "Hard-interrupt packet (hard_interrupt_agent_json.schema.json) when a blocking contradiction exists; null otherwise."
+    },
+    "validation_packet": {
+      "type": "object",
+      "description": "Inner validation packet; see validation_packet_agent_json.schema.json."
+    },
+    "unresolved_references": {
+      "type": ["object", "null"],
+      "description": "MVP3.9.5.4 unresolved-reference lane summary (counts, by_class, escalated). not_graph_proof."
+    },
+    "warnings": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "unknowns": {
+      "type": "array"
+    },
+    "diagnostics": {
+      "type": "array"
+    },
+    "proof_ladder_changes": {
+      "type": "object"
+    },
+    "expansion_handles": {
+      "type": "array",
+      "description": "Handles for explain/audit expansion of detail shed in compact mode."
+    },
+    "omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timings": {
+      "$ref": "common.schema.json#/$defs/timings"
+    },
+    "recovery_commands": {
+      "$ref": "common.schema.json#/$defs/recovery_commands"
+    },
+    "detail_mode": {
+      "type": "string",
+      "enum": ["compact", "explain", "audit"]
+    },
+    "compact_default": {
+      "type": "boolean"
+    },
+    "fail_on_blocking": {
+      "type": "boolean"
+    },
+    "fail_on_blocking_exit_code": {
+      "const": 2
+    },
+    "default_exit_zero_on_validation_blocker": {
+      "type": "boolean"
+    },
+    "public_claim": {
+      "const": false
+    },
+    "external_db_used": {
+      "type": "boolean"
+    },
+    "external_profile_db_used": {
+      "type": "boolean"
+    },
+    "no_dot_codegraph_fallback": {
+      "type": "boolean"
+    },
+    "uses_production_agent_use_resolver": {
+      "type": "boolean"
+    },
+    "validation_state": {
+      "type": ["object", "null"]
+    },
+    "journal_replay": {
+      "type": ["object", "null"]
+    },
+    "validation_wall_bounded": {
+      "type": "boolean"
+    },
+    "micro_edge_delta": {
+      "description": "MVP4.2 micro-edge delta summary; optional, graph claimability separate from micro-edge availability."
+    },
+    "micro_edge_integrity": {
+      "description": "MVP4.2 micro-edge integrity substage summary; optional."
+    },
+    "micro_edge_layer_status": {
+      "description": "MVP4.2 micro-edge layer availability status; optional."
+    },
+    "micro_edge_proof_changes": {
+      "description": "MVP4.2 micro-edge proof-change summary; optional."
+    },
+    "micro_flow_packet_delta": {
+      "description": "MVP4.3 local micro-flow packet delta summary; normal packet deltas are not source-code errors."
+    },
+    "micro_flow_packet_integrity": {
+      "description": "MVP4.3 local micro-flow packet integrity substage summary; optional."
+    },
+    "micro_flow_packet_layer_status": {
+      "description": "MVP4.3 local micro-flow packet layer availability status; optional and separate from graph/micro-edge availability."
+    },
+    "micro_flow_packet_proof_changes": {
+      "description": "MVP4.3 local micro-flow packet proof-change summary; compact output uses handles and does not inline ordered_steps."
+    },
+    "agent_json_budget": {
+      "$ref": "common.schema.json#/$defs/agent_json_budget"
+    },
+    "telemetry": {
+      "$ref": "common.schema.json#/$defs/telemetry_truth"
+    }
+  }
+}

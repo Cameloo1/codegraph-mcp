@@ -131,6 +131,12 @@ by itself prove that the source must be edited. Micro-edge visibility does not
 activate local-flow packets, `flow_proof`, `mutation_proof`, or route/auth
 semantics.
 
+When MVP4.3 packet handles are present, a missing inline packet body is expected
+on context/routing surfaces. Open the handle through the explicit packet
+expansion path to inspect the compact `dict_v1` `packet_body`; request
+explain/audit expansion only when verbose `ordered_steps` are needed. A stale,
+truncated, unavailable, or unopened packet handle is not flow proof.
+
 ## Windows Application Control Blocks A Fresh Build Or Test
 
 If `cargo build`, `cargo test`, or a clean-clone smoke fails before the Rust test
@@ -145,6 +151,25 @@ freshly built unsigned executable. Check the blocked path in the error, the
 Cargo target directory, and local policy. Do not rewrite product code or mark a
 test assertion failed until the same test reaches its Rust body or fails with a
 normal Rust panic/assertion.
+
+If the machine has Smart App Control or WDAC enforced and freshly built `.exe`
+test or release binaries keep failing at launch, use the verified WSL2 path
+instead of trying to add ad hoc allowlists. Build Linux executables in Ubuntu,
+keep Cargo outputs on the Linux filesystem, and keep agent-use DBs outside the
+source repo:
+
+```sh
+cd /mnt/c/Users/<windows-user>/source/codegraph-mcp
+export CARGO_TARGET_DIR="$HOME/cg-target/codegraph-mcp"
+export CODEGRAPH_AGENT_USE_DATA_ROOT="$HOME/.local/share/codegraph-agent-use"
+scripts/smoke_wsl2_agent_use.sh
+```
+
+That smoke is the issue #22 install/usability path for Windows testers. It
+builds the release binary, runs the `agent-use` status, MCP config, index,
+query, and validate-edit loop against a disposable target repo, and fails if
+`.codegraph` appears in either repo. For the full copy-paste setup from
+PowerShell through Ubuntu, see [Quickstart](quickstart.md#windows-wsl2-path-for-wdacsac-machines).
 
 ## `query unresolved-calls` Is Empty
 

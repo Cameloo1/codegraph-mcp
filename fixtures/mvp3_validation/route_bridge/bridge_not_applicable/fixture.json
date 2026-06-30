@@ -1,0 +1,299 @@
+{
+  "fixture_id": "mvp3_9_bridge_not_applicable",
+  "fixture_family": "bridge_activation_gated",
+  "fixture_title": "Cross-language bridge remains inert until exact bridge support exists",
+  "description": "A source-side bridge call changes while the target side is represented only by name/convention text. Current MVP3.9 records the bridge validation contract, but BRIDGES_TO extraction is absent, so the result is unknown/not_applicable and non-blocking.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "Bridge text, name matches, source-navigation, candidate, or convention evidence is not graph proof; bridge blockers require current exact source-spanned BRIDGES_TO proof and activation.",
+  "required_support_status": "not_applicable",
+  "unsupported_or_not_applicable_reason": "Current checkout has no BRIDGES_TO relation kind or exact cross-language bridge extractor. MVP3.10 may validate exact bridge facts only after MVP4.14-style bridge extraction exists; until then bridge evidence is unknown/not_applicable and non-blocking.",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_9",
+    "route_bridge",
+    "bridge",
+    "activation_gated",
+    "unknown",
+    "not_applicable",
+    "non_blocking",
+    "not_applicable_allowed"
+  ],
+  "expected_mvp_phase": "mvp3_9_gates",
+  "initial_files": [
+    {
+      "path": "src/frontend.ts",
+      "contents": "export function callNativeBridge(): string {\n  return NativeModules.ProfileBridge.fetchUser();\n}\n",
+      "source_role": "production"
+    },
+    {
+      "path": "native/ProfileBridge.swift",
+      "contents": "final class ProfileBridge {\n  @objc func fetchUser() -> String { return \"user\" }\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "bridge_contract": "not_applicable",
+    "exact_bridge_graph_proof_required_for_blocking": true,
+    "bridge_relation_kind": "BRIDGES_TO_absent"
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": true,
+    "graph_proof": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable",
+    "source_navigation_status": "not_applicable",
+    "routing_handle_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_bridge",
+      "query": "ProfileBridge.fetchUser",
+      "expected_status": "not_applicable"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "unknown",
+    "bridge_proof_activation_gated": true,
+    "graph_proof": false
+  },
+  "mutation_steps": [
+    {
+      "type": "edit_file",
+      "path": "src/frontend.ts",
+      "find": "fetchUser",
+      "replace": "fetchProfile",
+      "reason": "Change a bridge-like call name without an exact bridge relation."
+    }
+  ],
+  "changed_files": [
+    "src/frontend.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/frontend.ts"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 0,
+    "entities_changed": 1,
+    "edges_added": 0,
+    "edges_removed": 0,
+    "edges_changed": 0,
+    "source_spans_added": 0,
+    "source_spans_removed": 0,
+    "source_spans_changed": 1,
+    "bridge_edges_changed": 0
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [
+    {
+      "validation_rule_id": "CG_MVP3_BRIDGE_NOT_APPLICABLE_UNKNOWN",
+      "proof_ladder_level": "unknown",
+      "severity": "unknown",
+      "message_contains": "bridge",
+      "source_file": "src/frontend.ts"
+    }
+  ],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "unknown",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "Keep bridge evidence unknown/not_applicable until MVP3.10 has exact source-spanned BRIDGES_TO facts to validate.",
+    "Do not treat name or convention matches as graph proof."
+  ],
+  "expected_source_spans": [
+    {
+      "source_file": "src/frontend.ts",
+      "start_line": 2,
+      "start_column": 10,
+      "end_line": 2,
+      "end_column": 49,
+      "expected_text": "NativeModules.ProfileBridge.fetchProfile",
+      "required_for_graph_proof": false
+    }
+  ],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "graph_relation_proof": {
+      "invalidated": 0,
+      "refreshed": 0
+    },
+    "source_navigation_evidence": {
+      "invalidated": 0,
+      "refreshed": 0
+    },
+    "unknown": {
+      "invalidated": 1,
+      "refreshed": 1
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 1,
+    "refreshed_count": 1,
+    "stale_count": 0,
+    "levels": [
+      "unknown"
+    ]
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable",
+    "source_navigation_status": "not_applicable",
+    "routing_handle_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "bridge_name_match_claimed_exact",
+    "bridge_candidate_claimed_source_code_blocker"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "bridge_text_or_name_match_as_graph_proof",
+    "BRIDGES_TO_from_convention_without_extractor",
+    "source_navigation_bridge_as_graph_relation_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "bridge_not_applicable_hard_interrupt",
+    "heuristic_bridge_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [
+    "test_bridge_as_production_proof"
+  ],
+  "expected_cli_validate_edit_behavior": {
+    "status": "unknown",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "validation_rule_id",
+      "proof_ladder_changes",
+      "activation_gate_state"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt",
+      "bridge_graph_proof_without_activation"
+    ],
+    "notes": [
+      "If a future exact bridge extractor activates this fixture, update the manifest to assert a source-spanned BRIDGES_TO blocker only for exact proof."
+    ]
+  },
+  "expected_watch_once_behavior": {
+    "status": "unknown",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "proof_ladder_changes"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP execution is planned by this harness and remains handler-level/not_applicable for this bridge scaffold."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "unknown",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "unknown",
+      "activation_gate_state"
+    ],
+    "forbidden_fields": [
+      "bridge_text_as_graph_relation_proof"
+    ],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state",
+      "sidecar_statuses"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "unknown_count": 1,
+    "activation_gated": true
+  },
+  "expected_explain_output": {
+    "bridge_activation_gate_detail": true
+  },
+  "expected_audit_output": {
+    "unsupported_bridge_boundary": true,
+    "graph_proof_false_detail": true
+  },
+  "fix_mutation_if_any": [],
+  "post_fix_changed_files": [
+    "src/frontend.ts"
+  ],
+  "post_fix_expected_status": "unknown",
+  "post_fix_expected_graph_delta": {
+    "entities_changed": 1,
+    "bridge_edges_changed": 0
+  },
+  "post_fix_forbidden_stale_outputs": [
+    "src/frontend.ts as fresh bridge graph proof"
+  ],
+  "recovery_commands_expected": [],
+  "fix_steps": [
+    {
+      "type": "no_op",
+      "reason": "No source-code fix is asserted because bridge validation is not_applicable until exact bridge extraction exists."
+    }
+  ],
+  "post_fix_expected_severity": "unknown",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [
+    {
+      "validation_rule_id": "CG_MVP3_BRIDGE_NOT_APPLICABLE_UNKNOWN",
+      "proof_ladder_level": "unknown",
+      "severity": "unknown",
+      "message_contains": "bridge",
+      "source_file": "src/frontend.ts"
+    }
+  ],
+  "post_fix_expected_diagnostics": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "recovery_command_may_refresh_state": false,
+    "post_recovery_lifecycle": {
+      "claimable": true,
+      "status": "fresh_or_unchanged"
+    },
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

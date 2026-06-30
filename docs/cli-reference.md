@@ -287,6 +287,25 @@ ambiguous, and fuzzy modes as `query callers`.
 Runs cycle-safe call-chain recovery over `CALLS` edges, preserving exactness and
 confidence labels.
 
+`agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json`
+
+Queries the current MVP4.3 local-flow packet layer through the external
+production agent-use profile. This surface is active only for verified
+TypeScript `.ts` production packet rows. Compact output is handle-first and
+reports packet-layer status, language counts, proof-status/proof-strength
+counts, truncation, omitted counts, source roles, and expansion handles without
+inlining full packet bodies by default. Individual TypeScript packet rows may
+carry `proof_strength: "flow_proof"` only when the packet is complete,
+current, source-spanned, provenance-safe, production-role, and eligible;
+partial or gap-bearing packets are downgraded.
+
+JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, PHP, and
+text-only/unsupported files currently have packet support
+`not_implemented`/`not_applicable`. They may still produce useful graph or text
+evidence through other query/context/validate surfaces, but they do not emit
+`local_flow_packets`, micro-flow handles, or `flow_proof`. Missing packet
+support is not a source-code error and cannot hard-interrupt by itself.
+
 `query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets|--include-snippets] [--db <path>]`
 
 Lists the unresolved-reference lane with optional path and class filters. The
@@ -465,6 +484,13 @@ optional `LOCAL_RETURNS_TO` status, counts, versions, cap/omission fields, and a
 bounded sample with endpoint ids/kinds, spans, exactness, claimability, and
 provenance summary. It does not output full source bodies, local-flow packets,
 `flow_proof`, or `mutation_proof`.
+
+`audit local-flow-packets [--repo <repo>] [--db <path>] [--file <path>] [--function <id>] [--packet-id <id>] [--proof-strength <value>] [--limit <n>] [--json-out <path>] [--markdown-out <path>]`
+
+Runs a bounded read-only MVP4.3 local micro-flow packet inspection. Compact
+packet rows stay handle-first by default; packet bodies use `encoding:
+"dict_v1"` plus `packet_body`. Verbose `ordered_steps` are reserved for explicit
+audit expansion and must not be treated as a separate proof source.
 
 `doctor [repo] [--json]`
 

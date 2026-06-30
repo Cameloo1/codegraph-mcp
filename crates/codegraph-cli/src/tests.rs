@@ -19,7 +19,7 @@ use codegraph_core::{
     EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, PathEvidence,
     RelationKind, SourceSpan,
 };
-use codegraph_store::{GraphStore, SqliteGraphStore};
+use codegraph_store::{GraphStore, LocalFlowPacketRow, SqliteGraphStore};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
@@ -3473,6 +3473,182 @@ fn same_repo_same_profile_identity_across_query_context_validate_watch() {
     remove_dir_all_with_retry(&data_root, "cleanup data root");
 }
 
+/// MVP4.2b B3c-3: a validate-edit on a TypeScript file that introduces a local
+/// binding write and additional local reads must surface those exact micro-edges
+/// in the relation-agnostic `micro_edge_delta` section as NORMAL
+/// graph_relation_proof deltas — never validation errors, and never activating
+/// flow_proof / mutation_proof (MVP4.2b is the exact-relation layer, not flow).
+#[test]
+fn validate_edit_surfaces_local_reads_and_writes_micro_edge_delta() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    // Indexed baseline: a single param read + return, no local writes.
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(flag: boolean) {\n  return flag;\n}\n",
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("index baseline");
+
+    // Edit: introduce a local binding write (`result = flag`) and extra local
+    // reads (`flag`, `result`), so the delta gains LOCAL_READS + LOCAL_WRITES.
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(flag: boolean) {\n  let result = flag;\n  result = flag;\n  return result;\n}\n",
+    );
+    // `--explain` (full detail) so the micro_edge_delta section is retained: the
+    // compact `--agent-json` budget correctly SHEDS micro_edge_delta as metadata
+    // (evidence-first shedding), so reads/writes surface in the full/explain view
+    // an agent uses to inspect micro-edges. The large budget keeps it unshed
+    // regardless of the explain default.
+    let validate = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "validate-edit".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--changed".to_string(),
+            "src/service.ts".to_string(),
+            "--explain".to_string(),
+            "--max-output-bytes".to_string(),
+            "2000000".to_string(),
+        ])
+    })
+    .expect("validate-edit with added reads/writes");
+
+    let micro_edge_delta = &validate["micro_edge_delta"];
+    assert_eq!(
+        micro_edge_delta["available"].as_bool(),
+        Some(true),
+        "{validate}"
+    );
+    assert_eq!(
+        micro_edge_delta["normal_micro_edge_delta_not_error"].as_bool(),
+        Some(true),
+        "reads/writes are normal graph_relation_proof deltas, not errors: {validate}"
+    );
+    let counts_by_kind = &micro_edge_delta["counts_by_kind"];
+    assert!(
+        counts_by_kind["local_reads"].as_u64().unwrap_or_default() >= 1,
+        "validate-edit must surface added LOCAL_READS micro-edges: {validate}"
+    );
+    assert!(
+        counts_by_kind["local_writes"].as_u64().unwrap_or_default() >= 1,
+        "validate-edit must surface added LOCAL_WRITES micro-edges: {validate}"
+    );
+    // Proof boundary: exact local-reference edges never activate flow / mutation
+    // proof; that stays reserved for the future LOCAL_FLOWS_TO / MVP4.3 layer.
+    assert_eq!(
+        micro_edge_delta["flow_proof_activated"].as_bool(),
+        Some(false),
+        "{validate}"
+    );
+    assert_eq!(
+        micro_edge_delta["mutation_proof_activated"].as_bool(),
+        Some(false),
+        "{validate}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+/// MVP4.2b B4: a validate-edit that introduces a function-local assignment chain
+/// must surface the DERIVED `LOCAL_FLOWS_TO` micro-edges in the relation-agnostic
+/// `micro_edge_delta` section as NORMAL graph_relation_proof deltas. Critically,
+/// a derived value-flow relation is still NOT `flow_proof`: the proof boundary
+/// holds (no `flow_proof`/`mutation_proof` activation) — that remains an MVP4.3
+/// gate decision, not something the derived-with-provenance edge layer flips.
+#[test]
+fn validate_edit_surfaces_local_flows_to_derived_micro_edge_delta() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    // Indexed baseline: a direct return with no intermediate binding chain, so no
+    // LOCAL_FLOWS_TO edges exist yet.
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(seed: number, extra: number) {\n  return seed + extra;\n}\n",
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("index baseline");
+
+    // Edit: introduce an intra-function assignment chain (`const base = seed`,
+    // `let total = base`, `total = base + extra`) so the delta derives
+    // LOCAL_FLOWS_TO steps from the underlying exact local reads/writes.
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(seed: number, extra: number) {\n  const base = seed;\n  let total = base;\n  total = base + extra;\n  return total;\n}\n",
+    );
+    let validate = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "validate-edit".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--changed".to_string(),
+            "src/service.ts".to_string(),
+            "--explain".to_string(),
+            "--max-output-bytes".to_string(),
+            "2000000".to_string(),
+        ])
+    })
+    .expect("validate-edit with added local flow chain");
+
+    let micro_edge_delta = &validate["micro_edge_delta"];
+    assert_eq!(
+        micro_edge_delta["available"].as_bool(),
+        Some(true),
+        "{validate}"
+    );
+    assert_eq!(
+        micro_edge_delta["normal_micro_edge_delta_not_error"].as_bool(),
+        Some(true),
+        "derived flows-to are normal graph_relation_proof deltas, not errors: {validate}"
+    );
+    let counts_by_kind = &micro_edge_delta["counts_by_kind"];
+    assert!(
+        counts_by_kind["local_flows_to"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "validate-edit must surface added derived LOCAL_FLOWS_TO micro-edges: {validate}"
+    );
+    // Proof boundary: a derived value-flow edge is not flow/mutation proof.
+    assert_eq!(
+        micro_edge_delta["flow_proof_activated"].as_bool(),
+        Some(false),
+        "{validate}"
+    );
+    assert_eq!(
+        micro_edge_delta["mutation_proof_activated"].as_bool(),
+        Some(false),
+        "{validate}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
 #[test]
 fn permission_denied_not_false_not_indexed() {
     let _guard = lock_env_test();
@@ -4185,6 +4361,12 @@ fn validate_edit_warning_findings(packet: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn validate_edit_unresolved_references(packet: &Value) -> Option<&Value> {
+    packet
+        .pointer("/validation_packet/unresolved_references")
+        .or_else(|| packet.get("unresolved_references"))
+}
+
 fn validate_edit_args_for(repo: &Path) -> Vec<String> {
     vec![
         "validate-edit".to_string(),
@@ -4237,7 +4419,8 @@ fn validate_edit_warns_on_new_unresolved_local_call_and_clears_on_fix() {
     })
     .expect("validate-edit with hallucinated call");
 
-    let block = &first["unresolved_references"];
+    let block = validate_edit_unresolved_references(&first)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {first}"));
     assert!(
         block["new_count"].as_u64().unwrap_or_default() >= 1,
         "{first}"
@@ -4307,8 +4490,10 @@ fn validate_edit_warns_on_new_unresolved_local_call_and_clears_on_fix() {
     })
     .expect("validate-edit after fix");
     assert!(
-        second["unresolved_references"]["resolved_count"]
-            .as_u64()
+        second
+            .pointer("/validation_packet/unresolved_references/resolved_count")
+            .or_else(|| second.pointer("/unresolved_references/resolved_count"))
+            .and_then(Value::as_u64)
             .unwrap_or_default()
             >= 1,
         "{second}"
@@ -4569,14 +4754,13 @@ fn validate_edit_unresolved_findings_queryable() {
         "{validate}"
     );
     assert!(validate.get("_cli_exit_code").is_none(), "{validate}");
+    let unresolved = validate_edit_unresolved_references(&validate)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {validate}"));
     assert!(
-        validate["unresolved_references"]["new_count"]
-            .as_u64()
-            .unwrap_or_default()
-            >= 2,
+        unresolved["new_count"].as_u64().unwrap_or_default() >= 2,
         "{validate}"
     );
-    let escalated_names = validate["unresolved_references"]["escalated"]
+    let escalated_names = unresolved["escalated"]
         .as_array()
         .expect("escalated unresolved references")
         .iter()
@@ -4698,8 +4882,10 @@ fn validate_edit_unresolved_findings_queryable() {
     })
     .expect("validate-edit after fix");
     assert!(
-        fixed["unresolved_references"]["resolved_count"]
-            .as_u64()
+        fixed
+            .pointer("/validation_packet/unresolved_references/resolved_count")
+            .or_else(|| fixed.pointer("/unresolved_references/resolved_count"))
+            .and_then(Value::as_u64)
             .unwrap_or_default()
             >= 2,
         "{fixed}"
@@ -4826,7 +5012,9 @@ fn validate_edit_forward_fixture_matrix_python() {
         "src/tools.py",
         "def helper(value):\n    return value\n",
     );
-    let clean_source = "def run(value):\n    return value\n";
+    write_cli_fixture_file(&repo, "src/__init__.py", "");
+    let clean_source =
+        "from src.tools import helper as tool_helper\n\n\ndef run(value):\n    return tool_helper(value)\n";
     write_cli_fixture_file(&repo, "src/api.py", clean_source);
     with_agent_use_data_root(&data_root, || {
         super::run_agent_use_command(&[
@@ -4843,7 +5031,7 @@ fn validate_edit_forward_fixture_matrix_python() {
     write_cli_fixture_file(
         &repo,
         "src/api.py",
-        "def run(value):\n    print(value)\n    tools.missing_sibling_fn(value)\n    return summarize_results(value)\n",
+        "from src.tools import helper as tool_helper\n\n\ndef run(value):\n    print(value)\n    tools.missing_sibling_fn(value)\n    tool_helper(value)\n    return summarize_results(value)\n",
     );
     let validate_args = vec![
         "validate-edit".to_string(),
@@ -4876,9 +5064,11 @@ fn validate_edit_forward_fixture_matrix_python() {
         }),
         "at least the top escalated warning must survive the budget; got {first}"
     );
-    let escalated = first["unresolved_references"]["escalated"]
-        .as_array()
-        .expect("escalated");
+    let escalated = first
+        .pointer("/validation_packet/unresolved_references/escalated")
+        .or_else(|| first.pointer("/unresolved_references/escalated"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("expected unresolved escalations; got {first}"));
     for expected in ["summarize_results", "tools.missing_sibling_fn"] {
         assert!(
             escalated.iter().any(|item| {
@@ -4893,17 +5083,19 @@ fn validate_edit_forward_fixture_matrix_python() {
     }
     assert!(
         warnings.iter().all(|finding| {
-            !finding["reason"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("print")
+            let finding = finding.to_string();
+            !finding.contains("print") && !finding.contains("tool_helper")
         }),
-        "builtin `print` must stay quiet; got {warnings:?}"
+        "builtin `print` and valid imported alias `tool_helper` must stay quiet; got {warnings:?}"
     );
     assert_eq!(first["must_fix_before_continuing"].as_bool(), Some(false));
     assert!(first.get("_cli_exit_code").is_none(), "{first}");
+    let first_unresolved = first
+        .pointer("/validation_packet/unresolved_references")
+        .or_else(|| first.get("unresolved_references"))
+        .unwrap_or_else(|| panic!("expected unresolved reference summary; got {first}"));
     assert!(
-        first["unresolved_references"]["by_class"]["repo_local_candidate"]
+        first_unresolved["by_class"]["repo_local_candidate"]
             .as_u64()
             .unwrap_or_default()
             >= 2,
@@ -4927,11 +5119,78 @@ fn validate_edit_forward_fixture_matrix_python() {
         "{second}"
     );
     assert!(
-        second["unresolved_references"]["resolved_count"]
-            .as_u64()
+        second
+            .pointer("/validation_packet/unresolved_references/resolved_count")
+            .or_else(|| second.pointer("/unresolved_references/resolved_count"))
+            .and_then(Value::as_u64)
             .unwrap_or_default()
             >= 2,
         "{second}"
+    );
+
+    // Static Python from-import targets that are not present in the local
+    // package must be visible in the unresolved lane, while remaining
+    // text-evidence warnings rather than graph proof.
+    write_cli_fixture_file(
+        &repo,
+        "src/api.py",
+        "from src.tools import missing_imported_helper\n\n\ndef run(value):\n    return value\n",
+    );
+    let missing_import =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit python missing from-import case");
+    let import_unresolved = missing_import
+        .pointer("/validation_packet/unresolved_references")
+        .or_else(|| missing_import.get("unresolved_references"))
+        .unwrap_or_else(|| panic!("expected unresolved reference summary; got {missing_import}"));
+    let import_escalated = import_unresolved["escalated"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected unresolved escalations; got {missing_import}"));
+    assert!(
+        import_escalated.iter().any(|item| {
+            item["name"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("missing_imported_helper")
+                && item["proof_strength"].as_str() == Some("text_evidence")
+                && item["claimability"].as_str() == Some("claimable_as_source_text_reference_only")
+        }),
+        "expected text-only unresolved entry for missing from-import target; got {missing_import}"
+    );
+    assert_eq!(
+        import_unresolved["not_graph_proof"].as_bool(),
+        Some(true),
+        "{missing_import}"
+    );
+    assert_eq!(
+        missing_import["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{missing_import}"
+    );
+
+    write_cli_fixture_file(&repo, "src/api.py", clean_source);
+    let import_fixed =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit python missing from-import fixed");
+    assert!(
+        import_fixed
+            .pointer("/validation_packet/unresolved_references/resolved_count")
+            .or_else(|| import_fixed.pointer("/unresolved_references/resolved_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            >= 1,
+        "{import_fixed}"
+    );
+    assert!(
+        validate_edit_warning_findings(&import_fixed)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{import_fixed}"
     );
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
@@ -4970,7 +5229,7 @@ fn validate_edit_forward_fixture_matrix_js_ts() {
     write_cli_fixture_file(
         &repo,
         "src/service.js",
-        "import { missingImportedHelper } from './local.js';\n\nexport function run(value, obj, key) {\n  console.log(value);\n  lodash.map([value], item => item);\n  obj[key](value);\n  missingImportedHelper(value);\n  return missingSameFile(value);\n}\n",
+        "import { missingImportedHelper } from './local.js';\n\nexport function run(value, obj, key) {\n  console.log(value);\n  lodash.map([value], item => item);\n  obj[key](value);\n  missingImportedHelper(value);\n  import(`./plugins/${value}.js`);\n  return missingSameFile(value);\n}\n",
     );
     let validate_args = vec![
         "validate-edit".to_string(),
@@ -4992,9 +5251,11 @@ fn validate_edit_forward_fixture_matrix_js_ts() {
         Some(2),
         "{first}"
     );
-    let escalated = first["unresolved_references"]["escalated"]
-        .as_array()
-        .expect("escalated");
+    let escalated = first
+        .pointer("/validation_packet/unresolved_references/escalated")
+        .or_else(|| first.pointer("/unresolved_references/escalated"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("expected unresolved escalations; got {first}"));
     for expected in ["missingImportedHelper", "missingSameFile"] {
         assert!(
             escalated.iter().any(|item| {
@@ -5016,8 +5277,12 @@ fn validate_edit_forward_fixture_matrix_js_ts() {
     );
     assert_eq!(first["must_fix_before_continuing"].as_bool(), Some(false));
     assert!(first.get("_cli_exit_code").is_none(), "{first}");
+    let unresolved = first
+        .pointer("/validation_packet/unresolved_references")
+        .or_else(|| first.get("unresolved_references"))
+        .unwrap_or_else(|| panic!("expected unresolved reference summary; got {first}"));
     assert_eq!(
-        first["unresolved_references"]["not_graph_proof"].as_bool(),
+        unresolved["not_graph_proof"].as_bool(),
         Some(true),
         "{first}"
     );
@@ -5025,13 +5290,23 @@ fn validate_edit_forward_fixture_matrix_js_ts() {
         !first.to_string().contains("obj[key]"),
         "computed property calls must not become warning/blocking findings; got {first}"
     );
+    assert!(
+        !validate_edit_warning_findings(&first)
+            .iter()
+            .any(|finding| { finding["unresolved_reference"]["name"].as_str() == Some("import") }),
+        "dynamic import() must not become a repo-local unresolved warning; got {first}"
+    );
 
     write_cli_fixture_file(&repo, "src/service.js", clean_source);
     let second =
         with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
             .expect("validate-edit js after fix");
+    let second_unresolved = second
+        .pointer("/validation_packet/unresolved_references")
+        .or_else(|| second.get("unresolved_references"))
+        .unwrap_or_else(|| panic!("expected unresolved reference summary; got {second}"));
     assert!(
-        second["unresolved_references"]["resolved_count"]
+        second_unresolved["resolved_count"]
             .as_u64()
             .unwrap_or_default()
             >= 2,
@@ -5104,9 +5379,13 @@ fn validate_edit_forward_fixture_matrix_rust() {
     // makes auth:: repo-local) and same-file unqualified call both escalate.
     // The budget enforcer truncates the warnings LIST to one item over
     // budget (§4.3.1, 9.5.5 scope); the escalated block keeps all inline.
-    let escalated = result["unresolved_references"]["escalated"]
+    let unresolved = result
+        .pointer("/validation_packet/unresolved_references")
+        .or_else(|| result.get("unresolved_references"))
+        .unwrap_or_else(|| panic!("expected unresolved reference summary; got {result}"));
+    let escalated = unresolved["escalated"]
         .as_array()
-        .expect("escalated");
+        .unwrap_or_else(|| panic!("expected unresolved escalations; got {result}"));
     for expected in ["auth::revoke_token", "audit_login_attempt"] {
         assert!(
             escalated.iter().any(|item| {
@@ -5148,7 +5427,7 @@ fn validate_edit_forward_fixture_matrix_rust() {
     );
     assert_eq!(result["must_fix_before_continuing"].as_bool(), Some(false));
     assert!(result.get("_cli_exit_code").is_none(), "{result}");
-    let by_class = &result["unresolved_references"]["by_class"];
+    let by_class = &unresolved["by_class"];
     assert!(
         by_class["repo_local_candidate"]
             .as_u64()
@@ -5163,10 +5442,123 @@ fn validate_edit_forward_fixture_matrix_rust() {
         with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
             .expect("validate-edit rust after fix");
     assert!(
-        fixed["unresolved_references"]["resolved_count"]
-            .as_u64()
+        fixed
+            .pointer("/validation_packet/unresolved_references/resolved_count")
+            .or_else(|| fixed.pointer("/unresolved_references/resolved_count"))
+            .and_then(Value::as_u64)
             .unwrap_or_default()
             >= 3,
+        "{fixed}"
+    );
+    assert!(
+        validate_edit_warning_findings(&fixed)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{fixed}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_forward_fixture_matrix_go() {
+    // Go forward case: a new repo-local nonexistent function warns, while stdlib
+    // calls and existing repo candidates stay non-blocking/non-warning.
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "go.mod", "module fixture\n\ngo 1.22\n");
+    write_cli_fixture_file(
+        &repo,
+        "src/tools.go",
+        "package main\n\nfunc existingLocalGo(value int) int {\n    return value\n}\n",
+    );
+    let clean_source = "package main\n\nfunc run(value int) int {\n    return value\n}\n";
+    write_cli_fixture_file(&repo, "src/main.go", clean_source);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/main.go",
+        "package main\n\nimport \"fmt\"\n\nfunc run(value int) int {\n    fmt.Println(value)\n    existingLocalGo(value)\n    return missingLocalGo(value)\n}\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/main.go".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let result =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit go forward case");
+
+    let warnings = validate_edit_warning_findings(&result);
+    assert!(
+        warnings.iter().any(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+        }),
+        "expected unresolved-local-call warning; got {result}"
+    );
+    let unresolved = validate_edit_unresolved_references(&result)
+        .expect("validate-edit unresolved reference section");
+    let escalated = unresolved["escalated"].as_array().expect("escalated");
+    assert!(
+        escalated.iter().any(|item| {
+            item["name"].as_str() == Some("missingLocalGo")
+                && item["repo_graph_lookup"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("no_defining_entity_named_")
+        }),
+        "expected escalated entry for missingLocalGo; got {result}"
+    );
+    assert!(
+        warnings.iter().all(|finding| {
+            let text = finding.to_string();
+            !text.contains("fmt.Println") && !text.contains("existingLocalGo")
+        }),
+        "stdlib and existing repo candidates must stay quiet; got {warnings:?}"
+    );
+    assert_eq!(result["must_fix_before_continuing"].as_bool(), Some(false));
+    assert!(result.get("_cli_exit_code").is_none(), "{result}");
+    assert!(
+        unresolved["by_class"]["repo_local_candidate"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "{result}"
+    );
+    assert_eq!(
+        unresolved["not_graph_proof"].as_bool(),
+        Some(true),
+        "{result}"
+    );
+
+    write_cli_fixture_file(&repo, "src/main.go", clean_source);
+    let fixed =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit go after fix");
+    assert!(
+        validate_edit_unresolved_references(&fixed)
+            .and_then(|unresolved| unresolved["resolved_count"].as_u64())
+            .unwrap_or_default()
+            >= 1,
         "{fixed}"
     );
     assert!(
@@ -5254,8 +5646,10 @@ fn validate_edit_block_on_unresolved_local_promotes_escalated_warning() {
         }),
         "{result}"
     );
+    let result_unresolved = validate_edit_unresolved_references(&result)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {result}"));
     assert!(
-        result["unresolved_references"]["escalated"]
+        result_unresolved["escalated"]
             .as_array()
             .expect("escalated")
             .iter()
@@ -12139,6 +12533,14 @@ fn p2_query_evidence_role_helper_labels_stub_generated_and_unknown() {
         super::query_evidence_role_for_entity(&generated).role,
         "generated"
     );
+    let top_level_generated = Entity {
+        repo_relative_path: "generated/client.ts".to_string(),
+        ..generated.clone()
+    };
+    assert_eq!(
+        super::query_evidence_role_for_entity(&top_level_generated).role,
+        "generated"
+    );
 
     let stub = Entity {
         id: "repo://e/stub".to_string(),
@@ -12158,6 +12560,13 @@ fn p2_query_evidence_role_helper_labels_stub_generated_and_unknown() {
     let unknown = super::query_evidence_role_for_path_and_metadata("", None, None, "unit-test");
     assert_eq!(unknown.role, "unknown");
     assert!(unknown.reason.contains("cannot be determined"));
+    let top_level_test = super::query_evidence_role_for_path_and_metadata(
+        "tests/client.ts",
+        None,
+        None,
+        "unit-test",
+    );
+    assert_eq!(top_level_test.role, "test");
 }
 
 #[test]
@@ -13391,6 +13800,122 @@ fn context_pack_agent_json_is_compact_and_proof_labeled() {
     );
     assert_eq!(result["truncation"]["limit"].as_u64(), Some(2));
     assert!(serialized_len_for_test(&result) <= super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
+}
+
+#[test]
+fn context_pack_micro_flow_handle_is_compact_and_non_proof() {
+    let row = context_agent_test_local_flow_packet_row();
+    let handle = super::context_pack_micro_flow_handle_json(&row);
+
+    assert_eq!(
+        handle["handle_id"].as_str(),
+        Some("micro-flow-handle:packet-src-lib-prod")
+    );
+    assert_eq!(handle["packet_id"].as_str(), Some("packet-src-lib-prod"));
+    assert_eq!(handle["file"].as_str(), Some("src/lib.rs"));
+    assert_eq!(handle["proof_strength"].as_str(), Some("flow_proof"));
+    assert_eq!(handle["packet_body_inline"].as_bool(), Some(false));
+    assert_eq!(handle["ordered_steps_inline"].as_bool(), Some(false));
+    assert_eq!(handle["full_source_body_output"].as_bool(), Some(false));
+    assert_eq!(handle["handle_creates_proof"].as_bool(), Some(false));
+    assert!(handle.get("packet_body").is_none());
+    assert!(handle.get("ordered_steps").is_none());
+
+    let handles = vec![handle];
+    let summary = super::context_pack_micro_flow_handle_summary_json(&handles);
+    assert_eq!(summary["handle_count"].as_u64(), Some(1));
+    assert_eq!(
+        summary["packet_handles_do_not_create_proof"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        summary["compact_default_full_packet_body_inline"].as_bool(),
+        Some(false)
+    );
+}
+
+#[test]
+fn context_pack_agent_json_and_routing_carry_micro_flow_handles_only() {
+    let mut options = context_agent_test_options("production", Some(2), Some(2), Some(262_144));
+    options.task = "Trace implementation local micro-flow for prod_value".to_string();
+    let mut packet = context_agent_test_packet("production", 1, 1, "production");
+    packet.task = options.task.clone();
+    let handle =
+        super::context_pack_micro_flow_handle_json(&context_agent_test_local_flow_packet_row());
+    let handles = vec![handle.clone()];
+    packet
+        .metadata
+        .insert("micro_flow_handles".to_string(), json!(handles.clone()));
+    packet.metadata.insert(
+        "micro_flow_packet_summary".to_string(),
+        super::context_pack_micro_flow_handle_summary_json(&handles),
+    );
+    let lifecycle = json!({
+        "claimable": true,
+        "diagnostic_only": false,
+        "decision": "read_reuse",
+        "passport_status": "valid",
+    });
+
+    let result = super::context_pack_agent_json_response(
+        &options,
+        &packet,
+        &lifecycle,
+        super::ContextPackBudgets::for_options(&options),
+        Path::new("fixture"),
+        Path::new("fixture/.codegraph/codegraph.sqlite"),
+        json!({"wall_ms": 1.0}),
+    );
+
+    let top_handles = result["micro_flow_handles"]
+        .as_array()
+        .expect("top-level micro flow handles");
+    assert_eq!(top_handles.len(), 1);
+    assert!(top_handles[0].get("packet_body").is_none());
+    assert!(top_handles[0].get("ordered_steps").is_none());
+    assert_eq!(
+        result["micro_flow_packet_proof_boundary"]["handles_do_not_create_proof"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        result["micro_flow_packet_proof_boundary"]["context_entry_command_activated"].as_bool(),
+        Some(false)
+    );
+
+    let planning_handles = result["planning_packet"]["micro_flow_handles"]
+        .as_array()
+        .expect("planning handles");
+    assert_eq!(planning_handles.len(), 1);
+    assert!(planning_handles[0].get("packet_body").is_none());
+    assert!(planning_handles[0].get("ordered_steps").is_none());
+
+    let routing = &result["routing_packet"];
+    let routing_handles = routing["micro_flow_handles"]
+        .as_array()
+        .expect("routing handles");
+    assert_eq!(routing_handles.len(), 1);
+    assert!(routing_handles[0].get("packet_body").is_none());
+    assert!(routing_handles[0].get("ordered_steps").is_none());
+    assert_eq!(
+        routing["micro_flow_handle_policy"]["packet_handles_do_not_create_proof"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        routing["micro_flow_handle_policy"]["context_entry_command_activated"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        routing["agent_investigation_layer"]["proof_boundary"]
+            ["candidate_evidence_not_raised_to_proof"]
+            .as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        routing["implementation_trace_micro_flow_handles"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
 }
 
 #[test]
@@ -18239,6 +18764,73 @@ fn context_agent_test_packet(
     }
 }
 
+fn context_agent_test_local_flow_packet_row() -> LocalFlowPacketRow {
+    LocalFlowPacketRow {
+        packet_id: "packet-src-lib-prod".to_string(),
+        file_id: "src/lib.rs".to_string(),
+        function_entity_id: "src::lib.prod_value".to_string(),
+        function_frame_micro_node_id: Some("micro-node-function-frame-prod".to_string()),
+        packet_kind: "function_local_micro_flow_packet".to_string(),
+        encoding: "dict_v1".to_string(),
+        packet_body: serde_json::to_string(&json!({
+            "dict": {
+                "spans": [{"id": "span-return", "file": "src/lib.rs", "start_line": 8, "end_line": 8}],
+                "nodes": [{"id": "node-local", "kind": "LocalBinding"}],
+                "edges": [{"id": "edge-flow", "kind": "LOCAL_FLOWS_TO"}],
+                "provenance": [{"id": "prov-flow", "kind": "derived_with_provenance"}]
+            },
+            "paths": [{
+                "path_id": "path-1",
+                "branch_id": "branch-main",
+                "return_path_id": "return-main",
+                "steps": [{
+                    "step_kind": "local_flow_edge",
+                    "edge_ref": 0,
+                    "span_ref": 0,
+                    "provenance_ref": 0
+                }]
+            }],
+            "budget": {
+                "omitted_count": 0,
+                "truncation_reason": null
+            }
+        }))
+        .expect("packet body JSON"),
+        packet_body_hash: "hash-packet-src-lib-prod".to_string(),
+        compressed_steps: "dict_v1".to_string(),
+        source_span_ids_json: "[\"span-return\"]".to_string(),
+        primary_source_span_id: Some("span-return".to_string()),
+        proof_status: "micro_flow_found".to_string(),
+        proof_strength: "flow_proof".to_string(),
+        packet_status: "ready".to_string(),
+        schema_version: 1,
+        row_schema_version: 1,
+        extraction_version: "mvp4.3-typescript-local-micro-flow-packets-v1".to_string(),
+        exactness: "derived_with_provenance".to_string(),
+        provenance_id: Some("prov-flow".to_string()),
+        source_role: "production".to_string(),
+        language: "typescript".to_string(),
+        payload_version: 1,
+        source_micro_node_extraction_versions_json:
+            "[\"mvp4.1-typescript-micro-nodes-v1\"]".to_string(),
+        source_micro_edge_extraction_versions_json:
+            "[\"mvp4.2-typescript-local-flows-to-v1\"]".to_string(),
+        cap_state_json: serde_json::to_string(&json!({
+            "omitted_count": 0,
+            "truncation_reason": null,
+            "unknown_or_gap_count": 0,
+            "risk_count": 0,
+            "audit_ordered_steps_available": true
+        }))
+        .expect("cap state JSON"),
+        omitted_count: 0,
+        compact_body_bytes: 512,
+        audit_body_bytes: Some(1024),
+        claimability: "claimable".to_string(),
+        lifecycle_binding: "current".to_string(),
+    }
+}
+
 fn context_agent_test_path(id: &str, line: u32, role: &str) -> PathEvidence {
     let span = SourceSpan::with_columns("src/lib.rs", line, 5, line, 24);
     let (source, target, reason, classification_source) = match role {
@@ -18779,6 +19371,61 @@ fn agent_json_schema_files_parse_and_require_common_fields() {
             );
         }
     }
+}
+
+#[test]
+fn validate_edit_agent_json_schema_is_published_and_matches_emission() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_context_fixture(&repo);
+    super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("index");
+    let validate = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "validate-edit".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--changed".to_string(),
+            "src/service.ts".to_string(),
+            "--agent-json".to_string(),
+        ])
+    })
+    .expect("validate-edit");
+
+    // The emission advertises schema_name=validate_edit_agent_json (FYI66b):
+    // the schema must be published and every required field must be present.
+    assert_eq!(
+        validate["schema_name"].as_str(),
+        Some("validate_edit_agent_json")
+    );
+    assert_schema_required_fields_present(&validate, "validate_edit_agent_json");
+
+    // The published schema file is well-formed and self-describing.
+    let schema_path = schema_path_for_test("validate_edit_agent_json");
+    let schema: Value = serde_json::from_str(
+        &fs::read_to_string(&schema_path)
+            .unwrap_or_else(|error| panic!("read schema {}: {error}", schema_path.display())),
+    )
+    .unwrap_or_else(|error| panic!("parse schema {}: {error}", schema_path.display()));
+    assert_eq!(schema["title"].as_str(), Some("validate_edit_agent_json"));
+    assert_eq!(
+        schema["properties"]["schema_name"]["const"].as_str(),
+        Some("validate_edit_agent_json")
+    );
+    assert_eq!(
+        schema["properties"]["packet_kind"]["const"].as_str(),
+        Some("validate_edit_packet")
+    );
+    assert_eq!(schema["additionalProperties"].as_bool(), Some(true));
 }
 
 fn index_output_fixture_repo() -> PathBuf {

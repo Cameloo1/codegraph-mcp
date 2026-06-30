@@ -1,0 +1,219 @@
+{
+  "fixture_id": "mvp3_9_hot_path_unchanged_noop",
+  "fixture_family": "hot_path_reindex",
+  "fixture_title": "Unchanged source file hot-path update is no-op",
+  "description": "A source file is reported as changed but its contents are unchanged. The gate expects no file read/hash/parse work when metrics are available, no graph delta, no stale facts, and no full-repo fallback.",
+  "language": "typescript",
+  "domain": "validation",
+  "proof_boundary": "An unchanged no-op update may preserve existing claimable graph facts, but it does not create new graph proof.",
+  "required_support_status": "supported",
+  "unsupported_or_not_applicable_reason": "",
+  "fixture_version": 1,
+  "schema_version": 1,
+  "tags": [
+    "mvp3_8",
+    "mvp3_9_gate",
+    "hot_path",
+    "hot_path_reindex",
+    "noop",
+    "unchanged_noop",
+    "graph_delta"
+  ],
+  "expected_mvp_phase": "mvp3_9_gates",
+  "initial_files": [
+    {
+      "path": "src/main.ts",
+      "contents": "export function unchanged(): string {\n  return 'unchanged';\n}\n",
+      "source_role": "production"
+    }
+  ],
+  "initial_graph_expectations": {
+    "entities_present": [
+      "src/main.unchanged"
+    ],
+    "source_spans_required": true
+  },
+  "initial_text_evidence_expectations": {
+    "text_evidence_expected": false
+  },
+  "initial_sidecar_expectations": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "initial_lifecycle_expectations": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "baseline_queries": [
+    {
+      "surface": "query_symbols",
+      "query": "unchanged",
+      "expected_symbol": "unchanged"
+    }
+  ],
+  "baseline_context_pack_expectations": {
+    "status": "ok",
+    "proof_path_required": false
+  },
+  "mutation_steps": [
+    {
+      "type": "no_op",
+      "reason": "Changed-file notification with unchanged bytes."
+    }
+  ],
+  "changed_files": [
+    "src/main.ts"
+  ],
+  "added_files": [],
+  "deleted_files": [],
+  "renamed_files": [],
+  "expected_changed_file_normalization": {
+    "normalized_changed_files": [
+      "src/main.ts"
+    ],
+    "rejected_paths": []
+  },
+  "expected_graph_delta": {
+    "entities_added": 0,
+    "entities_removed": 0,
+    "entities_changed": 0,
+    "edges_added": 0,
+    "edges_removed": 0,
+    "edges_changed": 0,
+    "source_spans_added": 0,
+    "source_spans_removed": 0,
+    "source_spans_changed": 0,
+    "files_walked": 0,
+    "files_read": 0,
+    "files_hashed": 0,
+    "files_parsed": 0,
+    "full_repo_fallback_count": 0,
+    "disk_fallback_count": 0
+  },
+  "expected_blocking_errors": [],
+  "expected_warnings": [],
+  "expected_unknowns": [],
+  "expected_diagnostics": [],
+  "expected_hard_interrupt": false,
+  "expected_severity": "ok",
+  "expected_must_fix_before_continuing": false,
+  "expected_recommended_fix": null,
+  "expected_suggested_next_steps": [
+    "No graph repair is required for unchanged files."
+  ],
+  "expected_source_spans": [],
+  "expected_final_db_lifecycle_status": {
+    "claimable": true,
+    "status": "fresh"
+  },
+  "expected_proof_ladder_changes": {
+    "graph_relation_proof": {
+      "invalidated": 0,
+      "refreshed": 0
+    }
+  },
+  "expected_dirty_evidence_changes": {
+    "invalidated_count": 0,
+    "refreshed_count": 0,
+    "stale_count": 0,
+    "levels": []
+  },
+  "expected_sidecar_statuses": {
+    "candidate_layer_status": "not_applicable",
+    "vector_layer_status": "not_applicable"
+  },
+  "forbidden_claimable_outputs": [
+    "new_noop_claim_without_change"
+  ],
+  "forbidden_graph_proof_outputs": [
+    "noop_created_new_graph_proof"
+  ],
+  "forbidden_hard_interrupts": [
+    "noop_hard_interrupt"
+  ],
+  "forbidden_source_role_leakage": [],
+  "expected_cli_validate_edit_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_delta",
+      "dirty_evidence_summary"
+    ],
+    "forbidden_fields": [
+      "hard_interrupt"
+    ],
+    "notes": []
+  },
+  "expected_watch_once_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_delta"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_mcp_validate_edit_behavior": {
+    "status": "not_applicable",
+    "supported": false,
+    "not_applicable": true,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": [
+      "MCP release execution is not part of this fixture runner path."
+    ]
+  },
+  "expected_context_pack_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_status_doctor_behavior": {
+    "status": "ok",
+    "supported": true,
+    "not_applicable": false,
+    "required_fields": [
+      "graph_db_state"
+    ],
+    "forbidden_fields": [],
+    "notes": []
+  },
+  "expected_compact_output": {
+    "summary_first": true,
+    "full_graph_dump": false
+  },
+  "expected_explain_output": {
+    "noop_detail": true
+  },
+  "expected_audit_output": {
+    "changed_file_metrics": true
+  },
+  "fix_mutation_if_any": [],
+  "fix_steps": [],
+  "post_fix_changed_files": [],
+  "post_fix_expected_status": "ok",
+  "post_fix_expected_severity": "ok",
+  "post_fix_expected_hard_interrupt": false,
+  "post_fix_expected_warnings": [],
+  "post_fix_expected_unknowns": [],
+  "post_fix_expected_diagnostics": [],
+  "post_fix_expected_graph_delta": {
+    "entities_added": 0,
+    "full_repo_fallback_count": 0
+  },
+  "post_fix_forbidden_stale_outputs": [],
+  "recovery_commands_expected": [],
+  "recovery_command_verification": {
+    "recovery_command_alone_not_proof": true,
+    "lifecycle_preflight_required": true,
+    "graph_source_verification_required_for_graph_proof": true,
+    "public_claim": false,
+    "real_agent_patch_quality_claim": false
+  },
+  "recovery_is_hint_not_proof": true
+}

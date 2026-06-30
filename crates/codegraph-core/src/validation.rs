@@ -4242,6 +4242,10 @@ fn validation_packet_compact_graph_delta_json(graph_delta: &Value) -> Value {
         "micro_edge_integrity",
         "micro_edge_layer_status",
         "micro_edge_proof_changes",
+        "micro_flow_packet_delta",
+        "micro_flow_packet_integrity",
+        "micro_flow_packet_layer_status",
+        "micro_flow_packet_proof_changes",
         "full_graph_dump_default",
         "public_claim",
     ] {
@@ -5953,6 +5957,7 @@ mod tests {
         for kind in [
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let (finding, rule) = candidate_only_finding(kind);
@@ -6808,6 +6813,7 @@ mod tests {
             ValidationEvidenceKind::TextEvidence,
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let mut input = exact_graph_source_input();
@@ -8116,6 +8122,7 @@ mod tests {
             ValidationEvidenceKind::TextEvidence,
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let mut finding =
