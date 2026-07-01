@@ -280,9 +280,6 @@ The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
 coding-agent context, not public metric verdicts by themselves.
 
-For a local packet gallery and DB-footprint view of the validate-edit loop, see
-[linter-experience-lab.md](linter-experience-lab.md).
-
 For local diagnostic measurement of the same edit-time guardrail loop, use the
 Agent Guard Playground guide in
 [agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md#agent-guard-playground).

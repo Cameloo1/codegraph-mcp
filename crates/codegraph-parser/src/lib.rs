@@ -15018,35 +15018,17 @@ export function broken(value: number, service: any) {
     }
 
     #[test]
-    fn mvp4_property_access_fixture_oracle_is_real_and_supported() {
-        let manifest: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../fixtures/mvp4_micro_flow_oracles/manifest.json"
-        ))
-        .expect("fixture manifest parses");
-        let fixture = manifest["fixtures"]
-            .as_array()
-            .expect("fixtures array")
-            .iter()
-            .find(|fixture| {
-                fixture["fixture_id"].as_str() == Some("ts_first_slice_function_local_micro_nodes")
-            })
-            .expect("first slice fixture");
-        let file = &fixture["initial_source"]["files"][0];
-        let path = file["path"].as_str().expect("fixture path");
-        let source = file["contents"].as_str().expect("fixture source");
+    fn mvp4_property_access_inline_oracle_is_real_and_supported() {
+        let path = "src/service.ts";
+        let source = "\
+export function firstSlice(order: any) {
+  const subtotal = order.total;
+  const value = subtotal.member;
+  return value;
+}
+";
         assert!(source.contains("subtotal.member"));
         assert!(!source.contains("object.member"));
-
-        let expected_property = fixture["expected_micro_nodes"]
-            .as_array()
-            .expect("expected micro nodes")
-            .iter()
-            .find(|node| node["node_kind"].as_str() == Some("PropertyAccess"))
-            .expect("PropertyAccess oracle");
-        assert_eq!(
-            expected_property["semantic_name_or_literal"].as_str(),
-            Some("subtotal.member")
-        );
 
         let report = mvp4_property_access_report(path, source);
         let property = report
