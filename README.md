@@ -33,7 +33,7 @@ is the only path to graph proof.
 <tr><td>Estimate local DB size and cold/warm timing</td><td><a href="docs/local-footprint.md">Local Footprint</a></td></tr>
 <tr><td>Understand the architecture and proof model</td><td><a href="docs/architecture.md">Architecture Notes</a></td></tr>
 <tr><td>Understand benchmark and evidence boundaries</td><td><a href="docs/agent-benchmarking.md">Agent Benchmarking</a></td></tr>
-<tr><td>Run local edit-guard diagnostics</td><td><a href="docs/agent-reliability-benchmark-lab.md#agent-guard-playground">Agent Guard Playground</a></td></tr>
+<tr><td>Run local edit-guard diagnostics</td><td><a href="docs/agent-reliability-benchmark-lab.md">Agent Guard Playground</a></td></tr>
 <tr><td>Contribute safely</td><td><a href="CONTRIBUTING.md">Contributing</a></td></tr>
 </tbody>
 </table>
@@ -309,7 +309,7 @@ Branch: `benchmark-and-openevolve-lab`.
 
 Docs: [Agent Benchmarking](docs/agent-benchmarking.md),
 [Benchmark Guide](docs/benchmark-guide.md), [Benchmark Findings](docs/benchmark-findings.md),
-and [Agent Guard Playground](docs/agent-reliability-benchmark-lab.md#agent-guard-playground).
+and [Agent Guard Playground](docs/agent-reliability-benchmark-lab.md).
 
 Current lab tracks:
 

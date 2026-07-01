@@ -282,7 +282,7 @@ coding-agent context, not public metric verdicts by themselves.
 
 For local diagnostic measurement of the same edit-time guardrail loop, use the
 Agent Guard Playground guide in
-[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md#agent-guard-playground).
+[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md).
 It measures bad edits caught, clean edits passed, repairs cleared, proof/trust
 ledger discipline, stale-evidence safety, packet usability, and same-agent A/B
 scaffold invariants. The current verified local gate is
