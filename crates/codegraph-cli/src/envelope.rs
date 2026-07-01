@@ -274,6 +274,17 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
         }
     }
 
+    // Evidence-first budgeting (MVP_3.md section 14): reduce the large MVP4.3
+    // micro-flow handle bodies, each recoverable via its audit/explain
+    // expansion handle and already summarized in micro_flow_packet_summary,
+    // BEFORE the budget enforcers shed small, contract-required agent-state
+    // (staged_availability / read_path_metrics / sidecar_statuses). Otherwise a
+    // context-pack packet carrying two full handles crowds that state out of
+    // budget (large expandable evidence must go before small required state).
+    if serialized_json_len(value) > max_output_bytes {
+        compact_context_agent_micro_flow_handles(value);
+    }
+
     let enforcement_budget = max_output_bytes
         .saturating_sub(1024)
         .max(max_output_bytes.min(MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES));
@@ -1349,6 +1360,13 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
     let command = value.get("command").and_then(Value::as_str);
     let preserve_recovery_commands = matches!(command, Some("status" | "watch" | "context-pack"));
     let preserve_status_safety_state = matches!(command, Some("status" | "watch"));
+    // Small, contract-required context-pack agent-state that the compact
+    // context-pack contract expects to survive normal-budget truncation
+    // (parallels preserve_recovery_commands and the hard-budget
+    // preserve_staged_safety_state gate). Still sheddable under the extreme
+    // <=4096 budget tier so user-forced tiny budgets can fit.
+    let preserve_context_pack_required_state =
+        matches!(command, Some("context-pack")) && max_output_bytes > 4096;
     let mut late_omitted = 0u64;
     if serialized_json_len(value) > max_output_bytes {
         for key in [
@@ -1382,6 +1400,14 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
                 break;
             }
             if preserve_recovery_commands && key == "recovery_commands" {
+                continue;
+            }
+            if preserve_context_pack_required_state
+                && matches!(
+                    key,
+                    "staged_availability" | "read_path_metrics" | "sidecar_statuses"
+                )
+            {
                 continue;
             }
             if preserve_status_safety_state && key == "stale_candidate_layers" {

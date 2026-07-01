@@ -5222,6 +5222,66 @@ fn validate_edit_forward_fixture_matrix_python() {
         "{import_fixed}"
     );
 
+    // Called dangling from-import (regression guard for the Python-only
+    // `register_parser_observed_import_binding` scoping). Python registers
+    // from-import aliases as StaticHeuristic local bindings so that CALLS to a
+    // VALID alias don't false-positive as unresolved-local calls; the flip side
+    // is that a call to a DANGLING alias is likewise not a separate
+    // NEW_UNRESOLVED_LOCAL_CALL. The hallucination must therefore still be
+    // caught at the import site: the dangling target has to surface in the
+    // unresolved lane as text evidence. (JS/TS catch the same class at the call
+    // site instead; see `validate_edit_forward_fixture_matrix_js_ts`. The
+    // asymmetry is intentional per-language import resolution.)
+    write_cli_fixture_file(
+        &repo,
+        "src/api.py",
+        "from src.tools import missing_imported_helper\n\n\ndef run(value):\n    return missing_imported_helper(value)\n",
+    );
+    let called_dangling =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit python called dangling from-import");
+    assert_eq!(
+        called_dangling
+            .pointer("/validation_packet/summary_counts_by_rule_id/CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        0,
+        "a call to a registered Python from-import alias must not add a spurious \
+         NEW_UNRESOLVED_LOCAL_CALL; the dangling target is caught via the import lane; got {called_dangling}"
+    );
+    let called_unresolved = called_dangling
+        .pointer("/validation_packet/unresolved_references")
+        .or_else(|| called_dangling.get("unresolved_references"))
+        .unwrap_or_else(|| panic!("expected unresolved reference summary; got {called_dangling}"));
+    let called_escalated = called_unresolved["escalated"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected unresolved escalations; got {called_dangling}"));
+    assert!(
+        called_escalated.iter().any(|item| {
+            item["name"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("missing_imported_helper")
+                && item["proof_strength"].as_str() == Some("text_evidence")
+                && item["claimability"].as_str() == Some("claimable_as_source_text_reference_only")
+        }),
+        "a called dangling from-import target must still surface as text-only unresolved; got {called_dangling}"
+    );
+    assert_eq!(
+        called_unresolved["not_graph_proof"].as_bool(),
+        Some(true),
+        "{called_dangling}"
+    );
+    assert_eq!(
+        called_dangling["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{called_dangling}"
+    );
+
+    write_cli_fixture_file(&repo, "src/api.py", clean_source);
+    with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+        .expect("validate-edit python called dangling from-import fixed");
+
     remove_dir_all_with_retry(&repo, "cleanup repo");
     remove_dir_all_with_retry(&data_root, "cleanup data root");
 }

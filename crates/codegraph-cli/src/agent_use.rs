@@ -3823,6 +3823,14 @@ fn agent_use_validate_edit_finalize_budget(
     }
     let mut final_metadata_omitted = 0u64;
     if !detail_mode.preserves_full_details() && serialized_json_len(packet) > max_output_bytes {
+        // Only genuine infra metadata is sheddable here. `severity_trace`,
+        // `proof_ladder_changes_summary`, and `editor_policy` are compact-mode
+        // safety fields that the compact contract
+        // (`assert_compact_validate_edit_safety_fields`) requires to survive
+        // truncation, so they must NOT be shed, and shedding them is futile
+        // once the evidence floor already exceeds the budget (evidence-first
+        // budgeting, MVP_3.md section 14: never shed evidence/safety fields to keep
+        // metadata, or when it cannot reach budget).
         for key in [
             "db",
             "db_path",
@@ -3830,10 +3838,7 @@ fn agent_use_validate_edit_finalize_budget(
             "repo_identity_short_hash",
             "repo_identity_label",
             "journal_replay",
-            "severity_trace",
-            "proof_ladder_changes_summary",
             "compact_contract",
-            "editor_policy",
             "validation_state",
             "candidate_recall_action",
         ] {
