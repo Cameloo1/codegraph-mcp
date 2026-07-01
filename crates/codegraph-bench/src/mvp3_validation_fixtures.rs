@@ -30,9 +30,71 @@ pub const MVP3_9_GRAPH_DELTA_GATE_ID: &str = "mvp3_9_graph_delta_gate";
 pub const MVP3_9_HALLUCINATION_INTERRUPT_GATE_ID: &str = "mvp3_9_hallucination_interrupt_gate";
 pub const MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_GATE_ID: &str =
     "mvp3_9_route_bridge_inert_contract_gate";
+pub const MVP3_10_MINIMAL_ROUTE_BRIDGE_GATE_ID: &str = "mvp3_10_minimal_route_bridge_gate";
 pub const MVP3_9_CROSS_PHASE_REGRESSION_GATE_ID: &str = "mvp3_9_cross_phase_regression_gate";
 pub const MVP3_9_RELEASE_FINAL_GATE_ORCHESTRATOR_ID: &str =
     "mvp3_9_release_final_gate_orchestrator";
+
+pub const PRE_MVP4_4_LANGUAGE_FIXTURE_GROUPS: &[&str] = &[
+    "language_source_role",
+    "language_parser_span",
+    "language_declarations_imports_symbols",
+    "language_unresolved_references",
+    "language_reads_writes_flows",
+    "language_dynamic_macro_runtime",
+    "language_tests_asserts_mocks",
+    "language_route_bridge_inert",
+    "language_packet_interaction",
+    "language_dirty_evidence",
+    "language_cli_mcp_parity",
+    "language_compact_budget",
+    "language_dogfood",
+    "language_polyglot",
+];
+
+pub const PRE_MVP4_4_LANGUAGE_SURFACES: &[&str] = &[
+    "index",
+    "query",
+    "context_pack",
+    "validate_edit",
+    "watch_once",
+    "mcp_validate_edit",
+    "local_flow",
+    "dirty_evidence",
+    "route_bridge",
+    "dogfood",
+];
+
+pub const PRE_MVP4_4_LANGUAGE_PROOF_TIERS: &[&str] = &[
+    "graph_relation_proof",
+    "flow_proof",
+    "source_navigation_evidence",
+    "text_evidence",
+    "candidate_evidence",
+    "unknown",
+    "unsupported",
+    "not_applicable",
+];
+
+pub const PRE_MVP4_4_LANGUAGE_SUPPORT_STATES: &[&str] = &[
+    "exact_supported",
+    "exact_supported_activation_gated",
+    "derived_with_provenance_supported",
+    "partial_supported",
+    "heuristic_only",
+    "unsupported",
+    "unknown",
+    "not_applicable",
+    "not_implemented",
+    "frontend_partial",
+    "parser_recovery",
+    "compiler_lsp_required",
+    "runtime_required",
+    "macro_expansion_required",
+    "preprocessor_required",
+    "dynamic_runtime_required",
+    "external_dependency_required",
+];
 
 pub const MVP3_9_RELEASE_FINAL_SUBGATE_IDS: &[&str] = &[
     MVP3_9_HOT_PATH_REINDEX_GATE_ID,
@@ -99,6 +161,9 @@ pub const MVP3_9_GRAPH_DELTA_FIXTURE_IDS: &[&str] = &[
 ];
 
 pub const MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS: &[&str] = &[
+    "mvp3_9_5_forward_unresolved_python_warning",
+    "mvp3_9_5_forward_unresolved_js_warning",
+    "mvp3_9_5_forward_unresolved_rust_warning",
     "mvp3_8_new_dangling_call",
     "mvp3_8_fixed_dangling_call",
     "mvp3_8_broken_import",
@@ -136,6 +201,9 @@ pub const MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS: &[&str] = &[
     "mvp3_8_routing_handle_stale",
 ];
 
+pub const MVP3_10_MINIMAL_ROUTE_BRIDGE_FIXTURE_IDS: &[&str] =
+    MVP3_9_ROUTE_BRIDGE_INERT_CONTRACT_FIXTURE_IDS;
+
 pub const MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS: &[&str] = &[
     "ok_noop_fixture",
     "warning_text_evidence_only_sample",
@@ -163,6 +231,9 @@ pub const MVP3_9_CROSS_PHASE_REGRESSION_FIXTURE_IDS: &[&str] = &[
     "mvp3_9_graph_delta_duplicate_content_paths",
     "mvp3_9_graph_delta_changed_exact_edge",
     "mvp3_9_hallucination_mixed_block_warning_diagnostic",
+    "mvp3_9_5_forward_unresolved_python_warning",
+    "mvp3_9_5_forward_unresolved_js_warning",
+    "mvp3_9_5_forward_unresolved_rust_warning",
     "mvp3_8_candidate_query_index_corrupt",
     "mvp3_8_candidate_spool_inaccessible",
     "mvp3_8_candidate_spool_stale",
@@ -393,7 +464,79 @@ const REQUIRED_MANIFEST_FIELDS: &[&str] = &[
     "recovery_is_hint_not_proof",
 ];
 
-const OPTIONAL_MANIFEST_FIELDS: &[&str] = &["edit_mutation", "notes"];
+const OPTIONAL_MANIFEST_FIELDS: &[&str] = &[
+    "edit_mutation",
+    "notes",
+    "frontend",
+    "file_extensions",
+    "source_role",
+    "source_role_expected",
+    "surface",
+    "proof_tier",
+    "fixture_group",
+    "fixture_groups",
+    "expected_exact_relations",
+    "expected_blocking",
+    "forbidden_claims",
+    "expected_provenance",
+    "expected_packet_status",
+    "expected_cli_mcp_parity",
+    "expected_compact_fields",
+    "expected_audit_fields",
+    "dogfood_scenario_id",
+    "language_support_status",
+    "dynamic_boundary_cases",
+    "dynamic_macro_runtime_contract",
+    "expected_dynamic_unresolved_classification",
+    "mvp4_packet_dynamic_gap_expectations",
+    "test_assert_mock_cases",
+    "test_assert_mock_contract",
+    "expected_test_impact_behavior",
+    "mvp4_packet_test_source_expectations",
+    "route_framework_cases",
+    "bridge_boundary_cases",
+    "route_bridge_contract",
+    "mvp4_packet_route_bridge_expectations",
+];
+
+const OPTIONAL_LANGUAGE_STRING_FIELDS: &[&str] = &[
+    "frontend",
+    "source_role",
+    "source_role_expected",
+    "fixture_group",
+    "expected_packet_status",
+    "dogfood_scenario_id",
+    "language_support_status",
+];
+
+const OPTIONAL_LANGUAGE_ARRAY_FIELDS: &[&str] = &[
+    "file_extensions",
+    "surface",
+    "proof_tier",
+    "fixture_groups",
+    "expected_exact_relations",
+    "expected_blocking",
+    "forbidden_claims",
+    "expected_compact_fields",
+    "expected_audit_fields",
+    "dynamic_boundary_cases",
+    "test_assert_mock_cases",
+    "route_framework_cases",
+    "bridge_boundary_cases",
+];
+
+const OPTIONAL_LANGUAGE_OBJECT_FIELDS: &[&str] = &[
+    "expected_provenance",
+    "expected_cli_mcp_parity",
+    "dynamic_macro_runtime_contract",
+    "expected_dynamic_unresolved_classification",
+    "mvp4_packet_dynamic_gap_expectations",
+    "test_assert_mock_contract",
+    "expected_test_impact_behavior",
+    "mvp4_packet_test_source_expectations",
+    "route_bridge_contract",
+    "mvp4_packet_route_bridge_expectations",
+];
 
 const ARRAY_FIELDS: &[&str] = &[
     "tags",
@@ -538,6 +681,42 @@ pub struct Mvp3ValidationFixtureManifest {
     pub edit_mutation: Option<Value>,
     #[serde(default)]
     pub notes: Vec<String>,
+    #[serde(default)]
+    pub frontend: String,
+    #[serde(default)]
+    pub file_extensions: Vec<String>,
+    #[serde(default)]
+    pub source_role: String,
+    #[serde(default)]
+    pub source_role_expected: String,
+    #[serde(default)]
+    pub surface: Vec<String>,
+    #[serde(default)]
+    pub proof_tier: Vec<String>,
+    #[serde(default)]
+    pub fixture_group: String,
+    #[serde(default)]
+    pub fixture_groups: Vec<String>,
+    #[serde(default)]
+    pub expected_exact_relations: Vec<String>,
+    #[serde(default)]
+    pub expected_blocking: Vec<Mvp3FindingExpectation>,
+    #[serde(default)]
+    pub forbidden_claims: Vec<String>,
+    #[serde(default)]
+    pub expected_provenance: Value,
+    #[serde(default)]
+    pub expected_packet_status: String,
+    #[serde(default)]
+    pub expected_cli_mcp_parity: Value,
+    #[serde(default)]
+    pub expected_compact_fields: Vec<String>,
+    #[serde(default)]
+    pub expected_audit_fields: Vec<String>,
+    #[serde(default)]
+    pub dogfood_scenario_id: Option<String>,
+    #[serde(default)]
+    pub language_support_status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -634,6 +813,7 @@ pub struct Mvp3ValidationFixtureRunnerOptions {
     pub fixture_ids: Vec<String>,
     pub fixture_families: Vec<String>,
     pub fixture_tags: Vec<String>,
+    pub language_filters: Mvp3LanguageFixtureFilters,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -650,7 +830,35 @@ pub struct Mvp3GateRunnerOptions {
     pub fixture_ids: Vec<String>,
     pub fixture_families: Vec<String>,
     pub fixture_tags: Vec<String>,
+    pub language_filters: Mvp3LanguageFixtureFilters,
     pub runner_command: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp3LanguageFixtureFilters {
+    pub languages: Vec<String>,
+    pub surfaces: Vec<String>,
+    pub proof_tiers: Vec<String>,
+    pub support_statuses: Vec<String>,
+    pub fixture_groups: Vec<String>,
+    pub release_smoke: bool,
+    pub mcp_smoke: bool,
+    pub dogfood: bool,
+    pub strict: bool,
+}
+
+impl Mvp3LanguageFixtureFilters {
+    fn is_empty(&self) -> bool {
+        self.languages.is_empty()
+            && self.surfaces.is_empty()
+            && self.proof_tiers.is_empty()
+            && self.support_statuses.is_empty()
+            && self.fixture_groups.is_empty()
+            && !self.release_smoke
+            && !self.mcp_smoke
+            && !self.dogfood
+            && !self.strict
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -859,6 +1067,17 @@ pub struct Mvp3FixtureSurfaceRun {
 pub struct Mvp3FixtureResult {
     pub fixture_id: String,
     pub fixture_family: String,
+    pub language: String,
+    pub frontend: String,
+    pub surfaces: Vec<String>,
+    pub proof_tiers: Vec<String>,
+    pub support_status: String,
+    pub language_support_status: String,
+    pub fixture_groups: Vec<String>,
+    pub severity: String,
+    pub exactness: String,
+    pub unsupported_boundary: String,
+    pub dogfood_scenario_id: Option<String>,
     pub status: String,
     pub manifest_path: String,
     pub staged_repo_path: String,
@@ -883,9 +1102,29 @@ pub struct Mvp3ValidationFixtureRunReport {
     pub fixtures_passed: usize,
     pub fixtures_failed: usize,
     pub results: Vec<Mvp3FixtureResult>,
+    pub aggregation: Mvp3FixtureAggregationReport,
     pub normal_dot_codegraph_mutated: bool,
     pub claim_boundaries_preserved: bool,
     pub public_claim: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp3FixtureAggregationBucket {
+    pub fixtures_total: usize,
+    pub fixtures_passed: usize,
+    pub fixtures_failed: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mvp3FixtureAggregationReport {
+    pub by_language: BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    pub by_surface: BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    pub by_severity: BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    pub by_proof_tier: BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    pub by_exactness: BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    pub by_unsupported_boundary: BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    pub by_support_status: BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    pub by_dogfood_result: BTreeMap<String, Mvp3FixtureAggregationBucket>,
 }
 
 pub fn default_mvp3_validation_fixture_runner_options() -> Mvp3ValidationFixtureRunnerOptions {
@@ -907,6 +1146,7 @@ pub fn default_mvp3_validation_fixture_runner_options() -> Mvp3ValidationFixture
         fixture_ids: Vec::new(),
         fixture_families: Vec::new(),
         fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
     }
 }
 
@@ -942,6 +1182,7 @@ pub fn default_mvp3_gate_runner_options() -> Mvp3GateRunnerOptions {
         ],
         fixture_families: Vec::new(),
         fixture_tags: vec!["sample".to_string()],
+        language_filters: Mvp3LanguageFixtureFilters::default(),
         runner_command: "cargo test -p codegraph-bench mvp3_9_sample_gate_passes --lib".to_string(),
     }
 }
@@ -978,6 +1219,7 @@ pub fn default_mvp3_9_hot_path_reindex_gate_options() -> Mvp3GateRunnerOptions {
             .collect(),
         fixture_families: Vec::new(),
         fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
         runner_command: "cargo test -p codegraph-bench mvp3_9_hot_path_reindex_gate --lib"
             .to_string(),
     }
@@ -1015,6 +1257,7 @@ pub fn default_mvp3_9_graph_delta_gate_options() -> Mvp3GateRunnerOptions {
             .collect(),
         fixture_families: Vec::new(),
         fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
         runner_command: "cargo test -p codegraph-bench mvp3_9_graph_delta_gate --lib".to_string(),
     }
 }
@@ -1051,6 +1294,7 @@ pub fn default_mvp3_9_hallucination_interrupt_gate_options() -> Mvp3GateRunnerOp
             .collect(),
         fixture_families: Vec::new(),
         fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
         runner_command: "cargo test -p codegraph-bench mvp3_9_hallucination_interrupt_gate --lib"
             .to_string(),
     }
@@ -1091,9 +1335,48 @@ pub fn default_mvp3_9_route_bridge_inert_contract_gate_options() -> Mvp3GateRunn
             .collect(),
         fixture_families: Vec::new(),
         fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
         runner_command:
             "cargo test -p codegraph-bench mvp3_9_route_bridge_inert_contract_gate --lib"
                 .to_string(),
+    }
+}
+
+pub fn default_mvp3_10_minimal_route_bridge_gate_options() -> Mvp3GateRunnerOptions {
+    let workspace = workspace_root();
+    let run_id = format!("mvp3-10-minimal-route-bridge-gate-{}", unique_run_suffix());
+    Mvp3GateRunnerOptions {
+        gate_id: MVP3_10_MINIMAL_ROUTE_BRIDGE_GATE_ID.to_string(),
+        gate_name: "MVP3.10 Minimal Route/Bridge Gate".to_string(),
+        gate_kind: "minimal_route_bridge".to_string(),
+        gate_version: "1".to_string(),
+        fixture_root: workspace.join("fixtures").join("mvp3_validation"),
+        run_root: workspace
+            .join("target")
+            .join("codegraph-bench-runs")
+            .join(run_id),
+        release_binary: Some(
+            workspace
+                .join("target")
+                .join("release")
+                .join(executable_name("codegraph-mcp")),
+        ),
+        fixture_manifest_schema: workspace
+            .join("reports")
+            .join("audit")
+            .join("artifacts")
+            .join("mvp3_validation_fixtures")
+            .join("validation_fixture_manifest.schema.json"),
+        mode: Mvp3ValidationFixtureRunnerMode::FastSynthetic,
+        fixture_ids: MVP3_10_MINIMAL_ROUTE_BRIDGE_FIXTURE_IDS
+            .iter()
+            .map(|fixture_id| (*fixture_id).to_string())
+            .collect(),
+        fixture_families: Vec::new(),
+        fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
+        runner_command: "cargo test -p codegraph-bench mvp3_10_minimal_route_bridge_gate --lib"
+            .to_string(),
     }
 }
 
@@ -1129,6 +1412,7 @@ pub fn default_mvp3_9_cross_phase_regression_gate_options() -> Mvp3GateRunnerOpt
             .collect(),
         fixture_families: Vec::new(),
         fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
         runner_command: "cargo test -p codegraph-bench mvp3_9_cross_phase_regression_gate --lib"
             .to_string(),
     }
@@ -1169,6 +1453,7 @@ pub fn default_mvp3_9_release_final_gate_orchestrator_options() -> Mvp3GateRunne
             .collect(),
         fixture_families: Vec::new(),
         fixture_tags: Vec::new(),
+        language_filters: Mvp3LanguageFixtureFilters::default(),
         runner_command:
             "cargo test -p codegraph-bench mvp3_9_release_final_gate_orchestrator --lib".to_string(),
     }
@@ -1205,6 +1490,35 @@ pub fn mvp3_validation_fixture_manifest_schema_value() -> Value {
     for field in OBJECT_FIELDS {
         properties.insert((*field).to_string(), json!({"type": "object"}));
     }
+    for field in OPTIONAL_LANGUAGE_STRING_FIELDS {
+        properties.insert((*field).to_string(), json!({"type": "string"}));
+    }
+    for field in OPTIONAL_LANGUAGE_ARRAY_FIELDS {
+        properties.insert((*field).to_string(), json!({"type": "array"}));
+    }
+    for field in OPTIONAL_LANGUAGE_OBJECT_FIELDS {
+        properties.insert((*field).to_string(), json!({"type": "object"}));
+    }
+    properties.insert(
+        "surface".to_string(),
+        json!({"type": "array", "items": {"type": "string", "enum": PRE_MVP4_4_LANGUAGE_SURFACES}}),
+    );
+    properties.insert(
+        "proof_tier".to_string(),
+        json!({"type": "array", "items": {"type": "string", "enum": PRE_MVP4_4_LANGUAGE_PROOF_TIERS}}),
+    );
+    properties.insert(
+        "fixture_group".to_string(),
+        json!({"type": "string", "enum": PRE_MVP4_4_LANGUAGE_FIXTURE_GROUPS}),
+    );
+    properties.insert(
+        "fixture_groups".to_string(),
+        json!({"type": "array", "items": {"type": "string", "enum": PRE_MVP4_4_LANGUAGE_FIXTURE_GROUPS}}),
+    );
+    properties.insert(
+        "language_support_status".to_string(),
+        json!({"type": "string", "enum": PRE_MVP4_4_LANGUAGE_SUPPORT_STATES}),
+    );
     properties.insert("edit_mutation".to_string(), json!({}));
     properties.insert(
         "notes".to_string(),
@@ -1298,6 +1612,31 @@ pub fn validate_mvp3_validation_fixture_manifest_value(value: &Value) -> BenchRe
             )));
         }
     }
+    for field in OPTIONAL_LANGUAGE_STRING_FIELDS {
+        if object.contains_key(*field) && !object.get(*field).map(Value::is_string).unwrap_or(false)
+        {
+            return Err(BenchmarkError::Validation(format!(
+                "field {field} must be a string"
+            )));
+        }
+    }
+    for field in OPTIONAL_LANGUAGE_ARRAY_FIELDS {
+        if object.contains_key(*field) && !object.get(*field).map(Value::is_array).unwrap_or(false)
+        {
+            return Err(BenchmarkError::Validation(format!(
+                "field {field} must be an array"
+            )));
+        }
+    }
+    for field in OPTIONAL_LANGUAGE_OBJECT_FIELDS {
+        if object.contains_key(*field) && !object.get(*field).map(Value::is_object).unwrap_or(false)
+        {
+            return Err(BenchmarkError::Validation(format!(
+                "field {field} must be an object"
+            )));
+        }
+    }
+    validate_pre_mvp4_4_language_axes(object)?;
     if object
         .get("schema_version")
         .and_then(Value::as_u64)
@@ -1621,10 +1960,12 @@ pub fn run_mvp3_gate(options: Mvp3GateRunnerOptions) -> BenchResult<Mvp3GateResu
         fixture_ids: options.fixture_ids.clone(),
         fixture_families: options.fixture_families.clone(),
         fixture_tags: options.fixture_tags.clone(),
+        language_filters: options.language_filters.clone(),
     };
     if fixture_options.fixture_tags.is_empty()
         && fixture_options.fixture_ids.is_empty()
         && fixture_options.fixture_families.is_empty()
+        && fixture_options.language_filters.is_empty()
     {
         fixture_options.fixture_tags = vec!["sample".to_string()];
     }
@@ -1698,6 +2039,7 @@ pub fn run_mvp3_gate(options: Mvp3GateRunnerOptions) -> BenchResult<Mvp3GateResu
             "fixture_ids": options.fixture_ids,
             "fixture_families": options.fixture_families,
             "fixture_tags": options.fixture_tags,
+            "language_filters": options.language_filters,
             "runner_mode": runner_mode_name(options.mode),
         }),
         fixture_tags,
@@ -1781,6 +2123,10 @@ pub fn run_mvp3_9_hallucination_interrupt_gate() -> BenchResult<Mvp3GateResult> 
 
 pub fn run_mvp3_9_route_bridge_inert_contract_gate() -> BenchResult<Mvp3GateResult> {
     run_mvp3_gate(default_mvp3_9_route_bridge_inert_contract_gate_options())
+}
+
+pub fn run_mvp3_10_minimal_route_bridge_gate() -> BenchResult<Mvp3GateResult> {
+    run_mvp3_gate(default_mvp3_10_minimal_route_bridge_gate_options())
 }
 
 pub fn run_mvp3_9_cross_phase_regression_gate() -> BenchResult<Mvp3GateResult> {
@@ -1888,6 +2234,7 @@ pub fn run_mvp3_validation_fixtures(
         .filter(|result| result.status == "passed")
         .count();
     let fixtures_failed = fixtures_total.saturating_sub(fixtures_passed);
+    let aggregation = aggregate_fixture_results(&results);
     Ok(Mvp3ValidationFixtureRunReport {
         schema_version: MVP3_VALIDATION_FIXTURE_SCHEMA_VERSION,
         gate: MVP3_VALIDATION_FIXTURE_GATE.to_string(),
@@ -1904,6 +2251,7 @@ pub fn run_mvp3_validation_fixtures(
         fixtures_passed,
         fixtures_failed,
         results,
+        aggregation,
         normal_dot_codegraph_mutated,
         claim_boundaries_preserved: true,
         public_claim: false,
@@ -1977,7 +2325,7 @@ pub fn evaluate_mvp3_validation_fixture_assertions(
     require_count(
         observed,
         "/counts/blocking",
-        manifest.expected_blocking_errors.len(),
+        manifest.expected_blocking_errors.len() + manifest.expected_blocking.len(),
         "blocking count",
         &mut checked,
         &mut failures,
@@ -2104,6 +2452,72 @@ pub fn evaluate_mvp3_validation_fixture_assertions(
         &mut checked,
         &mut failures,
     );
+    if !manifest.expected_exact_relations.is_empty() {
+        let expected =
+            serde_json::to_value(&manifest.expected_exact_relations).unwrap_or_else(|_| json!([]));
+        require_value(
+            observed,
+            "/exact_relations",
+            &expected,
+            "exact relation expectations",
+            &mut checked,
+            &mut failures,
+        );
+    }
+    if !manifest.expected_provenance.is_null() {
+        require_value(
+            observed,
+            "/provenance",
+            &manifest.expected_provenance,
+            "provenance expectations",
+            &mut checked,
+            &mut failures,
+        );
+    }
+    if !manifest.expected_packet_status.trim().is_empty() {
+        require_string(
+            observed,
+            "/packet_status",
+            &manifest.expected_packet_status,
+            "packet status",
+            &mut checked,
+            &mut failures,
+        );
+    }
+    if !manifest.expected_cli_mcp_parity.is_null() {
+        require_value(
+            observed,
+            "/cli_mcp_parity",
+            &manifest.expected_cli_mcp_parity,
+            "CLI/MCP parity",
+            &mut checked,
+            &mut failures,
+        );
+    }
+    if !manifest.expected_compact_fields.is_empty() {
+        let expected =
+            serde_json::to_value(&manifest.expected_compact_fields).unwrap_or_else(|_| json!([]));
+        require_value(
+            observed,
+            "/compact_fields",
+            &expected,
+            "compact fields",
+            &mut checked,
+            &mut failures,
+        );
+    }
+    if !manifest.expected_audit_fields.is_empty() {
+        let expected =
+            serde_json::to_value(&manifest.expected_audit_fields).unwrap_or_else(|_| json!([]));
+        require_value(
+            observed,
+            "/audit_fields",
+            &expected,
+            "audit fields",
+            &mut checked,
+            &mut failures,
+        );
+    }
     require_string(
         observed,
         "/post_fix/status",
@@ -2202,6 +2616,7 @@ pub fn evaluate_mvp3_validation_fixture_assertions(
         .chain(manifest.forbidden_graph_proof_outputs.iter())
         .chain(manifest.forbidden_hard_interrupts.iter())
         .chain(manifest.forbidden_source_role_leakage.iter())
+        .chain(manifest.forbidden_claims.iter())
         .chain(manifest.post_fix_forbidden_stale_outputs.iter())
     {
         checked.push(format!("forbidden_output_absent:{forbidden}"));
@@ -2247,6 +2662,17 @@ fn run_one_fixture(
     let result = Mvp3FixtureResult {
         fixture_id: manifest.fixture_id.clone(),
         fixture_family: manifest.fixture_family.clone(),
+        language: manifest.language.clone(),
+        frontend: manifest_frontend(manifest),
+        surfaces: manifest_surface_values(manifest),
+        proof_tiers: manifest_proof_tier_values(manifest),
+        support_status: manifest.required_support_status.clone(),
+        language_support_status: manifest_language_support_status(manifest),
+        fixture_groups: manifest_fixture_groups(manifest),
+        severity: manifest.expected_severity.clone(),
+        exactness: manifest_exactness(manifest),
+        unsupported_boundary: manifest_unsupported_boundary(manifest),
+        dogfood_scenario_id: manifest.dogfood_scenario_id.clone(),
         status: if assertions.passed {
             "passed".to_string()
         } else {
@@ -2270,7 +2696,12 @@ fn fixture_selected(
     manifest: &Mvp3ValidationFixtureManifest,
 ) -> bool {
     let tags = mvp3_gate_effective_fixture_tags(manifest);
-    (options.fixture_ids.is_empty()
+    let language_filters = &options.language_filters;
+    let fixture_groups = manifest_fixture_groups(manifest);
+    let surfaces = manifest_surface_values(manifest);
+    let proof_tiers = manifest_proof_tier_values(manifest);
+    let support_status = manifest_language_support_status(manifest);
+    let selected = (options.fixture_ids.is_empty()
         || options
             .fixture_ids
             .iter()
@@ -2285,12 +2716,59 @@ fn fixture_selected(
                 .fixture_tags
                 .iter()
                 .any(|tag| tags.contains(tag.as_str())))
+        && (language_filters.languages.is_empty()
+            || language_filters
+                .languages
+                .iter()
+                .any(|language| language == &manifest.language))
+        && (language_filters.surfaces.is_empty()
+            || language_filters
+                .surfaces
+                .iter()
+                .any(|surface| surfaces.iter().any(|value| value == surface)))
+        && (language_filters.proof_tiers.is_empty()
+            || language_filters
+                .proof_tiers
+                .iter()
+                .any(|tier| proof_tiers.iter().any(|value| value == tier)))
+        && (language_filters.support_statuses.is_empty()
+            || language_filters.support_statuses.iter().any(|status| {
+                status == &support_status || status == &manifest.required_support_status
+            }))
+        && (language_filters.fixture_groups.is_empty()
+            || language_filters.fixture_groups.iter().any(|group| {
+                fixture_groups.iter().any(|value| value == group)
+                    || tags.contains(group.as_str())
+                    || group == &manifest.fixture_family
+            }))
+        && (!language_filters.release_smoke || tags.contains("release_required"))
+        && (!language_filters.mcp_smoke
+            || tags.contains("mcp")
+            || surfaces
+                .iter()
+                .any(|surface| surface == "mcp_validate_edit"))
+        && (!language_filters.dogfood
+            || manifest.dogfood_scenario_id.is_some()
+            || tags.contains("language_dogfood")
+            || fixture_groups
+                .iter()
+                .any(|group| group == "language_dogfood"));
+    if selected && language_filters.strict {
+        return validate_manifest_language_axis_contract(manifest).is_ok();
+    }
+    selected
 }
 
 pub fn mvp3_gate_effective_fixture_tags(
     manifest: &Mvp3ValidationFixtureManifest,
 ) -> BTreeSet<String> {
     let mut tags = manifest.tags.iter().cloned().collect::<BTreeSet<_>>();
+    tags.insert(format!("language:{}", manifest.language));
+    tags.insert(format!("frontend:{}", manifest_frontend(manifest)));
+    tags.extend(manifest_surface_values(manifest));
+    tags.extend(manifest_proof_tier_values(manifest));
+    tags.extend(manifest_fixture_groups(manifest));
+    tags.insert(manifest_language_support_status(manifest));
     tags.insert("cross_phase".to_string());
     tags.insert("cli".to_string());
     tags.insert("context_pack".to_string());
@@ -2389,6 +2867,223 @@ pub fn mvp3_gate_effective_fixture_tags(
         tags.insert("route_bridge".to_string());
     }
     tags
+}
+
+fn manifest_frontend(manifest: &Mvp3ValidationFixtureManifest) -> String {
+    if manifest.frontend.trim().is_empty() {
+        manifest.language.clone()
+    } else {
+        manifest.frontend.clone()
+    }
+}
+
+fn manifest_language_support_status(manifest: &Mvp3ValidationFixtureManifest) -> String {
+    if manifest.language_support_status.trim().is_empty() {
+        match manifest.required_support_status.as_str() {
+            "supported" => "partial_supported",
+            "degraded" => "partial_supported",
+            "unsupported" => "unsupported",
+            "not_applicable" => "not_applicable",
+            _ => "unknown",
+        }
+        .to_string()
+    } else {
+        manifest.language_support_status.clone()
+    }
+}
+
+fn manifest_surface_values(manifest: &Mvp3ValidationFixtureManifest) -> Vec<String> {
+    let mut surfaces = manifest.surface.iter().cloned().collect::<BTreeSet<_>>();
+    if surfaces.is_empty() {
+        surfaces.insert("index".to_string());
+        surfaces.insert("context_pack".to_string());
+        surfaces.insert("validate_edit".to_string());
+        surfaces.insert("watch_once".to_string());
+        surfaces.insert("mcp_validate_edit".to_string());
+        if manifest
+            .expected_dirty_evidence_changes
+            .as_object()
+            .map(|object| !object.is_empty())
+            .unwrap_or(false)
+        {
+            surfaces.insert("dirty_evidence".to_string());
+        }
+        if manifest.fixture_family.contains("route")
+            || manifest.fixture_family.contains("bridge")
+            || manifest.fixture_id.contains("route")
+            || manifest.fixture_id.contains("bridge")
+        {
+            surfaces.insert("route_bridge".to_string());
+        }
+        if !manifest.expected_packet_status.trim().is_empty() {
+            surfaces.insert("local_flow".to_string());
+        }
+        if manifest.dogfood_scenario_id.is_some() {
+            surfaces.insert("dogfood".to_string());
+        }
+    }
+    surfaces.into_iter().collect()
+}
+
+fn manifest_proof_tier_values(manifest: &Mvp3ValidationFixtureManifest) -> Vec<String> {
+    let mut tiers = manifest.proof_tier.iter().cloned().collect::<BTreeSet<_>>();
+    if tiers.is_empty() {
+        if manifest.required_support_status == "unsupported" {
+            tiers.insert("unsupported".to_string());
+        } else if manifest.required_support_status == "not_applicable" {
+            tiers.insert("not_applicable".to_string());
+        } else if manifest.proof_boundary.contains("text") {
+            tiers.insert("text_evidence".to_string());
+        } else if manifest.proof_boundary.contains("candidate")
+            || manifest.proof_boundary.contains("vector")
+        {
+            tiers.insert("candidate_evidence".to_string());
+        } else if !manifest.expected_source_spans.is_empty()
+            || !manifest.expected_blocking_errors.is_empty()
+            || !manifest.expected_blocking.is_empty()
+        {
+            tiers.insert("graph_relation_proof".to_string());
+        } else {
+            tiers.insert("unknown".to_string());
+        }
+    }
+    tiers.into_iter().collect()
+}
+
+fn manifest_fixture_groups(manifest: &Mvp3ValidationFixtureManifest) -> Vec<String> {
+    let mut groups = manifest
+        .fixture_groups
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !manifest.fixture_group.trim().is_empty() {
+        groups.insert(manifest.fixture_group.clone());
+    }
+    if groups.is_empty() {
+        if manifest.fixture_family.contains("source_role") {
+            groups.insert("language_source_role".to_string());
+        }
+        if manifest.fixture_family.contains("dirty") {
+            groups.insert("language_dirty_evidence".to_string());
+        }
+        if manifest.fixture_family.contains("route") || manifest.fixture_family.contains("bridge") {
+            groups.insert("language_route_bridge_inert".to_string());
+        }
+        if manifest.fixture_family.contains("dynamic") {
+            groups.insert("language_dynamic_macro_runtime".to_string());
+        }
+    }
+    groups.into_iter().collect()
+}
+
+fn manifest_exactness(manifest: &Mvp3ValidationFixtureManifest) -> String {
+    let status = manifest_language_support_status(manifest);
+    if status.starts_with("exact_supported") {
+        "exact".to_string()
+    } else if status == "derived_with_provenance_supported" {
+        "derived_with_provenance".to_string()
+    } else if status == "partial_supported" || status == "frontend_partial" {
+        "partial".to_string()
+    } else if status == "heuristic_only" {
+        "heuristic".to_string()
+    } else if status == "unsupported" || status == "not_implemented" {
+        "unsupported".to_string()
+    } else if status == "not_applicable" {
+        "not_applicable".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn manifest_unsupported_boundary(manifest: &Mvp3ValidationFixtureManifest) -> String {
+    let status = manifest_language_support_status(manifest);
+    if matches!(
+        status.as_str(),
+        "unsupported"
+            | "unknown"
+            | "not_applicable"
+            | "not_implemented"
+            | "compiler_lsp_required"
+            | "runtime_required"
+            | "macro_expansion_required"
+            | "preprocessor_required"
+            | "dynamic_runtime_required"
+            | "external_dependency_required"
+    ) || manifest.required_support_status == "unsupported"
+        || manifest.required_support_status == "not_applicable"
+    {
+        "non_claimable_boundary_asserted".to_string()
+    } else {
+        "none".to_string()
+    }
+}
+
+fn validate_manifest_language_axis_contract(
+    manifest: &Mvp3ValidationFixtureManifest,
+) -> BenchResult<()> {
+    for surface in manifest_surface_values(manifest) {
+        validate_string_in_set("surface", &surface, PRE_MVP4_4_LANGUAGE_SURFACES)?;
+    }
+    for tier in manifest_proof_tier_values(manifest) {
+        validate_string_in_set("proof_tier", &tier, PRE_MVP4_4_LANGUAGE_PROOF_TIERS)?;
+    }
+    for group in manifest_fixture_groups(manifest) {
+        validate_string_in_set("fixture_group", &group, PRE_MVP4_4_LANGUAGE_FIXTURE_GROUPS)?;
+    }
+    validate_string_in_set(
+        "language_support_status",
+        &manifest_language_support_status(manifest),
+        PRE_MVP4_4_LANGUAGE_SUPPORT_STATES,
+    )?;
+    Ok(())
+}
+
+fn aggregate_fixture_results(results: &[Mvp3FixtureResult]) -> Mvp3FixtureAggregationReport {
+    let mut report = Mvp3FixtureAggregationReport::default();
+    for result in results {
+        aggregate_bucket(&mut report.by_language, &result.language, result);
+        aggregate_bucket(&mut report.by_severity, &result.severity, result);
+        aggregate_bucket(&mut report.by_exactness, &result.exactness, result);
+        aggregate_bucket(
+            &mut report.by_unsupported_boundary,
+            &result.unsupported_boundary,
+            result,
+        );
+        aggregate_bucket(
+            &mut report.by_support_status,
+            &result.language_support_status,
+            result,
+        );
+        aggregate_bucket(
+            &mut report.by_dogfood_result,
+            result
+                .dogfood_scenario_id
+                .as_deref()
+                .unwrap_or("not_applicable"),
+            result,
+        );
+        for surface in &result.surfaces {
+            aggregate_bucket(&mut report.by_surface, surface, result);
+        }
+        for tier in &result.proof_tiers {
+            aggregate_bucket(&mut report.by_proof_tier, tier, result);
+        }
+    }
+    report
+}
+
+fn aggregate_bucket(
+    buckets: &mut BTreeMap<String, Mvp3FixtureAggregationBucket>,
+    key: &str,
+    result: &Mvp3FixtureResult,
+) {
+    let bucket = buckets.entry(key.to_string()).or_default();
+    bucket.fixtures_total += 1;
+    if result.status == "passed" {
+        bucket.fixtures_passed += 1;
+    } else {
+        bucket.fixtures_failed += 1;
+    }
 }
 
 fn collect_result_fixture_tags(
@@ -2622,6 +3317,59 @@ fn build_command_plan(
                 repo.clone(),
                 "--task".into(),
                 task.clone(),
+                "--agent-json".into(),
+            ],
+            &env,
+        ),
+        command_record(
+            logs_dir,
+            "baseline_query_symbols",
+            "cli",
+            vec![
+                binary.clone(),
+                "agent-use".into(),
+                "query".into(),
+                "symbols".into(),
+                manifest.fixture_id.clone(),
+                "--repo".into(),
+                repo.clone(),
+                "--limit".into(),
+                "5".into(),
+                "--agent-json".into(),
+            ],
+            &env,
+        ),
+        command_record(
+            logs_dir,
+            "baseline_query_files",
+            "cli",
+            vec![
+                binary.clone(),
+                "agent-use".into(),
+                "query".into(),
+                "files".into(),
+                manifest.fixture_id.clone(),
+                "--repo".into(),
+                repo.clone(),
+                "--limit".into(),
+                "5".into(),
+                "--agent-json".into(),
+            ],
+            &env,
+        ),
+        command_record(
+            logs_dir,
+            "query_local_flow",
+            "cli",
+            vec![
+                binary.clone(),
+                "agent-use".into(),
+                "query".into(),
+                "local-flow".into(),
+                "--repo".into(),
+                repo.clone(),
+                "--limit".into(),
+                "5".into(),
                 "--agent-json".into(),
             ],
             &env,
@@ -2881,7 +3629,7 @@ fn synthetic_observed_packet(manifest: &Mvp3ValidationFixtureManifest) -> BenchR
         "final_status": manifest.expected_cli_validate_edit_behavior.status,
         "severity": manifest.expected_severity,
         "counts": {
-            "blocking": manifest.expected_blocking_errors.len(),
+            "blocking": manifest.expected_blocking_errors.len() + manifest.expected_blocking.len(),
             "warning": manifest.expected_warnings.len(),
             "unknown": manifest.expected_unknowns.len(),
             "diagnostic": manifest.expected_diagnostics.len()
@@ -2899,6 +3647,12 @@ fn synthetic_observed_packet(manifest: &Mvp3ValidationFixtureManifest) -> BenchR
         "proof_ladder_changes": manifest.expected_proof_ladder_changes,
         "dirty_evidence_summary": manifest.expected_dirty_evidence_changes,
         "sidecar_statuses": manifest.expected_sidecar_statuses,
+        "exact_relations": manifest.expected_exact_relations,
+        "provenance": manifest.expected_provenance,
+        "packet_status": manifest.expected_packet_status,
+        "cli_mcp_parity": manifest.expected_cli_mcp_parity,
+        "compact_fields": manifest.expected_compact_fields,
+        "audit_fields": manifest.expected_audit_fields,
         "claimable_outputs": [],
         "graph_proof_outputs": [],
         "hard_interrupt_ids": []
@@ -2929,6 +3683,7 @@ fn expected_rule_ids(manifest: &Mvp3ValidationFixtureManifest) -> Vec<String> {
     manifest
         .expected_blocking_errors
         .iter()
+        .chain(manifest.expected_blocking.iter())
         .chain(manifest.expected_warnings.iter())
         .chain(manifest.expected_unknowns.iter())
         .chain(manifest.expected_diagnostics.iter())
@@ -3023,6 +3778,81 @@ fn validate_surface_expectation(value: &Value, field: &str) -> BenchResult<()> {
                 "{field}.{list_field} must be an array"
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_pre_mvp4_4_language_axes(object: &serde_json::Map<String, Value>) -> BenchResult<()> {
+    validate_optional_string_array_field(object, "file_extensions", None)?;
+    validate_optional_string_array_field(object, "surface", Some(PRE_MVP4_4_LANGUAGE_SURFACES))?;
+    validate_optional_string_array_field(
+        object,
+        "proof_tier",
+        Some(PRE_MVP4_4_LANGUAGE_PROOF_TIERS),
+    )?;
+    validate_optional_string_array_field(
+        object,
+        "fixture_groups",
+        Some(PRE_MVP4_4_LANGUAGE_FIXTURE_GROUPS),
+    )?;
+    validate_optional_string_array_field(object, "expected_exact_relations", None)?;
+    validate_optional_string_array_field(object, "forbidden_claims", None)?;
+    validate_optional_string_array_field(object, "expected_compact_fields", None)?;
+    validate_optional_string_array_field(object, "expected_audit_fields", None)?;
+
+    if let Some(group) = object.get("fixture_group").and_then(Value::as_str) {
+        validate_string_in_set("fixture_group", group, PRE_MVP4_4_LANGUAGE_FIXTURE_GROUPS)?;
+    }
+    if let Some(status) = object
+        .get("language_support_status")
+        .and_then(Value::as_str)
+    {
+        validate_string_in_set(
+            "language_support_status",
+            status,
+            PRE_MVP4_4_LANGUAGE_SUPPORT_STATES,
+        )?;
+    }
+    for extension in object
+        .get("file_extensions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !extension.starts_with('.') {
+            return Err(BenchmarkError::Validation(format!(
+                "file_extensions entries must start with '.', got {extension:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_string_array_field(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    allowed: Option<&[&str]>,
+) -> BenchResult<()> {
+    let Some(values) = object.get(field).and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for value in values {
+        let item = value.as_str().ok_or_else(|| {
+            BenchmarkError::Validation(format!("{field} entries must be strings"))
+        })?;
+        if let Some(allowed) = allowed {
+            validate_string_in_set(field, item, allowed)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_string_in_set(field: &str, value: &str, allowed: &[&str]) -> BenchResult<()> {
+    if !allowed.iter().any(|allowed| allowed == &value) {
+        return Err(BenchmarkError::Validation(format!(
+            "{field} has unsupported value: {value}"
+        )));
     }
     Ok(())
 }
@@ -3294,6 +4124,30 @@ fn evaluate_surface_runs(
 ) -> Vec<Mvp3FixtureSurfaceRun> {
     vec![
         surface_run(
+            "index",
+            &language_axis_surface_expectation(manifest, "index"),
+            records,
+            &["baseline_index"],
+            vec![
+                "frontend_status".into(),
+                "source_role_scope".into(),
+                "source_span_policy".into(),
+            ],
+            Vec::new(),
+        ),
+        surface_run(
+            "query",
+            &language_axis_surface_expectation(manifest, "query"),
+            records,
+            &["baseline_query_symbols", "baseline_query_files"],
+            vec![
+                "query_symbols".into(),
+                "query_text_files".into(),
+                "text_fallback_non_graph_proof".into(),
+            ],
+            Vec::new(),
+        ),
+        surface_run(
             "cli_validate_edit",
             &manifest.expected_cli_validate_edit_behavior,
             records,
@@ -3346,6 +4200,48 @@ fn evaluate_surface_runs(
             vec![
                 "release MCP process smoke remains not_applicable in this runner when fixture manifest marks MCP not_applicable; handler-level parity is represented by the structured command record".into(),
             ],
+        ),
+        surface_run(
+            "local_flow",
+            &language_axis_surface_expectation(manifest, "local_flow"),
+            records,
+            &["query_local_flow"],
+            vec![
+                "packet_status".into(),
+                "flow_proof_boundary".into(),
+                "unsupported_packet_non_blocking".into(),
+            ],
+            Vec::new(),
+        ),
+        surface_run(
+            "dirty_evidence",
+            &language_axis_surface_expectation(manifest, "dirty_evidence"),
+            records,
+            &["cli_validate_edit", "watch_once"],
+            vec![
+                "dirty_evidence_invalidation".into(),
+                "stale_evidence_non_claimable".into(),
+            ],
+            Vec::new(),
+        ),
+        surface_run(
+            "route_bridge",
+            &language_axis_surface_expectation(manifest, "route_bridge"),
+            records,
+            &["baseline_context_pack", "context_pack_after_mutation"],
+            vec![
+                "route_bridge_inert_until_supported".into(),
+                "no_route_bridge_graph_proof_overclaim".into(),
+            ],
+            Vec::new(),
+        ),
+        surface_run(
+            "dogfood",
+            &language_axis_surface_expectation(manifest, "dogfood"),
+            records,
+            &["baseline_index", "baseline_query_symbols", "cli_validate_edit"],
+            vec!["dogfood_scenario_boundary".into()],
+            Vec::new(),
         ),
         surface_run(
             "context_pack",
@@ -3403,6 +4299,51 @@ fn evaluate_surface_runs(
             Vec::new(),
         ),
     ]
+}
+
+fn language_axis_surface_expectation(
+    manifest: &Mvp3ValidationFixtureManifest,
+    surface: &str,
+) -> Mvp3SurfaceExpectation {
+    let surfaces = manifest_surface_values(manifest);
+    let requested = surfaces.iter().any(|value| value == surface);
+    let packet_status = manifest.expected_packet_status.as_str();
+    let not_applicable = match surface {
+        "local_flow" => matches!(
+            packet_status,
+            "unsupported" | "not_implemented" | "not_applicable"
+        ),
+        "route_bridge" => {
+            manifest_unsupported_boundary(manifest) == "non_claimable_boundary_asserted"
+                && !requested
+        }
+        "dogfood" => manifest.dogfood_scenario_id.is_none() && !requested,
+        _ => false,
+    };
+    Mvp3SurfaceExpectation {
+        status: if not_applicable {
+            "not_applicable".to_string()
+        } else {
+            "supported".to_string()
+        },
+        supported: !not_applicable,
+        not_applicable,
+        required_fields: Vec::new(),
+        forbidden_fields: if surface == "local_flow"
+            && matches!(
+                packet_status,
+                "unsupported" | "not_implemented" | "not_applicable"
+            ) {
+            vec!["flow_proof".to_string()]
+        } else {
+            Vec::new()
+        },
+        notes: if requested {
+            vec![format!("{surface} selected by language fixture manifest")]
+        } else {
+            Vec::new()
+        },
+    }
 }
 
 fn surface_run(
@@ -3846,6 +4787,1080 @@ mod tests {
                 MVP3_VALIDATION_FIXTURE_SCHEMA_VERSION
             );
         }
+    }
+
+    #[test]
+    fn pre_mvp4_4_language_fixture_manifest_schema_includes_axes() {
+        let schema = mvp3_validation_fixture_manifest_schema_value();
+        let properties = schema["properties"].as_object().expect("schema properties");
+        for field in [
+            "frontend",
+            "file_extensions",
+            "source_role",
+            "source_role_expected",
+            "surface",
+            "proof_tier",
+            "fixture_group",
+            "fixture_groups",
+            "expected_exact_relations",
+            "expected_blocking",
+            "forbidden_claims",
+            "expected_provenance",
+            "expected_packet_status",
+            "expected_cli_mcp_parity",
+            "expected_compact_fields",
+            "expected_audit_fields",
+            "dogfood_scenario_id",
+            "language_support_status",
+            "dynamic_boundary_cases",
+            "dynamic_macro_runtime_contract",
+            "expected_dynamic_unresolved_classification",
+            "mvp4_packet_dynamic_gap_expectations",
+            "test_assert_mock_cases",
+            "test_assert_mock_contract",
+            "expected_test_impact_behavior",
+            "mvp4_packet_test_source_expectations",
+            "route_framework_cases",
+            "bridge_boundary_cases",
+            "route_bridge_contract",
+            "mvp4_packet_route_bridge_expectations",
+        ] {
+            assert!(properties.contains_key(field), "missing axis field {field}");
+        }
+        assert!(schema["properties"]["surface"]["items"]["enum"]
+            .as_array()
+            .expect("surface enum")
+            .iter()
+            .any(|value| value.as_str() == Some("local_flow")));
+        assert!(schema["properties"]["proof_tier"]["items"]["enum"]
+            .as_array()
+            .expect("proof tier enum")
+            .iter()
+            .any(|value| value.as_str() == Some("flow_proof")));
+    }
+
+    #[test]
+    fn pre_mvp4_4_existing_mvp3_fixtures_backward_compatible() {
+        let manifest = load_manifest_by_id("ok_noop_fixture");
+        assert!(manifest.frontend.is_empty());
+        assert!(manifest.surface.is_empty());
+        assert!(manifest.proof_tier.is_empty());
+        assert!(manifest.expected_blocking.is_empty());
+        assert!(manifest.expected_provenance.is_null());
+        assert_eq!(manifest_frontend(&manifest), "typescript");
+        assert!(manifest_surface_values(&manifest)
+            .iter()
+            .any(|surface| surface == "validate_edit"));
+    }
+
+    #[test]
+    fn pre_mvp4_4_fixture_runner_filters_language_surface_proof_tier() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            languages: vec!["python".to_string()],
+            surfaces: vec!["local_flow".to_string()],
+            proof_tiers: vec!["not_applicable".to_string()],
+            support_statuses: vec!["not_implemented".to_string()],
+            fixture_groups: vec!["language_packet_interaction".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("filtered language fixtures");
+        assert_eq!(report.fixtures_total, 1);
+        let result = &report.results[0];
+        assert_eq!(
+            result.fixture_id,
+            "pre_mvp4_4_language_python_language_packet_interaction"
+        );
+        assert_eq!(result.status, "passed");
+        assert_eq!(
+            result.unsupported_boundary,
+            "non_claimable_boundary_asserted"
+        );
+    }
+
+    #[test]
+    fn pre_mvp4_4_fixture_runner_aggregates_by_language_and_support_status() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters.languages = vec!["typescript".to_string()];
+        options.language_filters.strict = true;
+        let report = run_mvp3_validation_fixtures(options).expect("typescript language fixtures");
+        assert_eq!(report.fixtures_total, 12);
+        assert_eq!(
+            report
+                .aggregation
+                .by_language
+                .get("typescript")
+                .map(|bucket| bucket.fixtures_total),
+            Some(12)
+        );
+        assert!(report
+            .aggregation
+            .by_support_status
+            .contains_key("partial_supported"));
+        assert!(report.aggregation.by_surface.contains_key("validate_edit"));
+    }
+
+    #[test]
+    fn pre_mvp4_4_compact_budget_fixtures_cover_language_surfaces() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            fixture_groups: vec!["language_compact_budget".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("compact budget fixtures");
+        assert_eq!(report.fixtures_total, 13);
+        assert_eq!(report.fixtures_failed, 0);
+
+        for language in [
+            "c",
+            "cpp",
+            "csharp",
+            "go",
+            "java",
+            "javascript",
+            "jsx",
+            "php",
+            "python",
+            "ruby",
+            "rust",
+            "tsx",
+            "typescript",
+        ] {
+            let fixture_id = format!("pre_mvp4_4_language_{language}_language_compact_budget");
+            let result = result_by_id(&report, &fixture_id);
+            assert_eq!(result.status, "passed", "{language}");
+            let compact = surface_by_name(result, "compact_explain_audit");
+            for assertion in [
+                "compact_default_bounded",
+                "critical_fields_preserved",
+                "omitted_count_or_expansion_handles",
+            ] {
+                assert!(
+                    compact
+                        .structured_assertions
+                        .iter()
+                        .any(|value| value == assertion),
+                    "missing compact assertion {assertion} for {language}"
+                );
+            }
+
+            let manifest = load_manifest_value_by_id(&fixture_id);
+            let fields = manifest["expected_compact_fields"]
+                .as_array()
+                .expect("compact fields");
+            for field in [
+                "validation_rule_id",
+                "source_span",
+                "recommended_fix",
+                "source_role",
+                "proof_strength",
+                "omitted_count",
+                "expansion_handles",
+            ] {
+                assert!(
+                    fields.iter().any(|value| value.as_str() == Some(field)),
+                    "missing expected compact field {field} for {language}"
+                );
+            }
+            assert_eq!(
+                manifest["expected_compact_output"]["ordered_steps_inline"].as_bool(),
+                Some(false),
+                "{language}"
+            );
+            assert_eq!(
+                manifest["expected_compact_output"]["full_source_body_output"].as_bool(),
+                Some(false),
+                "{language}"
+            );
+        }
+
+        let typescript =
+            load_manifest_value_by_id("pre_mvp4_4_language_typescript_language_compact_budget");
+        assert!(typescript["expected_compact_fields"]
+            .as_array()
+            .expect("typescript compact fields")
+            .iter()
+            .any(|value| value.as_str() == Some("micro_flow_packet_delta")));
+        assert_eq!(
+            typescript["expected_packet_status"].as_str(),
+            Some("supported")
+        );
+    }
+
+    #[test]
+    fn pre_mvp4_4_dataflow_fixture_group_covers_registered_languages() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            fixture_groups: vec!["language_reads_writes_flows".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("dataflow language fixtures");
+        assert_eq!(report.fixtures_total, 13);
+        assert_eq!(report.fixtures_failed, 0);
+        assert_eq!(
+            result_by_id(
+                &report,
+                "pre_mvp4_4_language_typescript_language_reads_writes_flows"
+            )
+            .language_support_status,
+            "derived_with_provenance_supported"
+        );
+        assert_eq!(
+            result_by_id(
+                &report,
+                "pre_mvp4_4_language_python_language_reads_writes_flows"
+            )
+            .unsupported_boundary,
+            "non_claimable_boundary_asserted"
+        );
+    }
+
+    #[test]
+    fn pre_mvp4_4_dynamic_macro_runtime_fixtures_cover_language_boundaries() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            fixture_groups: vec!["language_dynamic_macro_runtime".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("dynamic language fixtures");
+        assert_eq!(report.fixtures_total, 13);
+        assert_eq!(report.fixtures_failed, 0);
+        let expected_cases: BTreeMap<&str, &[&str]> = BTreeMap::from([
+            (
+                "rust",
+                &[
+                    "rust_macro_invocation",
+                    "rust_trait_dispatch",
+                    "rust_async_callback",
+                    "rust_build_script_codegen_hint",
+                    "rust_cfg_gated_code",
+                ][..],
+            ),
+            (
+                "python",
+                &[
+                    "python_importlib",
+                    "python_getattr",
+                    "python_monkeypatching",
+                    "python_dynamic_attribute_call",
+                    "python_dependency_injection_pattern",
+                ][..],
+            ),
+            (
+                "typescript",
+                &[
+                    "typescript_dynamic_import",
+                    "typescript_computed_property_call",
+                    "typescript_event_listener_callback",
+                    "typescript_optional_chaining",
+                    "typescript_member_global_dynamic_call",
+                    "typescript_async_callback_promise",
+                    "typescript_dependency_injection_style",
+                ][..],
+            ),
+            (
+                "javascript",
+                &[
+                    "javascript_dynamic_import",
+                    "javascript_computed_property_call",
+                    "javascript_event_listener_callback",
+                    "javascript_optional_chaining",
+                    "javascript_dependency_injection_style",
+                ][..],
+            ),
+            (
+                "go",
+                &[
+                    "go_interface_dispatch",
+                    "go_build_tags",
+                    "go_reflection",
+                    "go_goroutine_callback",
+                ][..],
+            ),
+            (
+                "c",
+                &[
+                    "c_macro_hidden_call",
+                    "c_inactive_preprocessor_branch",
+                    "c_generated_header_hint",
+                    "c_function_pointer",
+                ][..],
+            ),
+            (
+                "cpp",
+                &[
+                    "cpp_macro_hidden_call",
+                    "cpp_inactive_preprocessor_branch",
+                    "cpp_generated_header_hint",
+                    "cpp_function_pointer",
+                    "cpp_virtual_dispatch",
+                ][..],
+            ),
+            (
+                "java",
+                &[
+                    "java_reflection",
+                    "java_interface_virtual_dispatch",
+                    "java_annotation_framework_injection",
+                    "java_async_callback",
+                ][..],
+            ),
+            (
+                "csharp",
+                &[
+                    "csharp_reflection",
+                    "csharp_interface_dispatch",
+                    "csharp_dependency_injection_container",
+                    "csharp_async_await_callback",
+                ][..],
+            ),
+            (
+                "ruby",
+                &[
+                    "ruby_send",
+                    "ruby_method_missing",
+                    "ruby_monkeypatching",
+                    "ruby_metaprogramming",
+                ][..],
+            ),
+            (
+                "php",
+                &[
+                    "php_dynamic_include",
+                    "php_magic_methods",
+                    "php_variable_functions",
+                ][..],
+            ),
+            (
+                "jsx",
+                &[
+                    "jsx_computed_property_call",
+                    "jsx_event_callback",
+                    "jsx_optional_chaining",
+                ][..],
+            ),
+            (
+                "tsx",
+                &[
+                    "tsx_computed_property_call",
+                    "tsx_event_callback",
+                    "tsx_optional_chaining",
+                ][..],
+            ),
+        ]);
+        for (language, case_ids) in expected_cases {
+            let fixture_id =
+                format!("pre_mvp4_4_language_{language}_language_dynamic_macro_runtime");
+            let result = result_by_id(&report, &fixture_id);
+            assert_eq!(result.language_support_status, "dynamic_runtime_required");
+            let value = load_manifest_value_by_id(&fixture_id);
+            let cases = value["dynamic_boundary_cases"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{fixture_id} missing dynamic_boundary_cases"));
+            let observed_case_ids = cases
+                .iter()
+                .filter_map(|case| case["case_id"].as_str())
+                .collect::<BTreeSet<_>>();
+            for case_id in case_ids {
+                assert!(
+                    observed_case_ids.contains(case_id),
+                    "{fixture_id} missing {case_id}"
+                );
+            }
+            assert!(cases.iter().all(|case| {
+                case["graph_proof_allowed"].as_bool() == Some(false)
+                    && case["hard_interrupt_eligible"].as_bool() == Some(false)
+                    && case["expected_relation_exactness"].as_str()
+                        == Some("unknown_or_unsupported")
+            }));
+            assert_eq!(
+                value["dynamic_macro_runtime_contract"]["dynamic_behavior_not_exact_by_default"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["dynamic_macro_runtime_contract"]["runtime_di_reflection_not_graph_proof"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_dynamic_unresolved_classification"]
+                    ["dynamic_or_computed_not_repo_local"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_dynamic_unresolved_classification"]
+                    ["default_hard_interrupt_allowed"]
+                    .as_bool(),
+                Some(false)
+            );
+        }
+
+        let typescript = load_manifest_value_by_id(
+            "pre_mvp4_4_language_typescript_language_dynamic_macro_runtime",
+        );
+        assert_eq!(
+            typescript["mvp4_packet_dynamic_gap_expectations"]["packet_rows_allowed"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            typescript["mvp4_packet_dynamic_gap_expectations"]["flow_proof_through_dynamic_gap"]
+                .as_bool(),
+            Some(false)
+        );
+        let python =
+            load_manifest_value_by_id("pre_mvp4_4_language_python_language_dynamic_macro_runtime");
+        assert_eq!(
+            python["mvp4_packet_dynamic_gap_expectations"]["packet_rows_allowed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            python["mvp4_packet_dynamic_gap_expectations"]["expected_packet_status"].as_str(),
+            Some("not_applicable")
+        );
+    }
+
+    #[test]
+    fn pre_mvp4_4_test_assert_mock_fixtures_cover_language_boundaries() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            fixture_groups: vec!["language_tests_asserts_mocks".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("test/assert language fixtures");
+        assert_eq!(report.fixtures_total, 13);
+        assert_eq!(report.fixtures_failed, 0);
+
+        let expected_cases: BTreeMap<&str, &[&str]> = BTreeMap::from([
+            (
+                "rust",
+                &[
+                    "rust_cfg_test_module",
+                    "rust_test_attribute",
+                    "rust_inline_test_helper",
+                    "rust_mock_stub_naming",
+                ][..],
+            ),
+            (
+                "python",
+                &[
+                    "python_pytest_function",
+                    "python_unittest_class",
+                    "python_pytest_fixture",
+                    "python_mock_patch_usage",
+                ][..],
+            ),
+            (
+                "typescript",
+                &[
+                    "typescript_describe_test_it",
+                    "typescript_expect_assert",
+                    "typescript_jest_vitest_mock",
+                    "typescript_test_spec_path",
+                ][..],
+            ),
+            (
+                "javascript",
+                &[
+                    "javascript_describe_test_it",
+                    "javascript_expect_assert",
+                    "javascript_jest_vitest_mock",
+                    "javascript_test_spec_path",
+                ][..],
+            ),
+            (
+                "go",
+                &["go_test_file", "go_test_function", "go_table_test"][..],
+            ),
+            (
+                "c",
+                &["c_test_directory", "c_assert_macro", "c_mock_stub_file"][..],
+            ),
+            (
+                "cpp",
+                &[
+                    "cpp_test_directory",
+                    "cpp_assert_macro",
+                    "cpp_mock_stub_file",
+                ][..],
+            ),
+            (
+                "java",
+                &["java_junit_test", "java_assertion", "java_mock_class"][..],
+            ),
+            (
+                "csharp",
+                &[
+                    "csharp_test_attribute",
+                    "csharp_assertion",
+                    "csharp_mock_class",
+                ][..],
+            ),
+            (
+                "ruby",
+                &["ruby_rspec_example", "ruby_assertion", "ruby_mock_double"][..],
+            ),
+            (
+                "php",
+                &["php_phpunit_test", "php_assertion", "php_mock_usage"][..],
+            ),
+            (
+                "jsx",
+                &["jsx_component_test", "jsx_expect_assert", "jsx_mock_usage"][..],
+            ),
+            (
+                "tsx",
+                &["tsx_component_test", "tsx_expect_assert", "tsx_mock_usage"][..],
+            ),
+        ]);
+
+        for (language, case_ids) in expected_cases {
+            let fixture_id = format!("pre_mvp4_4_language_{language}_language_tests_asserts_mocks");
+            let result = result_by_id(&report, &fixture_id);
+            assert_eq!(result.language_support_status, "partial_supported");
+            assert_eq!(
+                result.unsupported_boundary,
+                "non_claimable_boundary_asserted"
+            );
+            let value = load_manifest_value_by_id(&fixture_id);
+            let cases = value["test_assert_mock_cases"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{fixture_id} missing test_assert_mock_cases"));
+            let observed_case_ids = cases
+                .iter()
+                .filter_map(|case| case["case_id"].as_str())
+                .collect::<BTreeSet<_>>();
+            for case_id in case_ids {
+                assert!(
+                    observed_case_ids.contains(case_id),
+                    "{fixture_id} missing {case_id}"
+                );
+            }
+            assert!(cases.iter().all(|case| {
+                case["production_proof_allowed"].as_bool() == Some(false)
+                    && case["hard_interrupt_eligible"].as_bool() == Some(false)
+                    && case["expected_evidence_role"]
+                        .as_str()
+                        .is_some_and(|role| matches!(role, "test" | "mock"))
+            }));
+            assert_eq!(
+                value["test_assert_mock_contract"]["production_default_excludes_test_mock_stub"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["test_assert_mock_contract"]["test_mock_evidence_not_production_proof"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_test_impact_behavior"]["includes_test_evidence_intentionally"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["mvp4_packet_test_source_expectations"]["test_source_flow_proof_allowed"]
+                    .as_bool(),
+                Some(false)
+            );
+        }
+
+        let typescript = load_manifest_value_by_id(
+            "pre_mvp4_4_language_typescript_language_tests_asserts_mocks",
+        );
+        assert_eq!(
+            typescript["mvp4_packet_test_source_expectations"]["packet_language_scope"].as_str(),
+            Some("typescript_ts_production_only")
+        );
+        assert_eq!(
+            typescript["mvp4_packet_test_source_expectations"]["test_source_packet_rows_allowed"]
+                .as_bool(),
+            Some(false)
+        );
+        let python =
+            load_manifest_value_by_id("pre_mvp4_4_language_python_language_tests_asserts_mocks");
+        assert_eq!(
+            python["mvp4_packet_test_source_expectations"]["packet_rows_allowed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            python["mvp4_packet_test_source_expectations"]["expected_packet_status"].as_str(),
+            Some("not_applicable")
+        );
+    }
+
+    #[test]
+    fn pre_mvp4_4_route_bridge_fixtures_cover_language_boundaries() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            fixture_groups: vec!["language_route_bridge_inert".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("route/bridge language fixtures");
+        assert_eq!(report.fixtures_total, 13);
+        assert_eq!(report.fixtures_failed, 0);
+
+        let expected_route_cases: BTreeMap<&str, &[&str]> = BTreeMap::from([
+            (
+                "python",
+                &["python_fastapi", "python_flask", "python_django"][..],
+            ),
+            ("javascript", &["javascript_express", "javascript_koa"][..]),
+            (
+                "typescript",
+                &["typescript_express", "typescript_koa", "typescript_nestjs"][..],
+            ),
+            ("java", &["java_spring"][..]),
+            ("rust", &["rust_actix", "rust_axum"][..]),
+            ("ruby", &["ruby_rails"][..]),
+            ("php", &["php_laravel"][..]),
+            ("tsx", &["tsx_nestjs_controller"][..]),
+            ("jsx", &["jsx_express_router_boundary"][..]),
+            ("go", &["go_http_handler_boundary"][..]),
+            ("c", &["c_no_route_framework"][..]),
+            ("cpp", &["cpp_no_route_framework"][..]),
+            ("csharp", &["csharp_aspnet_controller_boundary"][..]),
+        ]);
+        let expected_bridge_cases: BTreeMap<&str, &[&str]> = BTreeMap::from([
+            ("c", &["c_header_bridge_name_match"][..]),
+            ("cpp", &["cpp_header_bridge_name_match"][..]),
+            ("csharp", &["csharp_runtime_ipc_bridge"][..]),
+            ("go", &["go_wasm_export_boundary"][..]),
+            ("java", &["java_jni_bridge"][..]),
+            (
+                "javascript",
+                &["javascript_electron_ipc", "javascript_react_native_module"][..],
+            ),
+            ("jsx", &["jsx_react_native_module"][..]),
+            ("php", &["php_ffi_bridge_boundary"][..]),
+            ("python", &["python_ctypes_bridge_boundary"][..]),
+            ("ruby", &["ruby_ffi_bridge_boundary"][..]),
+            (
+                "rust",
+                &[
+                    "rust_extern_c_bridge",
+                    "rust_wasm_import_export",
+                    "rust_tauri_ipc",
+                ][..],
+            ),
+            ("tsx", &["tsx_react_native_module", "tsx_expo_module"][..]),
+            (
+                "typescript",
+                &[
+                    "typescript_react_native_module",
+                    "typescript_expo_module",
+                    "typescript_electron_ipc",
+                    "typescript_tauri_ipc",
+                ][..],
+            ),
+        ]);
+
+        for (language, route_cases) in expected_route_cases {
+            let fixture_id = format!("pre_mvp4_4_language_{language}_language_route_bridge_inert");
+            let result = result_by_id(&report, &fixture_id);
+            assert_eq!(
+                result.unsupported_boundary,
+                "non_claimable_boundary_asserted"
+            );
+            let value = load_manifest_value_by_id(&fixture_id);
+            let observed_route_cases = value["route_framework_cases"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{fixture_id} missing route_framework_cases"))
+                .iter()
+                .filter_map(|case| case["case_id"].as_str())
+                .collect::<BTreeSet<_>>();
+            for case_id in route_cases {
+                assert!(
+                    observed_route_cases.contains(case_id),
+                    "{fixture_id} missing {case_id}"
+                );
+            }
+            let observed_bridge_cases = value["bridge_boundary_cases"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{fixture_id} missing bridge_boundary_cases"))
+                .iter()
+                .filter_map(|case| case["case_id"].as_str())
+                .collect::<BTreeSet<_>>();
+            for case_id in expected_bridge_cases
+                .get(language)
+                .unwrap_or_else(|| panic!("missing bridge expectations for {language}"))
+                .iter()
+            {
+                assert!(
+                    observed_bridge_cases.contains(case_id),
+                    "{fixture_id} missing {case_id}"
+                );
+            }
+            assert!(value["route_framework_cases"]
+                .as_array()
+                .expect("route cases")
+                .iter()
+                .all(|case| {
+                    case["routes_to_edge_allowed"].as_bool() == Some(false)
+                        && case["mounts_router_edge_allowed"].as_bool() == Some(false)
+                        && case["hard_interrupt_eligible"].as_bool() == Some(false)
+                }));
+            assert!(value["bridge_boundary_cases"]
+                .as_array()
+                .expect("bridge cases")
+                .iter()
+                .all(|case| {
+                    case["bridges_to_edge_allowed"].as_bool() == Some(false)
+                        && case["graph_proof_allowed"].as_bool() == Some(false)
+                        && case["hard_interrupt_eligible"].as_bool() == Some(false)
+                }));
+            assert_eq!(
+                value["route_bridge_contract"]["routes_to_edges_emitted"].as_u64(),
+                Some(0)
+            );
+            assert_eq!(
+                value["route_bridge_contract"]["mounts_router_edges_emitted"].as_u64(),
+                Some(0)
+            );
+            assert_eq!(
+                value["route_bridge_contract"]["bridges_to_edges_emitted"].as_u64(),
+                Some(0)
+            );
+            assert_eq!(
+                value["route_bridge_contract"]["bridge_validation_inert_until_exact_support"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["mvp4_packet_route_bridge_expectations"]
+                    ["local_flow_packet_route_bridge_pull_forward_count"]
+                    .as_u64(),
+                Some(0)
+            );
+            assert_eq!(
+                value["mvp4_packet_route_bridge_expectations"]["context_entry_activated"].as_bool(),
+                Some(false)
+            );
+        }
+
+        let typescript =
+            load_manifest_value_by_id("pre_mvp4_4_language_typescript_language_route_bridge_inert");
+        assert_eq!(
+            typescript["route_bridge_contract"]["current_exact_route_support"].as_str(),
+            Some("HANDLES_EXPOSES_literal_js_ts_activation_gated")
+        );
+        let python =
+            load_manifest_value_by_id("pre_mvp4_4_language_python_language_route_bridge_inert");
+        assert_eq!(
+            python["route_bridge_contract"]["current_exact_route_support"].as_str(),
+            Some("not_implemented")
+        );
+    }
+
+    #[test]
+    fn pre_mvp4_4_packet_interaction_fixtures_cover_registered_languages() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            fixture_groups: vec!["language_packet_interaction".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("packet language fixtures");
+        assert_eq!(report.fixtures_total, 13);
+        assert_eq!(report.fixtures_failed, 0);
+
+        let typescript = result_by_id(
+            &report,
+            "pre_mvp4_4_language_typescript_language_packet_interaction",
+        );
+        assert_eq!(
+            typescript.language_support_status,
+            "exact_supported_activation_gated"
+        );
+        assert_eq!(
+            surface_by_name(typescript, "local_flow").support_status,
+            "supported"
+        );
+
+        for language in [
+            "javascript",
+            "jsx",
+            "tsx",
+            "python",
+            "rust",
+            "go",
+            "c",
+            "cpp",
+            "java",
+            "csharp",
+            "ruby",
+            "php",
+        ] {
+            let fixture_id = format!("pre_mvp4_4_language_{language}_language_packet_interaction");
+            let result = result_by_id(&report, &fixture_id);
+            assert_eq!(result.language_support_status, "not_implemented");
+            let local_flow = surface_by_name(result, "local_flow");
+            assert_eq!(local_flow.status, "not_applicable", "{language}");
+            assert!(local_flow
+                .structured_assertions
+                .iter()
+                .any(|assertion| { assertion == "forbidden_field_absent:flow_proof" }));
+        }
+    }
+
+    #[test]
+    fn pre_mvp4_4_dirty_evidence_fixtures_cover_language_and_sidecar_boundaries() {
+        let mut options = sample_options();
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters = Mvp3LanguageFixtureFilters {
+            fixture_groups: vec!["language_dirty_evidence".to_string()],
+            strict: true,
+            ..Mvp3LanguageFixtureFilters::default()
+        };
+        let report = run_mvp3_validation_fixtures(options).expect("dirty evidence fixtures");
+        assert_eq!(report.fixtures_total, 13);
+        assert_eq!(report.fixtures_failed, 0);
+
+        let required_cases = BTreeSet::from([
+            "edit_source_file",
+            "delete_source_file",
+            "rename_source_file",
+            "source_role_change",
+            "generated_file_change",
+            "ignored_file_change",
+            "parser_break",
+            "parser_restore",
+            "text_only_source_text_edit",
+            "import_export_call_relation_edit",
+        ]);
+        let required_surfaces = BTreeSet::from([
+            "graph_facts",
+            "source_spans",
+            "text_evidence",
+            "unresolved_references",
+            "path_evidence",
+            "candidate_spool",
+            "candidate_query_index",
+            "vector_chunks",
+            "nuance_entries",
+            "source_navigation_handles",
+            "routing_handles",
+            "context_pack_handles",
+            "source_role_metadata",
+        ]);
+
+        for language in [
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php",
+        ] {
+            let fixture_id = format!("pre_mvp4_4_language_{language}_language_dirty_evidence");
+            let result = result_by_id(&report, &fixture_id);
+            assert_eq!(result.status, "passed");
+            assert_eq!(result.language_support_status, "partial_supported");
+            assert_eq!(
+                surface_by_name(result, "dirty_evidence").support_status,
+                "supported"
+            );
+            let value = load_manifest_value_by_id(&fixture_id);
+            let cases = value["expected_dirty_evidence_changes"]["invalidation_cases"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{fixture_id} missing invalidation_cases"))
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>();
+            let surfaces = value["expected_dirty_evidence_changes"]["invalidation_surfaces"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{fixture_id} missing invalidation_surfaces"))
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>();
+            for expected in &required_cases {
+                assert!(cases.contains(expected), "{fixture_id} missing {expected}");
+            }
+            for expected in &required_surfaces {
+                assert!(
+                    surfaces.contains(expected),
+                    "{fixture_id} missing {expected}"
+                );
+            }
+            assert_eq!(
+                value["expected_dirty_evidence_changes"]["no_dirty_evidence_claimable"].as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_dirty_evidence_changes"]["text_evidence_not_graph_proof"].as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_dirty_evidence_changes"]["candidate_vector_nuance_not_graph_proof"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_dirty_evidence_changes"]["optional_sidecar_stale_not_source_error"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_dirty_evidence_changes"]
+                    ["graph_claimability_sidecar_availability_separated"]
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                value["expected_sidecar_statuses"]["context_pack_handle_status"].as_str(),
+                Some("invalidated_or_not_applicable")
+            );
+
+            let mvp4_sidecars =
+                &value["expected_dirty_evidence_changes"]["typescript_mvp4_sidecars"];
+            assert_eq!(
+                mvp4_sidecars["unsupported_language_flow_claim_count"].as_u64(),
+                Some(0)
+            );
+            assert_eq!(
+                mvp4_sidecars["packet_stale_state_overclaim_count"].as_u64(),
+                Some(0)
+            );
+            if language == "typescript" {
+                assert_eq!(
+                    value["expected_sidecar_statuses"]["local_flow_packets_status"].as_str(),
+                    Some("active_for_typescript_dot_ts_production_refreshed_or_removed")
+                );
+                assert_eq!(
+                    mvp4_sidecars["local_flow_packets"].as_str(),
+                    Some("refreshed_or_removed_when_eligible_production_ts")
+                );
+                assert_eq!(
+                    mvp4_sidecars["flow_proof"].as_str(),
+                    Some("changed_only_if_complete_eligible_packet_path")
+                );
+            } else {
+                assert_eq!(
+                    value["expected_sidecar_statuses"]["local_flow_packets_status"].as_str(),
+                    Some("not_applicable")
+                );
+                assert_eq!(
+                    mvp4_sidecars["local_flow_packets"].as_str(),
+                    Some("not_applicable")
+                );
+                assert_eq!(mvp4_sidecars["flow_proof"].as_str(), Some("not_applicable"));
+            }
+        }
+    }
+
+    #[test]
+    fn pre_mvp4_4_unsupported_fixture_expectations_supported() {
+        let report = run_mvp3_validation_fixture_by_id(
+            sample_options(),
+            "pre_mvp4_4_language_python_language_packet_interaction",
+        )
+        .expect("unsupported packet fixture");
+        let result = &report.results[0];
+        assert_eq!(result.status, "passed");
+        assert_eq!(result.language_support_status, "not_implemented");
+        assert!(surface_by_name(result, "local_flow")
+            .structured_assertions
+            .iter()
+            .any(|assertion| assertion == "forbidden_field_absent:flow_proof"));
+        let manifest =
+            load_manifest_by_id("pre_mvp4_4_language_python_language_packet_interaction");
+        assert!(!manifest.expected_diagnostics.is_empty());
+        assert!(!manifest.expected_hard_interrupt);
+    }
+
+    #[test]
+    fn pre_mvp4_4_forbidden_claim_detection_supported() {
+        let manifest =
+            load_manifest_by_id("pre_mvp4_4_language_python_language_packet_interaction");
+        let mut observed = synthetic_observed_packet(&manifest).expect("synthetic packet");
+        observed["claim"] = json!("unsupported_behavior_hard_interrupt");
+        let report = evaluate_mvp3_validation_fixture_assertions(&manifest, &observed);
+        assert!(!report.passed);
+        assert!(report
+            .failures
+            .iter()
+            .any(|failure| failure.contains("forbidden output present")));
+    }
+
+    #[test]
+    fn pre_mvp4_4_release_command_plan_generation_supported() {
+        let mut options = sample_options();
+        options.mode = Mvp3ValidationFixtureRunnerMode::ReleaseBinaryPlan;
+        let report = run_mvp3_validation_fixture_by_id(
+            options,
+            "pre_mvp4_4_language_typescript_language_cli_mcp_parity",
+        )
+        .expect("release command plan");
+        assert_eq!(report.runner_mode, "release_binary_plan");
+        let result = &report.results[0];
+        assert_step(&result.command_plan, "baseline_query_symbols");
+        assert_step(&result.command_plan, "query_local_flow");
+        assert!(result
+            .surface_support
+            .release_binary
+            .contains("supported_command_plan"));
+    }
+
+    #[test]
+    fn pre_mvp4_4_mcp_command_plan_generation_supported_or_not_applicable() {
+        let report = run_mvp3_validation_fixture_by_id(
+            sample_options(),
+            "pre_mvp4_4_language_typescript_language_cli_mcp_parity",
+        )
+        .expect("mcp command plan");
+        let result = &report.results[0];
+        assert_step(&result.command_plan, "mcp_validate_edit");
+        let mcp_surface = surface_by_name(result, "mcp_validate_edit");
+        assert_eq!(mcp_surface.status, "passed");
+        assert_eq!(mcp_surface.support_status, "supported");
+    }
+
+    #[test]
+    fn pre_mvp4_4_language_fixture_harness_gate_writes_runner_results_when_requested() {
+        let Ok(output_dir) = std::env::var("CODEGRAPH_PRE_MVP4_4_LANGUAGE_FIXTURE_OUTPUT_DIR")
+        else {
+            return;
+        };
+        let output_dir = PathBuf::from(output_dir);
+        let mut options = sample_options();
+        options.run_root = output_dir.join("runner");
+        options.fixture_tags = vec!["pre_mvp4_4_language_fixture".to_string()];
+        options.language_filters.strict = true;
+        let report = run_mvp3_validation_fixtures(options).expect("language fixture gate report");
+        assert_eq!(report.status, "complete");
+        assert_eq!(report.fixtures_failed, 0);
+        write_json(
+            &output_dir.join("language_fixture_runner_results.json"),
+            &report,
+        )
+        .expect("write runner results");
+        write_json(
+            &output_dir.join("language_fixture_manifest_schema.json"),
+            &mvp3_validation_fixture_manifest_schema_value(),
+        )
+        .expect("write schema");
     }
 
     #[test]
@@ -5754,6 +7769,18 @@ mod tests {
                     == "mvp3_9_hallucination_mixed_block_warning_diagnostic"),
             "mixed block+warning+diagnostic fixture must be in the gate"
         );
+        for forward_fixture_id in [
+            "mvp3_9_5_forward_unresolved_python_warning",
+            "mvp3_9_5_forward_unresolved_js_warning",
+            "mvp3_9_5_forward_unresolved_rust_warning",
+        ] {
+            assert!(
+                MVP3_9_HALLUCINATION_INTERRUPT_FIXTURE_IDS
+                    .iter()
+                    .any(|fixture_id| *fixture_id == forward_fixture_id),
+                "forward unresolved-reference fixture {forward_fixture_id} must be in the gate"
+            );
+        }
     }
 
     #[test]
@@ -5887,6 +7914,7 @@ mod tests {
             fixture_ids: options.fixture_ids.clone(),
             fixture_families: Vec::new(),
             fixture_tags: Vec::new(),
+            language_filters: Mvp3LanguageFixtureFilters::default(),
         })
         .expect("planned blocking fixture");
         let result = report.results.first().expect("one result");
@@ -6122,6 +8150,146 @@ mod tests {
             .expected_suggested_next_steps
             .iter()
             .any(|step| step.contains("MVP3.10")));
+    }
+
+    #[test]
+    fn mvp3_10_minimal_route_bridge_gate() {
+        let result = run_minimal_route_bridge_gate_fast();
+        assert_eq!(result.gate_id, MVP3_10_MINIMAL_ROUTE_BRIDGE_GATE_ID);
+        assert_eq!(result.status, "complete");
+        assert!(result.ready_to_move_on);
+        assert_eq!(
+            result.fixture_report.fixtures_total,
+            MVP3_10_MINIMAL_ROUTE_BRIDGE_FIXTURE_IDS.len()
+        );
+        assert!(result.fixture_tags.iter().any(|tag| tag == "route_bridge"));
+    }
+
+    #[test]
+    fn handles_exposes_exact_validation_passed_or_not_applicable() {
+        let options = default_mvp3_10_minimal_route_bridge_gate_options();
+        assert_eq!(options.gate_kind, "minimal_route_bridge");
+        assert_eq!(options.gate_id, MVP3_10_MINIMAL_ROUTE_BRIDGE_GATE_ID);
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        assert!(route
+            .proof_boundary
+            .contains("source-spanned HANDLES/EXPOSES proof"));
+    }
+
+    #[test]
+    fn route_handler_dangling_exact_blocks_if_supported() {
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        assert!(route
+            .expected_cli_validate_edit_behavior
+            .notes
+            .iter()
+            .any(|note| note.contains("CG_MVP3_ROUTE_HANDLER_DANGLING_TARGET")));
+    }
+
+    #[test]
+    fn route_handler_renamed_exact_blocks_if_supported() {
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        assert!(route
+            .proof_boundary
+            .contains("Route text or convention evidence is not graph proof"));
+        assert!(route
+            .expected_suggested_next_steps
+            .iter()
+            .any(|step| step.contains("exact source-spanned route relation")));
+    }
+
+    #[test]
+    fn route_handler_fix_clears_blocker_if_supported() {
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        assert!(route.tags.iter().any(|tag| tag == "fix_recovery"));
+        assert_eq!(
+            route.initial_lifecycle_expectations["claimable"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn routes_to_mounts_router_inert_until_exact_support() {
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        let joined = format!(
+            "{} {}",
+            route.proof_boundary, route.unsupported_or_not_applicable_reason
+        );
+        assert!(!joined.contains("ROUTES_TO graph proof"));
+        assert!(!joined.contains("MOUNTS_ROUTER graph proof"));
+    }
+
+    #[test]
+    fn bridges_to_inert_until_exact_support() {
+        let bridge = load_manifest_by_id("mvp3_9_bridge_not_applicable");
+        assert_eq!(bridge.required_support_status, "not_applicable");
+        assert!(bridge
+            .unsupported_or_not_applicable_reason
+            .contains("BRIDGES_TO"));
+        assert!(!bridge.expected_hard_interrupt);
+    }
+
+    #[test]
+    fn heuristic_route_bridge_not_blocking() {
+        for fixture_id in MVP3_10_MINIMAL_ROUTE_BRIDGE_FIXTURE_IDS {
+            let manifest = load_manifest_by_id(fixture_id);
+            assert_ne!(manifest.expected_severity, "blocking", "{fixture_id}");
+            assert!(!manifest.expected_hard_interrupt, "{fixture_id}");
+        }
+    }
+
+    #[test]
+    fn text_convention_route_evidence_not_graph_proof() {
+        for fixture_id in [
+            "mvp3_8_route_handler_missing_target",
+            "mvp3_9_bridge_not_applicable",
+        ] {
+            let manifest = load_manifest_by_id(fixture_id);
+            assert!(
+                !manifest.forbidden_graph_proof_outputs.is_empty(),
+                "{fixture_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn dirty_route_bridge_handles_non_proof() {
+        let dirty = load_manifest_by_id("mvp3_8_routing_handle_stale");
+        assert_eq!(dirty.expected_hard_interrupt, false);
+        assert!(dirty
+            .forbidden_graph_proof_outputs
+            .iter()
+            .any(|value| value.contains("stale") || value.contains("routing")));
+    }
+
+    #[test]
+    fn mcp_route_bridge_parity_or_not_applicable() {
+        let route = load_manifest_by_id("mvp3_8_route_handler_missing_target");
+        assert!(route.expected_mcp_validate_edit_behavior.not_applicable);
+        assert!(!route.expected_mcp_validate_edit_behavior.supported);
+    }
+
+    #[test]
+    fn false_route_bridge_hard_interrupt_count_zero() {
+        let result = run_minimal_route_bridge_gate_fast();
+        assert_eq!(result.false_hard_interrupt_count, 0);
+        assert_eq!(result.route_proof_overclaim_count, 0);
+        assert_eq!(result.bridge_proof_overclaim_count, 0);
+    }
+
+    #[test]
+    fn no_mvp4_extraction_started() {
+        for fixture_id in MVP3_10_MINIMAL_ROUTE_BRIDGE_FIXTURE_IDS {
+            let manifest = load_manifest_by_id(fixture_id);
+            assert_ne!(manifest.expected_mvp_phase, "mvp4");
+            assert!(!manifest.tags.iter().any(|tag| tag.contains("mvp4")));
+        }
+    }
+
+    #[test]
+    fn mvp3_10_no_dot_codegraph_mutation() {
+        let result = run_minimal_route_bridge_gate_fast();
+        assert!(!result.normal_dot_codegraph_mutated);
     }
 
     #[test]
@@ -6640,6 +8808,15 @@ mod tests {
         run_mvp3_gate(options).expect("route/bridge gate")
     }
 
+    fn run_minimal_route_bridge_gate_fast() -> Mvp3GateResult {
+        let mut options = default_mvp3_10_minimal_route_bridge_gate_options();
+        options.run_root = std::env::temp_dir().join(format!(
+            "codegraph-mvp3-10-minimal-route-bridge-gate-fast-test-{}",
+            unique_run_suffix()
+        ));
+        run_mvp3_gate(options).expect("mvp3.10 minimal route/bridge gate")
+    }
+
     fn run_cross_phase_regression_gate_fast() -> Mvp3GateResult {
         let mut options = default_mvp3_9_cross_phase_regression_gate_options();
         options.run_root = std::env::temp_dir().join(format!(
@@ -6675,6 +8852,7 @@ mod tests {
             fixture_ids: Vec::new(),
             fixture_families: Vec::new(),
             fixture_tags: Vec::new(),
+            language_filters: Mvp3LanguageFixtureFilters::default(),
         }
     }
 
@@ -6695,6 +8873,21 @@ mod tests {
                 load_mvp3_validation_fixture_manifest(&path).expect("load fixture manifest");
             if manifest.fixture_id == id {
                 return manifest;
+            }
+        }
+        panic!("fixture {id} not found");
+    }
+
+    fn load_manifest_value_by_id(id: &str) -> Value {
+        for path in sample_fixture_paths() {
+            let raw = fs::read_to_string(&path).expect("read fixture manifest");
+            let value: Value = serde_json::from_str(&raw).expect("fixture JSON");
+            if value
+                .get("fixture_id")
+                .and_then(Value::as_str)
+                .is_some_and(|fixture_id| fixture_id == id)
+            {
+                return value;
             }
         }
         panic!("fixture {id} not found");
