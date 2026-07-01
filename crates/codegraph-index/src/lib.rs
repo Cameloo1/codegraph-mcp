@@ -21965,7 +21965,8 @@ fn scope_symlink_warning(
 ) -> (&'static str, String) {
     match fs::canonicalize(path) {
         Ok(target) => {
-            if !target.starts_with(root) {
+            let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            if !target.starts_with(&canonical_root) {
                 return (
                     "path_outside_repo",
                     format!("symlink target is outside repo: {}", target.display()),
@@ -22278,10 +22279,11 @@ pub fn repo_relative_path(root: &Path, path: &Path) -> Result<String, IndexError
 }
 
 pub fn normalize_changed_path(root: &Path, path: &Path) -> Result<(PathBuf, String), IndexError> {
+    let path = normalize_changed_path_separators(path);
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        root.join(path)
+        root.join(&path)
     };
     let normalized = normalize_lexical_path(&absolute);
     let normalized = match fs::canonicalize(&normalized) {
@@ -22294,6 +22296,16 @@ pub fn normalize_changed_path(root: &Path, path: &Path) -> Result<(PathBuf, Stri
     let normalized = resolve_existing_changed_path_case(root, &normalized);
     let repo_relative_path = repo_relative_path_for_changed_path(root, &normalized)?;
     Ok((normalized, repo_relative_path))
+}
+
+fn normalize_changed_path_separators(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw.contains('\\') {
+        let separator = std::path::MAIN_SEPARATOR.to_string();
+        PathBuf::from(raw.replace('\\', &separator))
+    } else {
+        path.to_path_buf()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30782,6 +30794,17 @@ mod tests {
         write_test_file(&repo, "src/lib.rs", "pub fn live() {}\n");
         let preflight = validate_edit_preflight_for(&repo, vec![PathBuf::from(r"src\lib.rs")]);
         assert_eq!(preflight.normalized_changed_files, vec!["src/lib.rs"]);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+    }
+
+    #[test]
+    fn windows_parent_path_rejected() {
+        let repo = temp_repo("validate-edit-windows-parent");
+        let preflight = validate_edit_preflight_for(&repo, vec![PathBuf::from(r"..\outside.ts")]);
+        assert!(!preflight.should_update);
+        assert!(preflight.outside_repo_only, "{preflight:?}");
+        assert_eq!(preflight.rejected_paths.len(), 1);
+        assert_eq!(preflight.rejected_paths[0].reason, "path_outside_repo");
         fs::remove_dir_all(repo).expect("cleanup repo");
     }
 
