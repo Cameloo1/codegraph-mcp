@@ -3821,6 +3821,46 @@ fn agent_use_validate_edit_finalize_budget(
             }),
         );
     }
+    let mut final_metadata_omitted = 0u64;
+    if !detail_mode.preserves_full_details() && serialized_json_len(packet) > max_output_bytes {
+        for key in [
+            "db",
+            "db_path",
+            "repo_identity_hash",
+            "repo_identity_short_hash",
+            "repo_identity_label",
+            "journal_replay",
+            "severity_trace",
+            "proof_ladder_changes_summary",
+            "compact_contract",
+            "editor_policy",
+            "validation_state",
+            "candidate_recall_action",
+        ] {
+            if serialized_json_len(packet) <= max_output_bytes {
+                break;
+            }
+            if agent_use_remove_field(packet, key) {
+                final_metadata_omitted = final_metadata_omitted.saturating_add(1);
+            }
+        }
+    }
+    if let Some(object) = packet.as_object_mut() {
+        if final_metadata_omitted > 0 {
+            let total_omitted = object
+                .get("omitted_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+                .saturating_add(final_metadata_omitted);
+            object.insert("omitted_count".to_string(), json!(total_omitted));
+            if let Some(budget) = object
+                .get_mut("agent_json_budget")
+                .and_then(Value::as_object_mut)
+            {
+                budget.insert("omitted_count".to_string(), json!(total_omitted));
+            }
+        }
+    }
     let final_output_bytes = serialized_json_len(packet);
     if let Some(object) = packet.as_object_mut() {
         if let Some(budget) = object
@@ -3922,7 +3962,7 @@ fn agent_use_validate_edit_enforce_compact_budget(
             agent_use_validate_edit_compact_validation_packet(validation_packet);
         }
         if let Some(unresolved) = object.get_mut("unresolved_references") {
-            agent_use_validate_edit_compact_unresolved_references(unresolved, 3);
+            agent_use_validate_edit_compact_unresolved_references(unresolved, 1);
         }
         let validation_omitted = object
             .get("validation_packet")
@@ -4050,12 +4090,12 @@ fn agent_use_validate_edit_enforce_compact_budget(
                 continue;
             }
         }
-        if agent_use_validate_edit_shrink_unresolved_references(packet, 3) {
+        if agent_use_validate_edit_shrink_unresolved_references(packet, 1) {
             *omitted_count = omitted_count.saturating_add(1);
             continue;
         }
         if let Some(validation_packet) = packet.get_mut("validation_packet") {
-            if agent_use_validate_edit_shrink_unresolved_references(validation_packet, 3) {
+            if agent_use_validate_edit_shrink_unresolved_references(validation_packet, 1) {
                 *omitted_count = omitted_count.saturating_add(1);
                 continue;
             }
@@ -4120,7 +4160,7 @@ fn agent_use_validate_edit_compact_validation_packet(packet: &mut Value) {
             );
         }
         if let Some(unresolved) = object.get_mut("unresolved_references") {
-            agent_use_validate_edit_compact_unresolved_references(unresolved, 3);
+            agent_use_validate_edit_compact_unresolved_references(unresolved, 1);
         }
         if let Some(lifecycle) = object.get("lifecycle").cloned() {
             object.insert(

@@ -198,6 +198,18 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
                 }
             }
         }
+        if let Some(update_queue_state) = value.get("update_queue_state").cloned() {
+            if !update_queue_state.is_null() {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "update_queue_state".to_string(),
+                        compact_agent_use_update_queue_state_summary(&update_queue_state),
+                    );
+                }
+                truncated_sections.push("update_queue_state".to_string());
+                omitted_count = omitted_count.saturating_add(1);
+            }
+        }
         agent_use_compact_publish_state_field(value, &mut truncated_sections, &mut omitted_count);
         agent_use_compact_lock_state_field(value, &mut truncated_sections, &mut omitted_count);
         agent_use_compact_discovery_fields(value, &mut truncated_sections, &mut omitted_count);
@@ -728,6 +740,34 @@ pub(crate) fn compact_agent_use_last_delta_update_summary(summary: &Value) -> Va
         "changed_files": summary.get("changed_files").cloned().unwrap_or(Value::Null),
         "delta_state": summary.get("delta_state").cloned().unwrap_or(Value::Null),
         "new_graph_valid": summary.get("new_graph_valid").cloned().unwrap_or(Value::Null),
+        "old_db_preserved": summary.get("old_db_preserved").cloned().unwrap_or(Value::Null),
+        "agent_json_compacted": true,
+    })
+}
+
+/// Minimal update-queue state for compact status/watch/context envelopes.  The
+/// full nested `last_update_summary` can repeat the entire delta packet and
+/// crowd out spans/actions under budget pressure; the separate
+/// `last_delta_update_summary` and `dirty_evidence_summary` fields carry the
+/// actionable evidence.
+pub(crate) fn compact_agent_use_update_queue_state_summary(state: &Value) -> Value {
+    if state.is_null() {
+        return Value::Null;
+    }
+    json!({
+        "status": state.get("status").cloned().unwrap_or(Value::Null),
+        "active_update": state.get("active_update").cloned().unwrap_or(Value::Null),
+        "auto_index_enabled": state.get("auto_index_enabled").cloned().unwrap_or(Value::Null),
+        "updates_attempted": state.get("updates_attempted").cloned().unwrap_or(Value::Null),
+        "updates_succeeded": state.get("updates_succeeded").cloned().unwrap_or(Value::Null),
+        "updates_failed": state.get("updates_failed").cloned().unwrap_or(Value::Null),
+        "old_db_preserved": state.get("old_db_preserved").cloned().unwrap_or(Value::Null),
+        "unrelated_repo_blocking": state.get("unrelated_repo_blocking").cloned().unwrap_or(Value::Null),
+        "last_error": state.get("last_error").cloned().unwrap_or(Value::Null),
+        "last_update_summary": state
+            .get("last_update_summary")
+            .map(compact_agent_use_last_delta_update_summary)
+            .unwrap_or(Value::Null),
         "agent_json_compacted": true,
     })
 }
@@ -1044,6 +1084,7 @@ pub(crate) fn agent_use_enforce_total_output_budget(
             "routing_packet",
             "telemetry",
             "timings",
+            "instrumentation",
             "candidate_source_counts",
             "candidate_sources",
             "critical_symbols",
@@ -1052,6 +1093,12 @@ pub(crate) fn agent_use_enforce_total_output_budget(
             "recommended_tests",
             "risks",
         ] {
+            if key == "instrumentation" && compact_agent_use_instrumentation_marker(value) {
+                truncated_sections.push(key.to_string());
+                *omitted_count = omitted_count.saturating_add(1);
+                removed = true;
+                break;
+            }
             if agent_use_remove_field(value, key) {
                 truncated_sections.push(key.to_string());
                 *omitted_count = omitted_count.saturating_add(1);
@@ -1082,6 +1129,7 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
         // context-pack/status output, so they go before evidence and safety
         // fields under hard budget pressure.
         "candidate_spool_trace",
+        "instrumentation",
         "update_queue_state",
         "lock_state",
         "artifact_hygiene",
@@ -1123,6 +1171,11 @@ pub(crate) fn agent_use_enforce_hard_agent_json_budget(
     ] {
         if serialized_json_len(value) <= max_output_bytes {
             return;
+        }
+        if key == "instrumentation" && compact_agent_use_instrumentation_marker(value) {
+            truncated_sections.push(key.to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
         }
         if preserve_update_safety_state
             && matches!(key, "update_queue_state" | "lock_state" | "graph_db_status")
@@ -1309,6 +1362,20 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
             "proof_ladder_change_counts",
             "severity_effect",
             "selected_role_coverage",
+            "instrumentation",
+            "profile_identity",
+            "task_profile",
+            "task_intent",
+            "retrieval_plan_summary",
+            "read_path_metrics",
+            "env_discovery",
+            "config_discovery",
+            "active_candidate_sources",
+            "rtds_freshness",
+            "staged_availability",
+            "db_lifecycle_read",
+            "lock_state",
+            "patch_assist_packet",
             "recovery_commands",
         ] {
             if serialized_json_len(value) <= max_output_bytes {
@@ -1318,6 +1385,16 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
                 continue;
             }
             if preserve_status_safety_state && key == "stale_candidate_layers" {
+                continue;
+            }
+            if key == "instrumentation" && compact_agent_use_instrumentation_marker(value) {
+                late_omitted = late_omitted.saturating_add(1);
+                if let Some(sections) = value
+                    .get_mut("truncated_sections")
+                    .and_then(Value::as_array_mut)
+                {
+                    sections.push(json!(key));
+                }
                 continue;
             }
             if agent_use_remove_field(value, key) {
@@ -1397,6 +1474,38 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
             );
         }
     }
+}
+
+fn compact_agent_use_instrumentation_marker(value: &mut Value) -> bool {
+    let Some(instrumentation) = value.get("instrumentation").cloned() else {
+        return false;
+    };
+    if instrumentation
+        .get("agent_json_compacted")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return false;
+    }
+    let full_detail_handle = instrumentation
+        .get("full_detail_handle")
+        .cloned()
+        .unwrap_or_else(|| json!("instrumentation:full"));
+    let explain_query_plan_omitted = instrumentation
+        .get("explain_query_plan_omitted")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| instrumentation.get("explain_query_plan").is_some());
+    let compact = json!({
+        "agent_json_compacted": true,
+        "explain_query_plan_omitted": explain_query_plan_omitted,
+        "full_detail_handle": full_detail_handle,
+        "expansion_handle": "instrumentation:full",
+    });
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+    object.insert("instrumentation".to_string(), compact);
+    true
 }
 
 pub(crate) fn agent_use_remove_field(value: &mut Value, key: &str) -> bool {
