@@ -56,6 +56,28 @@ fn lock_env_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+struct EnvVarResetGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarResetGuard {
+    fn clear(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarResetGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(previous) => std::env::set_var(self.key, previous),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 #[test]
 fn id_less_context_fallback_edges_get_distinct_canonical_ids() {
     // Regression guard for the context-pack fallback dedup collision: edges
@@ -5026,6 +5048,8 @@ fn explain_query_plan_removed_from_compact() {
 
 #[test]
 fn validate_edit_forward_fixture_matrix_python() {
+    let _guard = lock_env_test();
+    let _block_policy = EnvVarResetGuard::clear(super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
     // §1.3.6 forward cases, Python first (the no-compiler niche gates first).
     let data_root = temp_repo();
     let repo = temp_repo();
@@ -5288,6 +5312,8 @@ fn validate_edit_forward_fixture_matrix_python() {
 
 #[test]
 fn validate_edit_forward_fixture_matrix_js_ts() {
+    let _guard = lock_env_test();
+    let _block_policy = EnvVarResetGuard::clear(super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
     // §1.3.6 forward cases, JS/TS before Rust: same-file missing call,
     // imported/local missing call, builtin/dependency/dynamic negatives, and
     // post-fix resolution.
@@ -5422,6 +5448,8 @@ fn validate_edit_forward_fixture_matrix_js_ts() {
 
 #[test]
 fn validate_edit_forward_fixture_matrix_rust() {
+    let _guard = lock_env_test();
+    let _block_policy = EnvVarResetGuard::clear(super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
     // §1.3.6 Rust forward cases: cross-module qualified call, import of a
     // nonexistent symbol, macro and external-dependency negatives.
     let data_root = temp_repo();
@@ -5564,6 +5592,8 @@ fn validate_edit_forward_fixture_matrix_rust() {
 
 #[test]
 fn validate_edit_forward_fixture_matrix_go() {
+    let _guard = lock_env_test();
+    let _block_policy = EnvVarResetGuard::clear(super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
     // Go forward case: a new repo-local nonexistent function warns, while stdlib
     // calls and existing repo candidates stay non-blocking/non-warning.
     let data_root = temp_repo();
