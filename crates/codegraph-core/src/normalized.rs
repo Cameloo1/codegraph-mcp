@@ -16,6 +16,8 @@ pub enum NormalizedFactKind {
     File,
     Entity,
     Edge,
+    MicroEdge,
+    LocalFlowPacket,
     SourceSpan,
     SourceRole,
     TextEvidence,
@@ -30,6 +32,8 @@ impl NormalizedFactKind {
             Self::File => "file",
             Self::Entity => "entity",
             Self::Edge => "edge",
+            Self::MicroEdge => "micro_edge",
+            Self::LocalFlowPacket => "local_flow_packet",
             Self::SourceSpan => "source_span",
             Self::SourceRole => "source_role",
             Self::TextEvidence => "text_evidence",
@@ -344,6 +348,355 @@ impl NormalizedEdgeFact {
             edge_context: edge.context,
             claimability,
             lifecycle: NormalizedLifecycleMetadata::current("normalized_edge_fact_v1"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedMicroEdgeFact {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub fact_kind: NormalizedFactKind,
+    pub repo_relative_path: String,
+    pub file_id: String,
+    pub micro_edge_id: String,
+    pub micro_edge_kind: String,
+    pub head_micro_node_id: String,
+    pub tail_micro_node_id: String,
+    pub function_identity: Option<String>,
+    pub relation_source_span_id: Option<String>,
+    pub relation_source_span: Option<SourceSpan>,
+    pub head_source_span_id: Option<String>,
+    pub tail_source_span_id: Option<String>,
+    pub provenance_id: Option<String>,
+    pub provenance_hash: Option<String>,
+    pub exactness: String,
+    pub claimability_label: String,
+    pub source_role: EvidenceRole,
+    pub language: String,
+    pub frontend: String,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub lifecycle_status: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub lifecycle: NormalizedLifecycleMetadata,
+}
+
+impl NormalizedMicroEdgeFact {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        micro_edge_id: impl Into<String>,
+        micro_edge_kind: impl Into<String>,
+        head_micro_node_id: impl Into<String>,
+        tail_micro_node_id: impl Into<String>,
+        repo_relative_path: impl AsRef<str>,
+        function_identity: Option<String>,
+        relation_source_span_id: Option<String>,
+        relation_source_span: Option<SourceSpan>,
+        head_source_span_id: Option<String>,
+        tail_source_span_id: Option<String>,
+        provenance_id: Option<String>,
+        exactness: impl Into<String>,
+        claimability_label: impl Into<String>,
+        source_role: EvidenceRole,
+        language: impl Into<String>,
+        frontend: impl Into<String>,
+        row_schema_version: u32,
+        payload_version: u32,
+        extraction_version: impl Into<String>,
+        lifecycle_status: impl Into<String>,
+    ) -> Self {
+        let micro_edge_id = micro_edge_id.into();
+        let micro_edge_kind = micro_edge_kind.into();
+        let head_micro_node_id = head_micro_node_id.into();
+        let tail_micro_node_id = tail_micro_node_id.into();
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let file_id = repo_relative_path.clone();
+        let exactness = exactness.into();
+        let claimability_label = claimability_label.into();
+        let language = language.into();
+        let frontend = frontend.into();
+        let extraction_version = extraction_version.into();
+        let lifecycle_status = lifecycle_status.into();
+        let provenance_hash = provenance_id
+            .as_ref()
+            .map(|value| stable_fact_hash("micro_edge_provenance_id", [value.as_str()]));
+        let relation_span_key = relation_source_span
+            .as_ref()
+            .map(span_key)
+            .unwrap_or_else(|| "missing_relation_source_span".to_string());
+        let function_key = function_identity.clone().unwrap_or_default();
+        let provenance_key = provenance_id.clone().unwrap_or_default();
+        let schema_key = row_schema_version.to_string();
+        let payload_key = payload_version.to_string();
+        let source_role_key = source_role.as_str().to_string();
+        let identity_values = [
+            repo_relative_path.clone(),
+            language.clone(),
+            frontend.clone(),
+            micro_edge_kind.clone(),
+            micro_edge_id.clone(),
+            head_micro_node_id.clone(),
+            tail_micro_node_id.clone(),
+            function_key.clone(),
+            relation_span_key.clone(),
+            source_role_key.clone(),
+            schema_key.clone(),
+            payload_key.clone(),
+            extraction_version.clone(),
+        ];
+        let hash_values = [
+            micro_edge_id.clone(),
+            micro_edge_kind.clone(),
+            head_micro_node_id.clone(),
+            tail_micro_node_id.clone(),
+            repo_relative_path.clone(),
+            function_key,
+            relation_source_span_id.clone().unwrap_or_default(),
+            relation_span_key,
+            head_source_span_id.clone().unwrap_or_default(),
+            tail_source_span_id.clone().unwrap_or_default(),
+            provenance_key,
+            exactness.clone(),
+            claimability_label.clone(),
+            source_role_key,
+            language.clone(),
+            frontend.clone(),
+            schema_key,
+            payload_key,
+            extraction_version.clone(),
+            lifecycle_status.clone(),
+        ];
+        let claimability = micro_edge_claimability(
+            exactness.as_str(),
+            claimability_label.as_str(),
+            relation_source_span.as_ref(),
+            provenance_id.as_deref(),
+            lifecycle_status.as_str(),
+        );
+        Self {
+            stable_identity_key: stable_fact_identity_key(
+                NormalizedFactKind::MicroEdge.as_str(),
+                identity_values.iter().map(String::as_str),
+            ),
+            fact_hash: stable_fact_hash(
+                NormalizedFactKind::MicroEdge.as_str(),
+                hash_values.iter().map(String::as_str),
+            ),
+            fact_kind: NormalizedFactKind::MicroEdge,
+            repo_relative_path,
+            file_id,
+            micro_edge_id,
+            micro_edge_kind,
+            head_micro_node_id,
+            tail_micro_node_id,
+            function_identity,
+            relation_source_span_id,
+            relation_source_span,
+            head_source_span_id,
+            tail_source_span_id,
+            provenance_id,
+            provenance_hash,
+            exactness,
+            claimability_label,
+            source_role,
+            language,
+            frontend,
+            row_schema_version,
+            payload_version,
+            extraction_version: extraction_version.clone(),
+            lifecycle_status,
+            claimability,
+            lifecycle: NormalizedLifecycleMetadata::current(extraction_version),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedLocalFlowPacketFact {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub fact_kind: NormalizedFactKind,
+    pub repo_relative_path: String,
+    pub file_id: String,
+    pub packet_id: String,
+    pub function_identity: String,
+    pub function_frame_micro_node_id: Option<String>,
+    pub packet_kind: String,
+    pub encoding: String,
+    pub packet_body_hash: String,
+    pub primary_source_span_id: Option<String>,
+    pub source_span_ids: Vec<String>,
+    pub proof_status: String,
+    pub proof_strength: String,
+    pub packet_status: String,
+    pub provenance_id: Option<String>,
+    pub exactness: String,
+    pub claimability_label: String,
+    pub source_role: EvidenceRole,
+    pub language: String,
+    pub row_schema_version: u32,
+    pub payload_version: u32,
+    pub extraction_version: String,
+    pub source_micro_node_extraction_versions_hash: String,
+    pub source_micro_edge_extraction_versions_hash: String,
+    pub cap_state_hash: String,
+    pub omitted_count: u64,
+    pub lifecycle_status: String,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub lifecycle: NormalizedLifecycleMetadata,
+}
+
+impl NormalizedLocalFlowPacketFact {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        packet_id: impl Into<String>,
+        repo_relative_path: impl AsRef<str>,
+        function_identity: impl Into<String>,
+        function_frame_micro_node_id: Option<String>,
+        packet_kind: impl Into<String>,
+        encoding: impl Into<String>,
+        packet_body_hash: impl Into<String>,
+        primary_source_span_id: Option<String>,
+        source_span_ids: Vec<String>,
+        proof_status: impl Into<String>,
+        proof_strength: impl Into<String>,
+        packet_status: impl Into<String>,
+        provenance_id: Option<String>,
+        exactness: impl Into<String>,
+        claimability_label: impl Into<String>,
+        source_role: EvidenceRole,
+        language: impl Into<String>,
+        row_schema_version: u32,
+        payload_version: u32,
+        extraction_version: impl Into<String>,
+        source_micro_node_extraction_versions_json: impl AsRef<str>,
+        source_micro_edge_extraction_versions_json: impl AsRef<str>,
+        cap_state_json: impl AsRef<str>,
+        omitted_count: u64,
+        lifecycle_status: impl Into<String>,
+    ) -> Self {
+        let packet_id = packet_id.into();
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let file_id = repo_relative_path.clone();
+        let function_identity = function_identity.into();
+        let packet_kind = packet_kind.into();
+        let encoding = encoding.into();
+        let packet_body_hash = packet_body_hash.into();
+        let proof_status = proof_status.into();
+        let proof_strength = proof_strength.into();
+        let packet_status = packet_status.into();
+        let exactness = exactness.into();
+        let claimability_label = claimability_label.into();
+        let language = language.into();
+        let extraction_version = extraction_version.into();
+        let lifecycle_status = lifecycle_status.into();
+        let node_versions_hash = stable_fact_hash(
+            "local_flow_packet_node_versions",
+            [source_micro_node_extraction_versions_json.as_ref()],
+        );
+        let edge_versions_hash = stable_fact_hash(
+            "local_flow_packet_edge_versions",
+            [source_micro_edge_extraction_versions_json.as_ref()],
+        );
+        let cap_state_hash =
+            stable_fact_hash("local_flow_packet_cap_state", [cap_state_json.as_ref()]);
+        let source_span_key = source_span_ids.join("|");
+        let provenance_key = provenance_id.clone().unwrap_or_default();
+        let frame_key = function_frame_micro_node_id.clone().unwrap_or_default();
+        let schema_key = row_schema_version.to_string();
+        let payload_key = payload_version.to_string();
+        let omitted_key = omitted_count.to_string();
+        let source_role_key = source_role.as_str().to_string();
+        let identity_values = [
+            repo_relative_path.clone(),
+            language.clone(),
+            packet_kind.clone(),
+            packet_id.clone(),
+            function_identity.clone(),
+            frame_key.clone(),
+            source_role_key.clone(),
+            schema_key.clone(),
+            payload_key.clone(),
+            extraction_version.clone(),
+        ];
+        let hash_values = [
+            packet_id.clone(),
+            repo_relative_path.clone(),
+            function_identity.clone(),
+            frame_key,
+            packet_kind.clone(),
+            encoding.clone(),
+            packet_body_hash.clone(),
+            primary_source_span_id.clone().unwrap_or_default(),
+            source_span_key,
+            proof_status.clone(),
+            proof_strength.clone(),
+            packet_status.clone(),
+            provenance_key,
+            exactness.clone(),
+            claimability_label.clone(),
+            source_role_key,
+            language.clone(),
+            schema_key,
+            payload_key,
+            extraction_version.clone(),
+            node_versions_hash.clone(),
+            edge_versions_hash.clone(),
+            cap_state_hash.clone(),
+            omitted_key,
+            lifecycle_status.clone(),
+        ];
+        let claimability = local_flow_packet_claimability(
+            proof_status.as_str(),
+            proof_strength.as_str(),
+            packet_status.as_str(),
+            exactness.as_str(),
+            claimability_label.as_str(),
+            primary_source_span_id.as_deref(),
+            provenance_id.as_deref(),
+            omitted_count,
+            lifecycle_status.as_str(),
+        );
+        Self {
+            stable_identity_key: stable_fact_identity_key(
+                NormalizedFactKind::LocalFlowPacket.as_str(),
+                identity_values.iter().map(String::as_str),
+            ),
+            fact_hash: stable_fact_hash(
+                NormalizedFactKind::LocalFlowPacket.as_str(),
+                hash_values.iter().map(String::as_str),
+            ),
+            fact_kind: NormalizedFactKind::LocalFlowPacket,
+            repo_relative_path,
+            file_id,
+            packet_id,
+            function_identity,
+            function_frame_micro_node_id,
+            packet_kind,
+            encoding,
+            packet_body_hash,
+            primary_source_span_id,
+            source_span_ids,
+            proof_status,
+            proof_strength,
+            packet_status,
+            provenance_id,
+            exactness,
+            claimability_label,
+            source_role,
+            language,
+            row_schema_version,
+            payload_version,
+            extraction_version: extraction_version.clone(),
+            source_micro_node_extraction_versions_hash: node_versions_hash,
+            source_micro_edge_extraction_versions_hash: edge_versions_hash,
+            cap_state_hash,
+            omitted_count,
+            lifecycle_status,
+            claimability,
+            lifecycle: NormalizedLifecycleMetadata::current(extraction_version),
         }
     }
 }
@@ -810,6 +1163,8 @@ macro_rules! impl_envelope_from_fact {
 impl_envelope_from_fact!(NormalizedFileFact);
 impl_envelope_from_fact!(NormalizedEntityFact);
 impl_envelope_from_fact!(NormalizedEdgeFact);
+impl_envelope_from_fact!(NormalizedMicroEdgeFact);
+impl_envelope_from_fact!(NormalizedLocalFlowPacketFact);
 impl_envelope_from_fact!(NormalizedSourceSpanFact);
 impl_envelope_from_fact!(NormalizedSourceRoleFact);
 impl_envelope_from_fact!(NormalizedTextEvidenceFact);
@@ -880,10 +1235,15 @@ fn source_role_from_metadata_or_path(
             if let Ok(role) = EvidenceRole::from_str(value) {
                 return role;
             }
+            return EvidenceRole::from_source_role_label(value);
         }
     }
-    if path_looks_test(repo_relative_path) {
+    if path_looks_mock(repo_relative_path) {
+        EvidenceRole::Mock
+    } else if path_looks_test(repo_relative_path) {
         EvidenceRole::Test
+    } else if path_looks_non_claimable(repo_relative_path) {
+        EvidenceRole::Unknown
     } else {
         EvidenceRole::Production
     }
@@ -891,9 +1251,21 @@ fn source_role_from_metadata_or_path(
 
 fn path_looks_test(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    normalized.contains("/tests/")
-        || normalized.contains("/test/")
-        || normalized.ends_with(".test.ts")
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    path_has_component(
+        &normalized,
+        &[
+            "tests",
+            "test",
+            "__tests__",
+            "spec",
+            "specs",
+            "examples",
+            "benches",
+            "fixtures",
+            "fixture",
+        ],
+    ) || normalized.ends_with(".test.ts")
         || normalized.ends_with(".test.tsx")
         || normalized.ends_with(".test.js")
         || normalized.ends_with(".test.jsx")
@@ -901,6 +1273,69 @@ fn path_looks_test(path: &str) -> bool {
         || normalized.ends_with(".spec.tsx")
         || normalized.ends_with(".spec.js")
         || normalized.ends_with(".spec.jsx")
+        || normalized.ends_with("_test.go")
+        || normalized.ends_with("_test.py")
+        || normalized.ends_with("_test.rb")
+        || normalized.ends_with("_spec.rb")
+        || normalized.ends_with("_test.php")
+        || normalized.ends_with("_spec.php")
+        || (file_name.starts_with("test_") && file_name.ends_with(".py"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".rb"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".php"))
+        || file_name.ends_with("test.java")
+        || file_name.ends_with("tests.java")
+        || file_name.ends_with("spec.java")
+        || file_name.ends_with("test.cs")
+        || file_name.ends_with("tests.cs")
+        || file_name.ends_with("spec.cs")
+        || file_name.ends_with("test.php")
+        || file_name.ends_with("testcase.php")
+        || file_name.ends_with("test.rb")
+        || file_name.ends_with("spec.rb")
+}
+
+fn path_looks_mock(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    path_has_component(
+        &normalized,
+        &[
+            "__mocks__",
+            "mocks",
+            "mock",
+            "stubs",
+            "stub",
+            "fakes",
+            "fake",
+        ],
+    ) || file_name.contains(".mock.")
+        || file_name.contains(".stub.")
+        || file_name.ends_with("_mock.py")
+        || file_name.ends_with("_stub.py")
+}
+
+fn path_looks_non_claimable(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    path_has_component(
+        &normalized,
+        &[
+            "generated",
+            "gen",
+            "vendor",
+            "vendored",
+            "third_party",
+            "node_modules",
+        ],
+    ) || file_name.ends_with(".d.ts")
+        || file_name.contains(".generated.")
+        || file_name.contains(".gen.")
+}
+
+fn path_has_component(normalized_path: &str, components: &[&str]) -> bool {
+    normalized_path
+        .split('/')
+        .any(|part| components.iter().any(|component| part == *component))
 }
 
 fn metadata_digest_input(metadata: &Metadata) -> String {
@@ -937,6 +1372,73 @@ fn edge_claimability(edge: &Edge, provenance_status: &str) -> NormalizedClaimabi
     NormalizedClaimabilityMetadata::graph_diagnostic(
         "edge exactness is heuristic/inferred/dynamic and not blocking graph proof",
     )
+}
+
+fn micro_edge_claimability(
+    exactness: &str,
+    claimability_label: &str,
+    relation_source_span: Option<&SourceSpan>,
+    provenance_id: Option<&str>,
+    lifecycle_status: &str,
+) -> NormalizedClaimabilityMetadata {
+    let exact = exactness.eq_ignore_ascii_case("exact");
+    let claimable = claimability_label.starts_with("claimable_");
+    let current = matches!(lifecycle_status, "db_passport" | "current" | "ready");
+    if exact && claimable && relation_source_span.is_some() && provenance_id.is_some() && current {
+        NormalizedClaimabilityMetadata::graph_source_proof(
+            "exact micro-edge has source span, provenance, and current lifecycle binding",
+        )
+    } else {
+        NormalizedClaimabilityMetadata::graph_diagnostic(
+            "micro-edge lacks an exact/source-spanned/provenance/current prerequisite and is diagnostic, not graph relation proof",
+        )
+    }
+}
+
+fn local_flow_packet_claimability(
+    proof_status: &str,
+    proof_strength: &str,
+    packet_status: &str,
+    exactness: &str,
+    claimability_label: &str,
+    primary_source_span_id: Option<&str>,
+    provenance_id: Option<&str>,
+    omitted_count: u64,
+    lifecycle_status: &str,
+) -> NormalizedClaimabilityMetadata {
+    let proof_like = matches!(proof_strength, "flow_proof" | "graph_relation_proof")
+        || proof_status.eq_ignore_ascii_case("flow_proof");
+    let exact_or_derived = matches!(
+        exactness,
+        "exact" | "derived_with_provenance" | "graph_relation_proof"
+    );
+    let claimable = claimability_label.starts_with("claimable_");
+    let current = matches!(lifecycle_status, "db_passport" | "current" | "ready");
+    let ready = matches!(
+        packet_status,
+        "micro_flow_found" | "partial_micro_flow_found" | "ready"
+    );
+    if proof_like
+        && exact_or_derived
+        && claimable
+        && ready
+        && primary_source_span_id.is_some()
+        && provenance_id.is_some()
+        && omitted_count == 0
+        && current
+    {
+        NormalizedClaimabilityMetadata::graph_source_proof(
+            "local micro-flow packet has proof-grade strength, source span, provenance, no relevant omissions, and current lifecycle binding",
+        )
+    } else if claimable {
+        NormalizedClaimabilityMetadata::claimable_non_graph(
+            "local micro-flow packet is claimable as bounded packet state but not complete flow proof for the current scope",
+        )
+    } else {
+        NormalizedClaimabilityMetadata::graph_diagnostic(
+            "local micro-flow packet is unavailable, stale, truncated, unsupported, or missing proof prerequisites",
+        )
+    }
 }
 
 fn edge_exactness_is_proof_grade(exactness: Exactness) -> bool {
@@ -998,6 +1500,67 @@ mod tests {
             provenance_edges: provenance,
             metadata: Metadata::new(),
         }
+    }
+
+    #[test]
+    fn normalized_facts_do_not_promote_generated_source_text_or_stub_metadata() {
+        let file_cases = [
+            (
+                "src/generated/client.ts",
+                "generated",
+                EvidenceRole::Unknown,
+            ),
+            ("notes/plain.txt", "source_text", EvidenceRole::Unknown),
+            ("vendor/client.ts", "vendor", EvidenceRole::Unknown),
+            ("tests/service_test.py", "fixture", EvidenceRole::Test),
+            ("src/__mocks__/service.ts", "stub", EvidenceRole::Mock),
+        ];
+        for (path, label, expected) in file_cases {
+            let mut metadata = Metadata::new();
+            metadata.insert(
+                "source_role".to_string(),
+                serde_json::Value::String(label.to_string()),
+            );
+            let fact = NormalizedFileFact::from_file(&FileRecord {
+                repo_relative_path: path.to_string(),
+                file_hash: "hash".to_string(),
+                language: Some("typescript".to_string()),
+                size_bytes: 1,
+                indexed_at_unix_ms: Some(1),
+                metadata,
+            });
+            assert_eq!(fact.source_role, expected, "{path}");
+        }
+
+        let mut generated_entity = entity(
+            "src/generated/client.ts",
+            "generatedClient",
+            1,
+            EvidenceRole::Production,
+        );
+        generated_entity.metadata.insert(
+            "source_role".to_string(),
+            serde_json::Value::String("generated".to_string()),
+        );
+        assert_eq!(
+            NormalizedEntityFact::from_entity(&generated_entity).source_role,
+            EvidenceRole::Unknown
+        );
+
+        let mut generated_edge = edge(
+            "src/generated/client.ts",
+            Exactness::ParserVerified,
+            false,
+            Vec::new(),
+        );
+        generated_edge.metadata.insert(
+            "source_role".to_string(),
+            serde_json::Value::String("generated".to_string()),
+        );
+        assert_eq!(
+            NormalizedEdgeFact::from_edge(&generated_edge).source_role,
+            EvidenceRole::Unknown
+        );
     }
 
     #[test]

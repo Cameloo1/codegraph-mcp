@@ -14,6 +14,8 @@ local install path.
 - PowerShell installer template: `install/install.ps1`
 - POSIX shell installer template: `install/install.sh`
 - `cargo install --path crates/codegraph-cli` from a checkout
+- Windows WSL2 source checkout path for WDAC/SAC machines:
+  [Quickstart WSL2 path](quickstart.md#windows-wsl2-path-for-wdacsac-machines)
 - cargo-binstall metadata template: `dist/cargo-binstall.example.toml`
 - Homebrew formula template: `packaging/homebrew/codegraph-mcp.rb`
 
@@ -40,6 +42,38 @@ codegraph-mcp agent-use mcp-config --repo C:\path\to\repo --json
 Use a development DB only when testing CodeGraph itself. The `agent-use`
 namespace resolves the production profile path for you and does not silently
 fall back to repo-local `.codegraph`.
+
+## Windows WSL2 Install Path
+
+On Windows machines where Windows Application Control, Smart App Control, WDAC,
+antivirus, or reputation checks block freshly built unsigned executables, use
+WSL2 as the tested source-install path instead of trying to weaken the policy.
+The verified shape is:
+
+- clone the repo from inside Ubuntu under `/mnt/c/...` when Windows-side editors
+  need to see the files
+- set `CARGO_TARGET_DIR` to a directory on the Linux filesystem, such as
+  `$HOME/cg-target/codegraph-mcp`
+- set `CODEGRAPH_AGENT_USE_DATA_ROOT` outside both the CodeGraph checkout and
+  the target repo
+- run `scripts/smoke_wsl2_agent_use.sh`
+
+```sh
+cd /mnt/c/Users/<windows-user>/source/codegraph-mcp
+export CARGO_TARGET_DIR="$HOME/cg-target/codegraph-mcp"
+export CODEGRAPH_AGENT_USE_DATA_ROOT="$HOME/.local/share/codegraph-agent-use"
+scripts/smoke_wsl2_agent_use.sh
+```
+
+The smoke builds the release binary and exercises `agent-use` against a
+disposable target repo. It fails if a repo-local `.codegraph` directory appears
+in the CodeGraph checkout or target repo. For a real target repo, reuse the
+same release binary and external data root:
+
+```sh
+"$CARGO_TARGET_DIR/release/codegraph-mcp" agent-use status --repo /mnt/c/path/to/repo --json
+"$CARGO_TARGET_DIR/release/codegraph-mcp" agent-use index --repo /mnt/c/path/to/repo --json
+```
 
 ## Local Dry Runs
 

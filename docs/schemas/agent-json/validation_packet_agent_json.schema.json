@@ -176,6 +176,84 @@
       "type": "object",
       "additionalProperties": true
     },
+    "micro_edge_delta": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "normal_micro_edge_delta_not_error": {
+          "type": "boolean"
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "flow_proof_activated": {
+          "const": false
+        },
+        "mutation_proof_activated": {
+          "const": false
+        }
+      }
+    },
+    "micro_edge_integrity": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "blocking_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warning_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "diagnostic_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_problem_vs_tool_integrity_separated": {
+          "const": true
+        },
+        "false_source_fix_recommendation_count": {
+          "const": 0
+        },
+        "hard_interrupt_for_micro_edge_integrity": {
+          "const": false
+        }
+      }
+    },
+    "micro_edge_layer_status": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "layer_status_not_source_error": {
+          "const": true
+        },
+        "core_graph_claimability_separate": {
+          "const": true
+        }
+      }
+    },
+    "micro_edge_proof_changes": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "graph_relation_proof": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "flow_proof_activated": {
+          "const": false
+        },
+        "mutation_proof_activated": {
+          "const": false
+        }
+      }
+    },
     "blocking_errors": {
       "type": "array",
       "items": {
@@ -266,6 +344,9 @@
     },
     "unavailable_evidence": {
       "$ref": "common.schema.json#/$defs/dirty_evidence_surface_status_list"
+    },
+    "unresolved_references": {
+      "$ref": "common.schema.json#/$defs/unresolved_references_block"
     },
     "claimability_effect": {
       "$ref": "common.schema.json#/$defs/dirty_evidence_claimability_effect"

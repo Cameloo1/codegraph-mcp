@@ -1,0 +1,1105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/local_micro_flow_packet_agent_json.schema.json",
+  "title": "local_micro_flow_packet_agent_json",
+  "$comment": "Opened packet-body contract for the verified MVP4.3 TypeScript .ts production local-flow packet slice. Unsupported languages, non-production source roles, route/bridge proof, mutation_proof, and context-entry behavior remain inactive/not_applicable. Compact packet bodies use dict_v1 dictionary compression; verbose ordered_steps are explain/audit expansion output.",
+  "type": "object",
+  "required": [
+    "schema_name",
+    "schema_version",
+    "packet_kind",
+    "packet_id",
+    "packet_version",
+    "extraction_version",
+    "step_set_version",
+    "file",
+    "function_identity",
+    "function_span",
+    "claimability",
+    "proof_status",
+    "proof_strength",
+    "encoding",
+    "packet_body",
+    "unknown_unsupported_gaps",
+    "risks_limitations",
+    "omitted_count",
+    "truncation_reason",
+    "expansion_handles",
+    "budget_contract",
+    "generation_state"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_name": {
+      "const": "local_micro_flow_packet_agent_json"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "packet_kind": {
+      "const": "function_local_flow_packet"
+    },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^micro-packet://"
+    },
+    "packet_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "extraction_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96
+    },
+    "step_set_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96
+    },
+    "file": {
+      "$ref": "#/$defs/file_ref"
+    },
+    "function_identity": {
+      "$ref": "#/$defs/function_identity"
+    },
+    "function_span": {
+      "$ref": "common.schema.json#/$defs/source_span"
+    },
+    "claimability": {
+      "$ref": "#/$defs/micro_claimability"
+    },
+    "proof_status": {
+      "$ref": "#/$defs/local_flow_proof_status"
+    },
+    "proof_strength": {
+      "$ref": "common.schema.json#/$defs/proof_ladder_level"
+    },
+    "encoding": {
+      "type": "string",
+      "enum": ["dict_v1"]
+    },
+    "packet_body": {
+      "$ref": "#/$defs/dict_encoded_packet_body"
+    },
+    "ordered_steps": {
+      "$comment": "Explain/audit rendering of packet_body. Compact/default packet bodies should not inline this unless requested.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/local_flow_step"
+      }
+    },
+    "unknown_unsupported_gaps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/unknown_gap"
+      }
+    },
+    "risks_limitations": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 600
+      }
+    },
+    "omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncation_reason": {
+      "type": "string",
+      "enum": [
+        "not_truncated",
+        "max_steps_exceeded",
+        "max_packet_bytes_exceeded",
+        "unsupported_dynamic_gap",
+        "parse_recovery",
+        "cap_not_configured",
+        "unknown"
+      ]
+    },
+    "expansion_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/expansion_handle"
+      }
+    },
+    "budget_contract": {
+      "$ref": "#/$defs/budget_contract"
+    },
+    "generation_state": {
+      "type": "object",
+      "required": [
+        "production_packet_generation_active",
+        "parser_emission_active",
+        "proof_strength_active",
+        "context_entry_command_active"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "production_packet_generation_active": {
+          "type": "boolean",
+          "description": "True only for the verified TypeScript .ts production MVP4.3 packet slice; false for unsupported languages, non-production roles, stale/corrupt packet layers, and inactive future surfaces."
+        },
+        "parser_emission_active": {
+          "type": "boolean",
+          "description": "True only when the current parser/index path emitted the verified TypeScript .ts micro-node and micro-edge facts that back this packet."
+        },
+        "proof_strength_active": {
+          "type": "boolean",
+          "description": "True only when this packet may carry active graph_relation_proof or flow_proof under the TypeScript .ts production packet contract."
+        },
+        "context_entry_command_active": {
+          "const": false,
+          "description": "Context-entry remains inactive even when TypeScript local-flow packets are active."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "file_ref": {
+      "type": "object",
+      "required": ["repo_relative_path", "language", "source_role"],
+      "additionalProperties": true,
+      "properties": {
+        "repo_relative_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "language": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "source_role": {
+          "$ref": "#/$defs/source_role"
+        },
+        "lifecycle_binding": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      }
+    },
+    "function_identity": {
+      "type": "object",
+      "required": ["function_id", "identity_status", "scope_path"],
+      "additionalProperties": true,
+      "properties": {
+        "function_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "function_entity_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "function_name": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "identity_status": {
+          "type": "string",
+          "enum": [
+            "stable_identity_guarantee",
+            "best_effort_correlation",
+            "intentional_rekey",
+            "unknown_ambiguous_correlation"
+          ]
+        },
+        "scope_path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "structural_path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        }
+      }
+    },
+    "source_role": {
+      "type": "string",
+      "enum": [
+        "production",
+        "test",
+        "mock",
+        "stub",
+        "generated",
+        "source_text",
+        "unknown",
+        "mixed"
+      ]
+    },
+    "mvp4_exactness": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "derived_with_provenance",
+        "heuristic",
+        "unsupported",
+        "unknown"
+      ]
+    },
+    "micro_claimability": {
+      "type": "string",
+      "enum": [
+        "claimable_local_flow",
+        "claimable_local_fact",
+        "candidate_only",
+        "non_claimable",
+        "partial_non_claimable",
+        "unknown"
+      ]
+    },
+    "local_flow_proof_status": {
+      "type": "string",
+      "enum": [
+        "flow_proof",
+        "partial_local_flow",
+        "candidate_only",
+        "unknown",
+        "unsupported",
+        "truncated",
+        "unavailable",
+        "stale",
+        "non_claimable"
+      ]
+    },
+    "dict_encoded_packet_body": {
+      "type": "object",
+      "required": [
+        "dictionary",
+        "paths",
+        "compression_contract"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "dictionary": {
+          "$ref": "#/$defs/packet_dictionary"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/packet_path"
+          }
+        },
+        "compression_contract": {
+          "$ref": "#/$defs/packet_compression_contract"
+        }
+      }
+    },
+    "packet_dictionary": {
+      "type": "object",
+      "required": [
+        "spans",
+        "nodes",
+        "edges",
+        "provenance"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "spans": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/source_span" },
+              { "$ref": "#/$defs/compact_span_tuple" }
+            ]
+          }
+        },
+        "nodes": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/$defs/micro_node_ref" },
+              { "$ref": "#/$defs/compact_node_tuple" }
+            ]
+          }
+        },
+        "edges": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/$defs/micro_edge_ref" },
+              { "$ref": "#/$defs/compact_edge_tuple" }
+            ]
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/$defs/provenance" },
+              { "$ref": "#/$defs/compact_provenance_tuple" }
+            ]
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 240
+          }
+        },
+        "branch_identities": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/branch_identity"
+          }
+        },
+        "return_path_identities": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/return_path_identity"
+          }
+        }
+      }
+    },
+    "compact_span_tuple": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "string", "minLength": 1 },
+        { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 }
+      ],
+      "minItems": 5,
+      "maxItems": 7
+    },
+    "compact_node_tuple": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "string", "minLength": 1, "maxLength": 96 },
+        { "type": "string", "maxLength": 240 },
+        { "type": "string", "minLength": 1, "maxLength": 240 },
+        { "$ref": "#/$defs/mvp4_exactness" },
+        { "$ref": "#/$defs/micro_claimability" }
+      ],
+      "minItems": 5,
+      "maxItems": 8
+    },
+    "compact_edge_tuple": {
+      "type": "array",
+      "prefixItems": [
+        { "$ref": "#/$defs/micro_edge_ref/properties/relation_kind" },
+        { "type": "string", "minLength": 1, "maxLength": 240 },
+        { "type": "string", "minLength": 1, "maxLength": 240 },
+        { "type": "string", "minLength": 1, "maxLength": 240 },
+        { "$ref": "#/$defs/mvp4_exactness" },
+        { "type": "string", "minLength": 1, "maxLength": 240 }
+      ],
+      "minItems": 6,
+      "maxItems": 9
+    },
+    "compact_provenance_tuple": {
+      "type": "array",
+      "prefixItems": [
+        { "$ref": "#/$defs/provenance/properties/derivation_kind" },
+        {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        },
+        {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 6
+    },
+    "packet_path": {
+      "type": "object",
+      "required": ["path_id", "steps"],
+      "additionalProperties": true,
+      "properties": {
+        "path_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "branch_id": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "return_path_id": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/compact_step_ref"
+          }
+        }
+      }
+    },
+    "compact_step_ref": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string",
+          "enum": ["node", "edge", "gap", "branch", "return_path"]
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 4
+    },
+    "packet_compression_contract": {
+      "type": "object",
+      "required": [
+        "lossless_to_audit_ordered_steps",
+        "source_spans_preserved",
+        "provenance_preserved",
+        "exactness_preserved",
+        "source_roles_preserved",
+        "branch_and_return_paths_preserved",
+        "unknown_gaps_preserved",
+        "full_source_bodies_allowed"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "lossless_to_audit_ordered_steps": { "const": true },
+        "source_spans_preserved": { "const": true },
+        "provenance_preserved": { "const": true },
+        "exactness_preserved": { "const": true },
+        "source_roles_preserved": { "const": true },
+        "branch_and_return_paths_preserved": { "const": true },
+        "shadowed_binding_identity_preserved": { "const": true },
+        "unknown_gaps_preserved": { "const": true },
+        "cap_omissions_preserved": { "const": true },
+        "full_source_bodies_allowed": { "const": false },
+        "verbose_ordered_steps_default_inline": { "const": false }
+      }
+    },
+    "local_flow_step": {
+      "type": "object",
+      "required": [
+        "step_index",
+        "step_id",
+        "step_kind",
+        "order_key",
+        "micro_node_refs",
+        "micro_edge_refs",
+        "source_spans",
+        "exactness",
+        "claimability",
+        "provenance"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "step_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "step_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "step_kind": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write",
+            "assignment",
+            "call",
+            "return",
+            "mutation",
+            "condition",
+            "guard",
+            "sanitizer",
+            "assertion",
+            "branch",
+            "unknown_gap",
+            "unsupported_gap"
+          ]
+        },
+        "order_key": {
+          "$ref": "#/$defs/order_key"
+        },
+        "branch_identity": {
+          "$ref": "#/$defs/branch_identity"
+        },
+        "return_path_identity": {
+          "$ref": "#/$defs/return_path_identity"
+        },
+        "micro_node_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/micro_node_ref"
+          }
+        },
+        "micro_edge_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/micro_edge_ref"
+          }
+        },
+        "source_spans": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "common.schema.json#/$defs/source_span"
+          }
+        },
+        "exactness": {
+          "$ref": "#/$defs/mvp4_exactness"
+        },
+        "claimability": {
+          "$ref": "#/$defs/micro_claimability"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "source_role": {
+          "$ref": "#/$defs/source_role"
+        },
+        "omitted": {
+          "type": "boolean"
+        },
+        "limitations": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
+      }
+    },
+    "order_key": {
+      "type": "object",
+      "required": ["source_order", "structural_order"],
+      "additionalProperties": true,
+      "properties": {
+        "source_order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "structural_order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "branch_order": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "return_path_order": {
+          "type": "string",
+          "maxLength": 120
+        }
+      }
+    },
+    "branch_identity": {
+      "type": "object",
+      "required": ["branch_id", "branch_kind", "branch_label"],
+      "additionalProperties": true,
+      "properties": {
+        "branch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "branch_kind": {
+          "type": "string",
+          "enum": ["if_consequent", "if_alternative", "conditional_arm", "switch_case", "loop_body", "unknown"]
+        },
+        "branch_label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "condition_micro_node_ref": {
+          "$ref": "#/$defs/micro_node_ref"
+        }
+      }
+    },
+    "return_path_identity": {
+      "type": "object",
+      "required": ["return_path_id", "path_kind"],
+      "additionalProperties": true,
+      "properties": {
+        "return_path_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "path_kind": {
+          "type": "string",
+          "enum": ["explicit_return", "early_return", "fallthrough", "throw_or_abort", "unknown"]
+        }
+      }
+    },
+    "micro_node_ref": {
+      "type": "object",
+      "required": ["micro_node_id", "micro_kind", "source_span"],
+      "additionalProperties": true,
+      "properties": {
+        "micro_node_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^micro-node://"
+        },
+        "micro_kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "source_span": {
+          "$ref": "common.schema.json#/$defs/source_span"
+        },
+        "binding_status": {
+          "type": "string",
+          "enum": ["resolver_proven", "source_visible_only", "unresolved", "unsupported", "unknown"]
+        }
+      }
+    },
+    "micro_edge_ref": {
+      "type": "object",
+      "required": ["micro_edge_id", "relation_kind", "source_span"],
+      "additionalProperties": true,
+      "properties": {
+        "micro_edge_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^micro-edge://"
+        },
+        "relation_kind": {
+          "type": "string",
+          "enum": [
+            "LOCAL_READS",
+            "LOCAL_WRITES",
+            "LOCAL_FLOWS_TO",
+            "LOCAL_CALLS",
+            "LOCAL_RETURNS_TO",
+            "LOCAL_MUTATES",
+            "LOCAL_CHECKS",
+            "LOCAL_SANITIZES",
+            "LOCAL_GUARDS",
+            "LOCAL_ASSERTS",
+            "LOCAL_BRANCHES_TO"
+          ]
+        },
+        "source_span": {
+          "$ref": "common.schema.json#/$defs/source_span"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "derivation_kind",
+        "source_fact_ids",
+        "source_spans",
+        "extractor_or_adapter_version",
+        "exactness",
+        "limitations"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "derivation_kind": {
+          "type": "string",
+          "enum": [
+            "direct_ast_extraction",
+            "resolver_backed_binding",
+            "local_sequence_derivation",
+            "local_assignment_chain_derivation",
+            "route_adapter_derivation",
+            "bridge_adapter_derivation",
+            "compiler_lsp_backed_derivation",
+            "heuristic_pattern",
+            "unsupported"
+          ]
+        },
+        "source_fact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        },
+        "source_spans": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "common.schema.json#/$defs/source_span"
+          }
+        },
+        "extractor_or_adapter_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "exactness": {
+          "$ref": "#/$defs/mvp4_exactness"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
+      }
+    },
+    "unknown_gap": {
+      "type": "object",
+      "required": ["gap_id", "gap_kind", "reason", "exactness", "proof_status", "source_spans"],
+      "additionalProperties": true,
+      "properties": {
+        "gap_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "gap_kind": {
+          "type": "string",
+          "enum": [
+            "runtime_dispatch",
+            "dynamic_lookup",
+            "macro_or_preprocessor",
+            "reflection",
+            "framework_convention",
+            "cross_language_unindexed_side",
+            "parse_recovery",
+            "unresolved_binding",
+            "unsupported_ast_shape",
+            "unknown"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "exactness": {
+          "$ref": "#/$defs/mvp4_exactness"
+        },
+        "proof_status": {
+          "$ref": "#/$defs/local_flow_proof_status"
+        },
+        "source_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/source_span"
+          }
+        }
+      }
+    },
+    "expansion_handle": {
+      "type": "object",
+      "required": ["handle", "handle_kind", "available", "proof_boundary"],
+      "additionalProperties": true,
+      "properties": {
+        "handle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "handle_kind": {
+          "type": "string",
+          "enum": ["packet_body", "step_window", "source_spans", "provenance", "audit_trace", "unknown_gap"]
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "proof_boundary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        }
+      }
+    },
+    "budget_contract": {
+      "type": "object",
+      "required": [
+        "mode",
+        "compact_default",
+        "explain_audit_expansion",
+        "handles_in_context_surfaces",
+        "numeric_caps_set",
+        "max_packet_steps",
+        "max_packet_bytes",
+        "full_source_bodies_allowed",
+        "candidate_rank_changes_proof_strength"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["compact", "explain", "audit"]
+        },
+        "compact_default": {
+          "const": true
+        },
+        "explain_audit_expansion": {
+          "const": true
+        },
+        "handles_in_context_surfaces": {
+          "const": true
+        },
+        "numeric_caps_set": {
+          "const": false
+        },
+        "max_packet_steps": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "max_packet_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 1024
+        },
+        "budget_source": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "full_source_bodies_allowed": {
+          "const": false
+        },
+        "candidate_rank_changes_proof_strength": {
+          "const": false
+        }
+      }
+    },
+    "retrieval_query_kind": {
+      "type": "string",
+      "enum": [
+        "exact_symbol",
+        "function",
+        "local_binding",
+        "literal",
+        "route_string",
+        "auth_role",
+        "sanitizer_term",
+        "source_term",
+        "sink_term",
+        "assertion_name",
+        "micro_edge_kind",
+        "file_function_scope"
+      ]
+    },
+    "retrieval_request": {
+      "type": "object",
+      "required": [
+        "schema_name",
+        "schema_version",
+        "request_id",
+        "query_kind",
+        "query_text",
+        "mode",
+        "filters",
+        "proof_boundary"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_name": {
+          "const": "local_micro_flow_retrieval_request"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "query_kind": {
+          "$ref": "#/$defs/retrieval_query_kind"
+        },
+        "query_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["compact", "explain", "audit"]
+        },
+        "filters": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "function_id": {
+              "type": "string"
+            },
+            "source_role": {
+              "$ref": "#/$defs/source_role"
+            },
+            "micro_edge_kind": {
+              "$ref": "#/$defs/micro_edge_ref/properties/relation_kind"
+            },
+            "claimability": {
+              "$ref": "#/$defs/micro_claimability"
+            }
+          }
+        },
+        "open_packet_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^micro-packet://"
+          }
+        },
+        "proof_boundary": {
+          "$ref": "#/$defs/retrieval_proof_boundary"
+        }
+      }
+    },
+    "retrieval_response": {
+      "type": "object",
+      "required": [
+        "schema_name",
+        "schema_version",
+        "request_id",
+        "proof_status",
+        "proof_strength",
+        "candidate_packets",
+        "opened_packets",
+        "proof_boundary",
+        "omitted_count"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_name": {
+          "const": "local_micro_flow_retrieval_response"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "proof_status": {
+          "$ref": "#/$defs/local_flow_proof_status"
+        },
+        "proof_strength": {
+          "$ref": "common.schema.json#/$defs/proof_ladder_level"
+        },
+        "candidate_packets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/retrieval_candidate_packet"
+          }
+        },
+        "opened_packets": {
+          "type": "array",
+          "items": {
+            "$ref": "#"
+          }
+        },
+        "proof_boundary": {
+          "$ref": "#/$defs/retrieval_proof_boundary"
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "retrieval_candidate_packet": {
+      "type": "object",
+      "required": [
+        "packet_id",
+        "rank",
+        "candidate_source",
+        "proof_status",
+        "proof_strength",
+        "claimability"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "packet_id": {
+          "type": "string",
+          "pattern": "^micro-packet://"
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate_source": {
+          "type": "string",
+          "enum": ["lexical", "vector", "binary", "exact_index", "handle_lookup", "policy_optimizer"]
+        },
+        "proof_status": {
+          "const": "candidate_only"
+        },
+        "proof_strength": {
+          "const": "candidate_evidence"
+        },
+        "claimability": {
+          "const": "candidate_only"
+        },
+        "matched_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 96
+          }
+        }
+      }
+    },
+    "retrieval_proof_boundary": {
+      "type": "object",
+      "required": [
+        "candidate_rank_changes_proof_strength",
+        "candidate_retrieval_is_proof",
+        "opened_deterministic_packet_may_prove_local_flow",
+        "policy_optimizer_may_generate_facts"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "candidate_rank_changes_proof_strength": {
+          "const": false
+        },
+        "candidate_retrieval_is_proof": {
+          "const": false
+        },
+        "opened_deterministic_packet_may_prove_local_flow": {
+          "const": true
+        },
+        "policy_optimizer_may_generate_facts": {
+          "const": false
+        }
+      }
+    }
+  }
+}

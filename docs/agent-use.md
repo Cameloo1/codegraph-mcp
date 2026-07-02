@@ -8,7 +8,7 @@ those tools.
 ## Recommended Pattern
 
 Build or install the release binary, keep the DB outside the source tree, and
-ask for bounded agent JSON:
+ask for schema-versioned, budget-aware agent JSON:
 
 ```powershell
 cargo build --release --bin codegraph-mcp
@@ -76,10 +76,11 @@ context-pack` use that same external DB and refuse unsafe DB states instead of
 falling back to `.codegraph`. `agent-use mcp-config` emits config JSON only by
 default; it does not write a config file.
 
-`agent-use query` supports the compact symbol, text, file, caller, callee,
-path, chain, reference, definition, and unresolved-call read surfaces when the
-underlying plain query supports them. Relation/navigation output carries
-relation kind, exactness, source spans, evidence role, `proof_status`, and
+`agent-use query` supports agent JSON output for the symbol, text, file,
+caller, callee, path, chain, reference, definition, and unresolved-call read
+surfaces when the underlying plain query supports them. Relation/navigation
+output carries relation kind, exactness, source spans, evidence role,
+`proof_status`, and
 `proof_strength`. `graph_proof=true` is reserved for verified graph/source
 relations or proof paths; definitions are symbol-location evidence, and
 references distinguish graph references from text references.
@@ -89,7 +90,8 @@ shared usage block instead of separate long help pages for each subcommand. Use
 the command shapes in that shared help block and in this guide as the release
 contract. Richer `--explain` and `--audit-json` modes are verified by the
 release command matrix for `validate-edit` and `context-pack` even though the
-shared help block keeps the quick usage compact.
+shared help block keeps the quick usage compact. Those richer modes are
+diagnostic packets, not the tight-loop compact packet shape.
 
 ## Agent Task Lifecycle
 
@@ -106,7 +108,7 @@ Recommended task loop:
      on graph facts.
    - If only candidate/vector/source-navigation sidecars are stale, graph proof
      can still be claimable, but candidate recall is degraded until reindex.
-2. For non-trivial tasks, ask for a bounded planning packet with
+2. For non-trivial tasks, ask for a compact planning packet with
    `agent-use context-pack --task "<task>" --agent-json`.
    - Use this to identify likely files, symbols, call paths, proof labels,
      unknowns, and follow-up inspection targets.
@@ -278,7 +280,8 @@ The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
 coding-agent context, not public metric verdicts by themselves.
 
-For local diagnostic measurement of the same edit-time guardrail loop, use
+For local diagnostic measurement of the same edit-time guardrail loop, use the
+Agent Guard Playground guide in
 [agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md).
 It measures bad edits caught, clean edits passed, repairs cleared, proof/trust
 ledger discipline, stale-evidence safety, packet usability, and same-agent A/B
@@ -306,9 +309,13 @@ runtime proof sources.
 
 ## Output Modes
 
-- `--agent-json` emits a bounded, schema-versioned JSON envelope for tight
+- `--agent-json` emits a schema-versioned, budget-aware JSON envelope for
   coding-agent loops. It includes compact lifecycle state, claim flags,
   result counts, truncation fields, warnings/errors, timings, and top results.
+  Current release verification found known over-budget exceptions for some
+  path/unresolved-call query packets and rich validate-edit diagnostic modes,
+  so clients must inspect truncation and budget metadata instead of relying on
+  byte size alone.
 - `--concise` emits compact human/machine output where supported without the
   full audit payload.
 - `--verbose`, `--debug`, `--profile`, and audit/report commands preserve rich
@@ -320,10 +327,63 @@ runtime proof sources.
 The public agent JSON schemas live under `docs/schemas/agent-json/`, with the
 versioning policy in [agent-json.md](agent-json.md).
 
+MVP4.3 local micro-flow packets are active only for verified TypeScript `.ts`
+production source. Context, routing, validate-edit, watch, and MCP surfaces are
+handle-first: compact output carries packet handles and summary fields, while
+opened packets use `local_micro_flow_packet_agent_json` with
+`encoding: "dict_v1"` and a dictionary/path `packet_body`. Verbose
+`ordered_steps` are explain/audit expansion output, not the default agent-loop
+payload and not a stronger proof source. JavaScript, JSX, TSX, Python, Go,
+Rust, C, C++, Java, C#, Ruby, PHP, and unsupported/text-only files do not emit
+local-flow packet rows or `flow_proof` unless a later fixture-backed
+implementation explicitly changes that status.
+
 Telemetry fields distinguish measured, unknown, and aggregated values. Memory
 is reported as `memory: "unknown"` with `memory_measured: false` unless it is
 actually measured. Timing substages that cannot be separated yet are labeled as
 unknown or aggregated rather than presented as precise measurements.
+
+## Language Support Boundary
+
+The Pre-MVP4.4 language hardening lane verified the current registered
+frontends: JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++,
+Ruby, and PHP. Exact support is fixture-backed and surface-specific; registered
+does not mean every relation is exact.
+
+Current agent-use behavior:
+
+- TypeScript `.ts` production files have the active MVP4.3 local-flow packet
+  slice: local micro-nodes, local micro-edges, compact `dict_v1`
+  `local_flow_packets`, and `flow_proof` only for complete eligible local
+  chains.
+- TypeScript `.mts`/`.cts`, TSX, JavaScript, JSX, Python, Go, Rust, C, C++,
+  Java, C#, Ruby, and PHP remain useful through their verified parser, symbol,
+  text, source-role, unresolved-reference, context-pack, validate-edit, watch,
+  and MCP surfaces, but packet support is `not_implemented` unless the final
+  language matrix says otherwise.
+- Rust, Python, Go, TypeScript, and JavaScript have fixture-backed unresolved
+  reference warning behavior where eligible. External, builtin/std,
+  macro/codegen, dynamic, computed, runtime, compiler/LSP-required, and
+  preprocessor-required cases remain warning/unknown/diagnostic rather than
+  source-proof blockers by default.
+- C and C++ support parser/source-span and include/symbol evidence where
+  verified, while macros, inactive preprocessor branches, templates, generated
+  headers, and function-pointer behavior require preprocessor/compiler evidence
+  before any exact claim.
+- Java and C# support syntax/entity/import/using evidence where verified, while
+  virtual dispatch, reflection, framework annotations, and dependency injection
+  require compiler/LSP or runtime evidence before any exact claim.
+- Ruby and PHP support syntax/entity/require/include evidence where verified,
+  while metaprogramming, magic methods, framework convention routes, and dynamic
+  includes/calls remain unknown or heuristic.
+
+Text, candidate, vector, nuance, and source-navigation evidence can orient an
+agent and cite source text, but they are not typed graph proof. Route and bridge
+future contracts remain inert: no current `ROUTES_TO`, `MOUNTS_ROUTER`, or
+`BRIDGES_TO` edge is claimable unless a source-spanned exact extractor is
+explicitly present. There is no public benchmark, CodeGraph-over-`rg`/CGC,
+official SWE-bench, real-agent patch-quality, or security-vulnerability proof
+claim in these language surfaces.
 
 ## Graph Verification Diagnostics
 

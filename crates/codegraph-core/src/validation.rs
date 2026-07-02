@@ -4238,6 +4238,14 @@ fn validation_packet_compact_graph_delta_json(graph_delta: &Value) -> Value {
         "no_silent_full_repo_fallback",
         "source_spans_and_provenance_preserved",
         "claim_boundaries_preserved",
+        "micro_edge_delta",
+        "micro_edge_integrity",
+        "micro_edge_layer_status",
+        "micro_edge_proof_changes",
+        "micro_flow_packet_delta",
+        "micro_flow_packet_integrity",
+        "micro_flow_packet_layer_status",
+        "micro_flow_packet_proof_changes",
         "full_graph_dump_default",
         "public_claim",
     ] {
@@ -5659,25 +5667,43 @@ mod tests {
     }
 
     #[test]
-    fn no_mvp4_fields_introduced() {
+    fn mvp4_visibility_fields_do_not_activate_flow_or_mutation_proof() {
         let policy = mvp3_6_severity_policy_contract();
         assert!(!policy.mvp4_fields_introduced);
 
         let validation_schema =
             read_agent_json_schema_for_test("validation_packet_agent_json.schema.json");
         let serialized = serde_json::to_string(&validation_schema).expect("serialize schema");
-        for forbidden in [
-            "ast_quantization",
-            "micro_flow",
-            "flow_proof",
-            "semantic_quality_score",
-            "mvp4_ready",
-        ] {
+        for forbidden in ["ast_quantization", "semantic_quality_score", "mvp4_ready"] {
             assert!(
                 !serialized.contains(forbidden),
                 "schema unexpectedly contains MVP4 field {forbidden}"
             );
         }
+        assert!(
+            serialized.contains("micro_edge_delta"),
+            "schema should expose bounded MVP4.2 micro-edge visibility"
+        );
+        assert_eq!(
+            validation_schema["properties"]["micro_edge_delta"]["properties"]
+                ["flow_proof_activated"]["const"],
+            json!(false)
+        );
+        assert_eq!(
+            validation_schema["properties"]["micro_edge_delta"]["properties"]
+                ["mutation_proof_activated"]["const"],
+            json!(false)
+        );
+        assert_eq!(
+            validation_schema["properties"]["micro_edge_proof_changes"]["properties"]
+                ["flow_proof_activated"]["const"],
+            json!(false)
+        );
+        assert_eq!(
+            validation_schema["properties"]["micro_edge_proof_changes"]["properties"]
+                ["mutation_proof_activated"]["const"],
+            json!(false)
+        );
     }
 
     fn claimable_packet_claimability_for_test() -> Value {
@@ -5931,6 +5957,7 @@ mod tests {
         for kind in [
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let (finding, rule) = candidate_only_finding(kind);
@@ -6786,6 +6813,7 @@ mod tests {
             ValidationEvidenceKind::TextEvidence,
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let mut input = exact_graph_source_input();
@@ -8094,6 +8122,7 @@ mod tests {
             ValidationEvidenceKind::TextEvidence,
             ValidationEvidenceKind::Candidate,
             ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::Nuance,
             ValidationEvidenceKind::SourceNavigation,
         ] {
             let mut finding =

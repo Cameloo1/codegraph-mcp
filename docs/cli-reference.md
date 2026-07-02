@@ -37,8 +37,8 @@ before `query`. Use `--` for literal flag-shaped search terms, such as
 
 ## Agent-Friendly Output
 
-Use `--agent-json` for tight coding-agent loops and `--limit <n>` to keep
-results bounded:
+Use `--agent-json` for tight coding-agent loops and `--limit <n>` to request
+compact, budget-aware results:
 
 ```powershell
 codegraph-mcp agent-use query symbols <symbol> --repo <repo> `
@@ -61,7 +61,7 @@ codegraph-mcp agent-use validate-edit --repo <repo> `
 
 Supported compact modes:
 
-- `--agent-json`: schema-versioned, bounded JSON for agent loops.
+- `--agent-json`: schema-versioned, budget-aware JSON for agent loops.
 - `--concise`: compact output where supported.
 - `--verbose`, `--debug`, `--profile`, and `--audit-json`: explicit rich or
   audit detail.
@@ -70,6 +70,11 @@ Supported compact modes:
 
 `index --json` is concise by default. It excludes full scope examples and audit
 payloads unless one of the explicit audit/scope flags is supplied.
+
+Current release verification found known compact-size exceptions for path and
+unresolved-call query packets and for rich validate-edit `--explain` /
+`--audit-json` packets. Consumers should parse truncation and budget metadata
+instead of treating byte size alone as a safety signal.
 
 ## Production Agent-Use Namespace
 
@@ -282,6 +287,25 @@ ambiguous, and fuzzy modes as `query callers`.
 Runs cycle-safe call-chain recovery over `CALLS` edges, preserving exactness and
 confidence labels.
 
+`agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json`
+
+Queries the current MVP4.3 local-flow packet layer through the external
+production agent-use profile. This surface is active only for verified
+TypeScript `.ts` production packet rows. Compact output is handle-first and
+reports packet-layer status, language counts, proof-status/proof-strength
+counts, truncation, omitted counts, source roles, and expansion handles without
+inlining full packet bodies by default. Individual TypeScript packet rows may
+carry `proof_strength: "flow_proof"` only when the packet is complete,
+current, source-spanned, provenance-safe, production-role, and eligible;
+partial or gap-bearing packets are downgraded.
+
+JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, PHP, and
+text-only/unsupported files currently have packet support
+`not_implemented`/`not_applicable`. They may still produce useful graph or text
+evidence through other query/context/validate surfaces, but they do not emit
+`local_flow_packets`, micro-flow handles, or `flow_proof`. Missing packet
+support is not a source-code error and cannot hard-interrupt by itself.
+
 `query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets|--include-snippets] [--db <path>]`
 
 Lists the unresolved-reference lane with optional path and class filters. The
@@ -453,13 +477,29 @@ Runs read-only audit inspections over DBs and manual-label artifacts. Audit
 outputs can support stable summaries, but raw audit DBs/logs are not final
 benchmark artifacts by themselves.
 
+`audit micro-edges [--repo <repo>] [--db <path>] [--sample-limit <n>] [--json-out <path>] [--markdown-out <path>]`
+
+Runs a bounded read-only MVP4.2 micro-edge layer inspection. The summary reports
+optional `LOCAL_RETURNS_TO` status, counts, versions, cap/omission fields, and a
+bounded sample with endpoint ids/kinds, spans, exactness, claimability, and
+provenance summary. It does not output full source bodies, local-flow packets,
+`flow_proof`, or `mutation_proof`.
+
+`audit local-flow-packets [--repo <repo>] [--db <path>] [--file <path>] [--function <id>] [--packet-id <id>] [--proof-strength <value>] [--limit <n>] [--json-out <path>] [--markdown-out <path>]`
+
+Runs a bounded read-only MVP4.3 local micro-flow packet inspection. Compact
+packet rows stay handle-first by default; packet bodies use `encoding:
+"dict_v1"` plus `packet_body`. Verbose `ordered_steps` are reserved for explicit
+audit expansion and must not be treated as a separate proof source.
+
 `doctor [repo] [--json]`
 
 Checks the local SQLite DB, language frontends, optional Node/TypeScript
 resolver, `.codex/config.toml`, bundled UI assets, and `.codegraph`
 permissions. DB inspection is read-only and lifecycle-aware. JSON output
-includes passport status plus `sqlite_sidecars` and `sidecar_status`; normal
-WAL/SHM files are not reported as orphaned unless the main DB is missing.
+includes passport status plus `sqlite_sidecars`, `sidecar_status`, and optional
+MVP4.2 micro-edge availability where present; normal WAL/SHM files are not
+reported as orphaned unless the main DB is missing.
 
 `config [show|completions|release-metadata] [--shell <powershell|bash|zsh|fish>]`
 

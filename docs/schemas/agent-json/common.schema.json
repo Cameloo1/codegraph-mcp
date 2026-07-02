@@ -295,6 +295,144 @@
         }
       }
     },
+    "unresolved_reference_class": {
+      "type": "string",
+      "enum": [
+        "repo_local_candidate",
+        "external_dependency",
+        "builtin_or_std",
+        "macro_or_codegen",
+        "dynamic_or_computed"
+      ]
+    },
+    "unresolved_reference_item": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference_class": {
+          "$ref": "#/$defs/unresolved_reference_class"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span": {
+          "$ref": "#/$defs/source_span"
+        },
+        "repo_graph_lookup": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["warning", "blocking", "diagnostic_only", "unknown"]
+        },
+        "proof_strength": {
+          "type": "string"
+        },
+        "claimability": {
+          "type": "string"
+        },
+        "recommended_fix": {
+          "type": "string"
+        }
+      }
+    },
+    "unresolved_references_block": {
+      "type": "object",
+      "required": ["not_graph_proof"],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "new_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resolved_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "by_class": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "escalated": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unresolved_reference_item"
+          }
+        },
+        "escalated_omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expansion_handle": {
+          "type": "string"
+        },
+        "filters": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "path": {
+              "type": ["string", "null"]
+            },
+            "path_input": {
+              "type": ["string", "null"]
+            },
+            "class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/unresolved_reference_class"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unresolved_reference_item"
+          }
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pagination": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "source_table": {
+          "type": "string"
+        },
+        "populated_in_all_storage_modes": {
+          "type": "boolean"
+        },
+        "not_graph_proof": {
+          "const": true
+        }
+      }
+    },
     "prompt_intent": {
       "type": "string",
       "enum": [

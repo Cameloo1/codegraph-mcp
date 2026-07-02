@@ -20,14 +20,18 @@ use std::{
 
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role, classify_validation_finding,
-    entity_kind_defines_symbol, normalize_repo_relative_path, ContextPacket, ContextSnippet, Edge,
-    Entity, EvidenceRole, Exactness, PathEvidence, RelationKind, RetrievalCandidate, SourceSpan,
-    SupportedRelationStatus, ValidationBlockingLevel, ValidationClassification,
+    entity_kind_defines_symbol, mvp4_micro_edge_language_capability, normalize_repo_relative_path,
+    ContextPacket, ContextSnippet, DictV1PacketBody, Edge, Entity, EvidenceRole, Exactness,
+    MicroEdgeKind, MicroExactness, MicroSourceRole, PathEvidence, RelationKind, RetrievalCandidate,
+    SourceSpan, SupportedRelationStatus, ValidationBlockingLevel, ValidationClassification,
     ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
     ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
     ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
     ValidationReverificationInput, ValidationRule, ValidationRuleKind,
     ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
+    MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
+    MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES,
 };
 use codegraph_index::{
     candidate_spool_index_status_for_repo, compute_entity_source_role_delta, default_db_path,
@@ -49,8 +53,8 @@ use codegraph_query::{
     VectorCandidateBranchStatus,
 };
 use codegraph_store::{
-    classify_sqlite_access_problem, DbPreflightReport, GraphStore, SqliteGraphStore, TextSearchHit,
-    TextSearchKind,
+    classify_sqlite_access_problem, AstMicroEdgeRow, AstMicroNodeRow, DbPreflightReport,
+    GraphStore, LocalFlowPacketRow, SqliteGraphStore, TextSearchHit, TextSearchKind,
 };
 use codegraph_trace::{TraceConfig, TraceLogger};
 use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
@@ -96,6 +100,36 @@ const CG_MVP3_REF_DYNAMIC: &str = "CG_MVP3_REF_DYNAMIC";
 const CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT: &str =
     "CG_MVP3_STALE_OR_FOREIGN_DB_VALIDATION_ATTEMPT";
 const CG_MCP_VALIDATE_EDIT_REJECTED_PATHS: &str = "CG_MCP_VALIDATE_EDIT_REJECTED_PATHS";
+const CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD: &str = "CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD";
+const CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL: &str = "CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL";
+const CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND: &str = "CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND";
+const CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND: &str = "CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND";
+const CG_MVP4_2_MICRO_EDGE_CROSS_FILE: &str = "CG_MVP4_2_MICRO_EDGE_CROSS_FILE";
+const CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION: &str = "CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION";
+const CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN: &str = "CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN";
+const CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE: &str = "CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE";
+const CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH: &str = "CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH";
+const CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE: &str = "CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE";
+const CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH: &str = "CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH";
+const CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION: &str =
+    "CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION";
+const CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED: &str = "CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED";
+const CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE: &str = "CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE";
+const CG_MVP4_3_PACKET_MISSING_NODE: &str = "CG_MVP4_3_PACKET_MISSING_NODE";
+const CG_MVP4_3_PACKET_MISSING_EDGE: &str = "CG_MVP4_3_PACKET_MISSING_EDGE";
+const CG_MVP4_3_PACKET_STALE_SOURCE_FACT: &str = "CG_MVP4_3_PACKET_STALE_SOURCE_FACT";
+const CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN: &str = "CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN";
+const CG_MVP4_3_PACKET_MISSING_PROVENANCE: &str = "CG_MVP4_3_PACKET_MISSING_PROVENANCE";
+const CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP: &str = "CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP";
+const CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION: &str = "CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION";
+const CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE: &str =
+    "CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE";
+const CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING: &str = "CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING";
+const CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING: &str =
+    "CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING";
+const CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE: &str = "CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE";
+const CG_MVP4_3_PACKET_LAYER_TRUNCATED: &str = "CG_MVP4_3_PACKET_LAYER_TRUNCATED";
+const CG_MVP4_3_PACKET_LAYER_UNAVAILABLE: &str = "CG_MVP4_3_PACKET_LAYER_UNAVAILABLE";
 const MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV: &str = "CODEGRAPH_BLOCK_ON_UNRESOLVED_LOCAL";
 const REFERENCE_CLASS_REPO_LOCAL_CANDIDATE: &str = "repo_local_candidate";
 const REFERENCE_CLASS_DYNAMIC_OR_COMPUTED: &str = "dynamic_or_computed";
@@ -1029,6 +1063,10 @@ impl McpServer {
                 Some(&preflight),
                 &staged_availability,
             );
+            Self::attach_mvp4_micro_edge_visibility(
+                &mut value,
+                Self::mvp4_micro_edge_visibility_for_preflight(&preflight),
+            );
             mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
             return Ok(value);
         }
@@ -1070,6 +1108,10 @@ impl McpServer {
                 &db_path,
                 Some(&preflight),
                 &staged_availability,
+            );
+            Self::attach_mvp4_micro_edge_visibility(
+                &mut value,
+                Self::mvp4_micro_edge_visibility_for_preflight(&preflight),
             );
             mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
             return Ok(value);
@@ -1119,8 +1161,273 @@ impl McpServer {
             Some(&preflight),
             &staged_availability,
         );
+        let micro_edges =
+            Self::mvp4_micro_edge_visibility_from_store(&store, &preflight, 0, false)?;
+        Self::attach_mvp4_micro_edge_visibility(&mut value, micro_edges);
         mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
         Ok(value)
+    }
+
+    fn mvp4_micro_edge_proof_boundary_json() -> Value {
+        json!({
+            "exact_local_returns_to_is_graph_relation_proof": true,
+            "relation_meaning": "ReturnSite is structurally owned by nearest enclosing FunctionFrame",
+            "not_return_value_flow": true,
+            "not_control_flow_reachability": true,
+            "not_complete_function_behavior": true,
+            "not_local_flow_packet": true,
+            "mutation_proof_activated": false,
+            "flow_proof_activated": false,
+            "route_auth_security_semantics": false,
+            "candidate_retrieval_proof": false,
+        })
+    }
+
+    fn mvp4_micro_edge_language_capabilities_json() -> Value {
+        let active = MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES
+            .iter()
+            .map(|capability| {
+                json!({
+                    "language": capability.language,
+                    "frontend": capability.frontend,
+                    "micro_edge_kind": capability.micro_edge_kind.as_str(),
+                    "activation_status": capability.activation_status.as_str(),
+                    "exactness_capability": capability.exactness_capability.as_str(),
+                    "endpoint_node_requirements": capability.endpoint_node_requirements.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
+                    "resolver_requirements": capability.resolver_requirements,
+                    "provenance_builder": capability.provenance_builder,
+                    "parser_recovery_behavior": capability.parser_recovery_behavior,
+                    "source_role_behavior": capability.source_role_behavior,
+                    "extraction_version": capability.extraction_version,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "default_status": "not_implemented",
+            "default_exact_support": false,
+            "unsupported_language_behavior": "non-active language/relation adapters emit no micro-edge rows and remain not_applicable/not_implemented",
+            "active": active,
+        })
+    }
+
+    fn mvp4_micro_edge_visibility_for_preflight(preflight: &DbLifecyclePreflight) -> Value {
+        let status = Self::mvp4_micro_edge_status_from_preflight(preflight);
+        json!({
+            "status": status,
+            "feature_status": status,
+            "ready": false,
+            "feature": "mvp4_2_ast_micro_edges",
+            "supported_language_slice": "typescript_ts_local_returns_to_v1",
+            "supported_relation_slice": "local_returns_to",
+            "relation_kinds_active": [],
+            "languages_active": [],
+            "schema_version": preflight.db_health.schema_version,
+            "row_schema_version": MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
+            "payload_version": MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
+            "extraction_version": MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+            "total_rows": 0,
+            "rows_by_edge_kind": {},
+            "rows_by_language": {},
+            "rows_by_source_role": {},
+            "files_represented": 0,
+            "functions_represented": 0,
+            "cap_hit_count": 0,
+            "omitted_count": 0,
+            "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+            "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+            "availability_separate_from_graph_claimability": true,
+            "core_graph_claimability_separate": true,
+            "micro_node_availability_separate": true,
+            "local_flow_packet_availability": "not_applicable",
+            "default_full_table_scan": false,
+            "bounded_summary": true,
+            "sample_available_in_audit": true,
+            "sample_count": 0,
+            "full_source_body_output": false,
+            "recovery_action": Self::mvp4_micro_edge_recovery_action(status),
+            "language_capabilities": Self::mvp4_micro_edge_language_capabilities_json(),
+            "proof_boundary": Self::mvp4_micro_edge_proof_boundary_json(),
+        })
+    }
+
+    fn mvp4_micro_edge_status_from_preflight(preflight: &DbLifecyclePreflight) -> &'static str {
+        if preflight.path_access_status == "db_missing" {
+            return "not_applicable";
+        }
+        if preflight.schema_status != "ok" {
+            return "incompatible";
+        }
+        match preflight.db_problem_kind.as_deref() {
+            Some("db_locked" | "permission_denied" | "filesystem_inaccessible") => "unavailable",
+            Some("sqlite_corrupt" | "passport_corrupt") => "corrupt",
+            Some("schema_mismatch" | "passport_missing" | "passport_mismatch") => "incompatible",
+            Some("repo_mismatch" | "scope_mismatch" | "repo_head_mismatch") => "stale",
+            Some(_) => "unavailable",
+            None if preflight.safe => "not_applicable",
+            None => "unavailable",
+        }
+    }
+
+    fn mvp4_micro_edge_recovery_action(status: &str) -> &'static str {
+        match status {
+            "ready" => "none",
+            "not_applicable" => {
+                "run an MVP4.2-enabled index on production TypeScript .ts files if micro-edge visibility is expected"
+            }
+            "unavailable" => {
+                "re-run index with a current writable schema if this DB should expose MVP4.2 micro-edge availability"
+            }
+            "stale" => "refresh the DB for the current repo/head before trusting micro-edge availability",
+            "incompatible" => "open with a writer/index path that performs the explicit schema migration, or rebuild the DB",
+            "corrupt" => "replace or rebuild the DB; do not use optional micro-edge state as graph proof",
+            "truncated" => "inspect audit output and cap-hit counts before relying on micro-edge completeness",
+            _ => "inspect DB lifecycle status",
+        }
+    }
+
+    fn mvp4_micro_edge_visibility_from_store(
+        store: &SqliteGraphStore,
+        preflight: &DbLifecyclePreflight,
+        sample_limit: usize,
+        include_sample: bool,
+    ) -> Result<Value, ToolCallError> {
+        if !store
+            .table_exists("ast_micro_edges")
+            .map_err(mcp_store_error)?
+        {
+            let mut layer = Self::mvp4_micro_edge_visibility_for_preflight(preflight);
+            if let Some(object) = layer.as_object_mut() {
+                object.insert("status".to_string(), json!("unavailable"));
+                object.insert("feature_status".to_string(), json!("unavailable"));
+                object.insert(
+                    "recovery_action".to_string(),
+                    json!(Self::mvp4_micro_edge_recovery_action("unavailable")),
+                );
+                object.insert(
+                    "missing_reason".to_string(),
+                    json!("ast_micro_edges table missing"),
+                );
+            }
+            return Ok(layer);
+        }
+        if !store
+            .sparse_sidecar_schema_ready()
+            .map_err(mcp_store_error)?
+        {
+            let mut layer = Self::mvp4_micro_edge_visibility_for_preflight(preflight);
+            if let Some(object) = layer.as_object_mut() {
+                object.insert("status".to_string(), json!("unavailable"));
+                object.insert("feature_status".to_string(), json!("unavailable"));
+                object.insert(
+                    "recovery_action".to_string(),
+                    json!(Self::mvp4_micro_edge_recovery_action("unavailable")),
+                );
+                object.insert(
+                    "missing_reason".to_string(),
+                    json!("sparse sidecar schema incomplete"),
+                );
+            }
+            return Ok(layer);
+        }
+        let summary = store
+            .ast_micro_edge_visibility_summary(if include_sample { sample_limit } else { 0 })
+            .map_err(mcp_store_error)?;
+        let status = if summary.total_rows == 0 {
+            "not_applicable"
+        } else if summary.cap_hit_count > 0 || summary.omitted_count > 0 {
+            "truncated"
+        } else {
+            "ready"
+        };
+        let relation_kinds_active = summary
+            .rows_by_edge_kind
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let languages_active = summary.rows_by_language.keys().cloned().collect::<Vec<_>>();
+        let sample_count = summary.sample.len();
+        let mut layer = json!({
+            "status": status,
+            "feature_status": status,
+            "ready": status == "ready",
+            "feature": "mvp4_2_ast_micro_edges",
+            "supported_language_slice": "typescript_ts_local_returns_to_v1",
+            "supported_relation_slice": "local_returns_to",
+            "relation_kinds_active": relation_kinds_active,
+            "languages_active": languages_active,
+            "schema_version": preflight.db_health.schema_version,
+            "row_schema_version": summary.row_schema_versions.first().copied().unwrap_or(MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION),
+            "row_schema_versions": summary.row_schema_versions,
+            "payload_version": summary.payload_versions.first().copied().unwrap_or(MVP4_2_MICRO_EDGE_PAYLOAD_VERSION),
+            "payload_versions": summary.payload_versions,
+            "extraction_version": summary.extraction_versions.first().cloned().unwrap_or_else(|| MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION.to_string()),
+            "extraction_versions": summary.extraction_versions,
+            "total_rows": summary.total_rows,
+            "rows_by_edge_kind": summary.rows_by_edge_kind,
+            "rows_by_language": summary.rows_by_language,
+            "rows_by_source_role": summary.rows_by_source_role,
+            "files_represented": summary.files_represented,
+            "functions_represented": summary.functions_represented,
+            "cap_hit_count": summary.cap_hit_count,
+            "omitted_count": summary.omitted_count,
+            "exactness_counts": summary.exactness_counts,
+            "claimability_counts": summary.claimability_counts,
+            "sidecar_table_bytes": summary.estimated_payload_bytes,
+            "sidecar_table_bytes_measurement": "estimated_row_payload_bytes",
+            "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+            "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+            "availability_separate_from_graph_claimability": true,
+            "core_graph_claimability_separate": true,
+            "micro_node_availability_separate": true,
+            "local_flow_packet_availability": "not_applicable",
+            "default_full_table_scan": summary.default_full_table_scan,
+            "bounded_summary": true,
+            "sample_limit": summary.sample_limit,
+            "sample_count": sample_count,
+            "sample_available_in_audit": true,
+            "full_source_body_output": summary.full_source_body_output,
+            "query_plan": summary.query_plan,
+            "recovery_action": Self::mvp4_micro_edge_recovery_action(status),
+            "language_capabilities": Self::mvp4_micro_edge_language_capabilities_json(),
+            "proof_boundary": Self::mvp4_micro_edge_proof_boundary_json(),
+        });
+        if include_sample {
+            if let Some(object) = layer.as_object_mut() {
+                object.insert(
+                    "sample".to_string(),
+                    serde_json::to_value(summary.sample).map_err(|error| {
+                        ToolCallError::new(
+                            "serialization_failed",
+                            format!("could not encode micro-edge sample: {error}"),
+                        )
+                    })?,
+                );
+            }
+        }
+        Ok(layer)
+    }
+
+    fn attach_mvp4_micro_edge_visibility(value: &mut Value, layer: Value) {
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let rows = layer.get("total_rows").and_then(Value::as_u64).unwrap_or(0);
+        object.insert("mvp4_micro_edges".to_string(), layer);
+        object.insert("mvp4_micro_edge_status".to_string(), json!(status));
+        object.insert("mvp4_micro_edge_rows".to_string(), json!(rows));
+        object.insert(
+            "mvp4_local_flow_packet_status".to_string(),
+            json!("not_applicable"),
+        );
+        object.insert(
+            "core_graph_micro_edge_availability_separated".to_string(),
+            json!(true),
+        );
     }
 
     fn index_repo(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -2643,6 +2950,23 @@ fn output_schema_for_tool(name: &str) -> Value {
                 json!({"type": "string"}),
             );
             properties.insert("vector_audit_status".to_string(), json!({"type": "string"}));
+            properties.insert("mvp4_micro_edges".to_string(), json!({"type": "object"}));
+            properties.insert(
+                "mvp4_micro_edge_status".to_string(),
+                json!({"type": "string"}),
+            );
+            properties.insert(
+                "mvp4_micro_edge_rows".to_string(),
+                json!({"type": "integer"}),
+            );
+            properties.insert(
+                "mvp4_local_flow_packet_status".to_string(),
+                json!({"type": "string"}),
+            );
+            properties.insert(
+                "core_graph_micro_edge_availability_separated".to_string(),
+                json!({"type": "boolean"}),
+            );
         }
         MCP_VALIDATE_EDIT_TOOL_NAME => {
             properties.insert("validation_packet".to_string(), json!({"type": "object"}));
@@ -2666,6 +2990,35 @@ fn output_schema_for_tool(name: &str) -> Value {
             properties.insert("diagnostics".to_string(), json!({"type": "array"}));
             properties.insert("claimability".to_string(), json!({"type": "object"}));
             properties.insert("lifecycle".to_string(), json!({"type": "object"}));
+            properties.insert("micro_edge_delta".to_string(), json!({"type": "object"}));
+            properties.insert(
+                "micro_edge_integrity".to_string(),
+                json!({"type": "object"}),
+            );
+            properties.insert(
+                "micro_edge_layer_status".to_string(),
+                json!({"type": "object"}),
+            );
+            properties.insert(
+                "micro_edge_proof_changes".to_string(),
+                json!({"type": "object"}),
+            );
+            properties.insert(
+                "micro_flow_packet_delta".to_string(),
+                json!({"type": "object"}),
+            );
+            properties.insert(
+                "micro_flow_packet_integrity".to_string(),
+                json!({"type": "object"}),
+            );
+            properties.insert(
+                "micro_flow_packet_layer_status".to_string(),
+                json!({"type": "object"}),
+            );
+            properties.insert(
+                "micro_flow_packet_proof_changes".to_string(),
+                json!({"type": "object"}),
+            );
             properties.insert("recovery_commands".to_string(), json!({"type": "array"}));
             properties.insert("omitted_count".to_string(), json!({"type": "integer"}));
             properties.insert("expansion_handles".to_string(), json!({"type": "array"}));
@@ -3400,7 +3753,229 @@ fn mcp_validate_edit_validation_rules() -> Vec<ValidationRule> {
         "Stage 0 text evidence changed for Config.in, package metadata, or build-system text"
             .to_string();
     rules.push(config_text);
+    rules.extend(mcp_validate_edit_micro_edge_validation_rules());
+    rules.extend(mcp_validate_edit_local_flow_packet_validation_rules());
     rules.extend(mcp_validate_edit_unresolved_reference_validation_rules());
+    rules
+}
+
+fn mcp_validate_edit_micro_edge_validation_rules() -> Vec<ValidationRule> {
+    fn proof_rule(
+        validation_rule_id: &'static str,
+        invariant: &'static str,
+        docs_summary: &'static str,
+    ) -> ValidationRule {
+        let mut rule = ValidationRule::exact_blocking(
+            validation_rule_id,
+            ValidationRuleKind::ProofIntegrity,
+            None,
+            invariant,
+            docs_summary,
+        );
+        rule.activation_condition =
+            "claimable current exact LOCAL_RETURNS_TO micro-edge integrity contradiction"
+                .to_string();
+        rule.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+        rule.provenance_requirement = ValidationProvenanceRequirement::RequiredForDerivedEdges;
+        rule
+    }
+
+    let mut rules = vec![
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD,
+            "exact LOCAL_RETURNS_TO edges must reference a current ReturnSite head micro-node",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL,
+            "exact LOCAL_RETURNS_TO edges must reference a current FunctionFrame tail micro-node",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
+            "LOCAL_RETURNS_TO head endpoint kind must be ReturnSite",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
+            "LOCAL_RETURNS_TO tail endpoint kind must be FunctionFrame",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_CROSS_FILE,
+            "LOCAL_RETURNS_TO endpoints must stay in the same normalized file as the edge",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION,
+            "LOCAL_RETURNS_TO endpoints must stay inside the same enclosing function identity domain",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
+            "claimable exact LOCAL_RETURNS_TO edges must carry a relation source span",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE,
+            "claimable exact LOCAL_RETURNS_TO edges must carry direct-AST provenance",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH,
+            "LOCAL_RETURNS_TO proof storage may contain only exact claimable local return containment edges",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_STALE_AFTER_CHANGE,
+            "stale exact LOCAL_RETURNS_TO edge proof must not survive a changed-file update",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH,
+            "LOCAL_RETURNS_TO edge versions must match the current MVP4.2 extraction contract",
+            "Reindex with the current CodeGraph binary, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
+            "LOCAL_RETURNS_TO tail must be the nearest enclosing FunctionFrame for the ReturnSite",
+            "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit.",
+        ),
+    ];
+
+    for (rule_id, invariant, docs_summary) in [
+        (
+            CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED,
+            "micro-edge layer truncation degrades completeness and cannot create a source-code blocker",
+            "Inspect audit output and cap-hit counts; continue only with truncated micro-edge proof marked incomplete.",
+        ),
+        (
+            CG_MVP4_2_MICRO_EDGE_LAYER_UNAVAILABLE,
+            "missing or unavailable micro-edge layer is optional-layer state, not source-code proof",
+            "Run an MVP4.2-enabled index if micro-edge validation is required, otherwise treat the layer as unavailable.",
+        ),
+    ] {
+        let mut rule = ValidationRule::diagnostic(rule_id, invariant, docs_summary);
+        rule.rule_kind = if rule_id == CG_MVP4_2_MICRO_EDGE_LAYER_TRUNCATED {
+            ValidationRuleKind::ClosureBudgetBoundary
+        } else {
+            ValidationRuleKind::UnsupportedRelationBoundary
+        };
+        rule.supported_relation_status = SupportedRelationStatus::DiagnosticOnly;
+        rule.proof_requirement = ValidationProofRequirement::DiagnosticOnly;
+        rule.source_span_requirement = ValidationSourceSpanRequirement::NotApplicable;
+        rule.provenance_requirement = ValidationProvenanceRequirement::NotApplicable;
+        rule.lifecycle_requirement = ValidationLifecycleRequirement::DiagnosticReadOnly;
+        rules.push(rule);
+    }
+
+    rules
+}
+
+fn mcp_validate_edit_local_flow_packet_validation_rules() -> Vec<ValidationRule> {
+    fn proof_rule(
+        validation_rule_id: &'static str,
+        invariant: &'static str,
+        docs_summary: &'static str,
+    ) -> ValidationRule {
+        let mut rule = ValidationRule::exact_blocking(
+            validation_rule_id,
+            ValidationRuleKind::ProofIntegrity,
+            None,
+            invariant,
+            docs_summary,
+        );
+        rule.activation_condition =
+            "claimable current local_flow_packets integrity contradiction".to_string();
+        rule.proof_requirement = ValidationProofRequirement::ReverifiedGraphIntegrity;
+        rule.provenance_requirement = ValidationProvenanceRequirement::RequiredForDerivedEdges;
+        rule
+    }
+
+    let mut rules = vec![
+        proof_rule(
+            CG_MVP4_3_PACKET_MISSING_NODE,
+            "local micro-flow packet node refs must resolve to current persisted micro-node rows",
+            "Reindex or repair CodeGraph local-flow packet state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_MISSING_EDGE,
+            "local micro-flow packet edge refs must resolve to current persisted micro-edge rows",
+            "Reindex or repair CodeGraph local-flow packet state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_STALE_SOURCE_FACT,
+            "local micro-flow packets must reference current node/edge extraction versions",
+            "Reindex with the current CodeGraph binary, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN,
+            "claimable local micro-flow packets must carry source-spanned proof steps",
+            "Reindex or repair CodeGraph local-flow packet state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_MISSING_PROVENANCE,
+            "claimable local micro-flow packets must carry packet/proof-step provenance",
+            "Reindex or repair CodeGraph local-flow packet state, then rerun validate-edit.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP,
+            "flow_proof packets must not contain unknown or unsupported gaps on the claimed path",
+            "Repair or downgrade CodeGraph packet proof; do not edit source solely to satisfy corrupt packet state.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION,
+            "flow_proof packets must not hide relevant facts behind cap omissions",
+            "Inspect packet cap state and rebuild before relying on complete flow proof.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE,
+            "dict_v1 packet bodies must losslessly expand to audit ordered_steps",
+            "Repair or rebuild CodeGraph packet rows; dict_v1 failures are tool-state faults.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING,
+            "flow_proof packet paths must preserve relevant branch identity",
+            "Repair packet construction or downgrade proof before relying on this packet.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING,
+            "flow_proof packet paths must preserve relevant return-path identity",
+            "Repair packet construction or downgrade proof before relying on this packet.",
+        ),
+        proof_rule(
+            CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE,
+            "flow_proof packet paths must not collapse shadowed local binding identities",
+            "Repair packet construction or downgrade proof before relying on this packet.",
+        ),
+    ];
+
+    for (rule_id, invariant, docs_summary) in [
+        (
+            CG_MVP4_3_PACKET_LAYER_TRUNCATED,
+            "local-flow packet layer truncation degrades completeness and cannot create a source-code blocker",
+            "Inspect audit output and cap-hit counts; treat packet proof as incomplete for the truncated scope.",
+        ),
+        (
+            CG_MVP4_3_PACKET_LAYER_UNAVAILABLE,
+            "missing or unavailable local-flow packet layer is optional-layer state, not source-code proof",
+            "Run an MVP4.3-enabled index if packet proof is required, otherwise treat the layer as unavailable.",
+        ),
+    ] {
+        let mut rule = ValidationRule::diagnostic(rule_id, invariant, docs_summary);
+        rule.rule_kind = if rule_id == CG_MVP4_3_PACKET_LAYER_TRUNCATED {
+            ValidationRuleKind::ClosureBudgetBoundary
+        } else {
+            ValidationRuleKind::UnsupportedRelationBoundary
+        };
+        rule.supported_relation_status = SupportedRelationStatus::DiagnosticOnly;
+        rule.proof_requirement = ValidationProofRequirement::DiagnosticOnly;
+        rule.source_span_requirement = ValidationSourceSpanRequirement::NotApplicable;
+        rule.provenance_requirement = ValidationProvenanceRequirement::NotApplicable;
+        rule.lifecycle_requirement = ValidationLifecycleRequirement::DiagnosticReadOnly;
+        rules.push(rule);
+    }
+
     rules
 }
 
@@ -3452,6 +4027,23 @@ fn mcp_validate_edit_validation_packet(
         .iter()
         .map(|rule| (rule.validation_rule_id.as_str(), rule))
         .collect::<BTreeMap<_, _>>();
+    let micro_edge_sections = mcp_validate_edit_collect_micro_edge_integrity_findings(
+        store,
+        &rule_by_id,
+        lifecycle.clone(),
+        delta,
+        &changed_files,
+        &mut findings,
+    )?;
+    let local_flow_packet_sections =
+        mcp_validate_edit_collect_local_flow_packet_integrity_findings(
+            store,
+            &rule_by_id,
+            lifecycle.clone(),
+            delta,
+            &changed_files,
+            &mut findings,
+        )?;
     let unresolved_references_block = mcp_validate_edit_collect_unresolved_reference_findings(
         store,
         &rule_by_id,
@@ -3461,15 +4053,48 @@ fn mcp_validate_edit_validation_packet(
         &mut findings,
     )
     .map_err(|error| ToolCallError::new("validation_unresolved_reference_failed", error))?;
+    let graph_delta_packet = json!({
+        "status": "updated",
+        "source_update_surface": "mcp_validate_edit_shared_indexer",
+        "summary": graph_delta,
+        "normalized_delta_summary": mcp_validate_edit_delta_summary_json(delta),
+        "delta_metrics": delta_metrics,
+        "micro_edge_delta": micro_edge_sections
+            .get("micro_edge_delta")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "micro_edge_integrity": micro_edge_sections
+            .get("micro_edge_integrity")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "micro_edge_layer_status": micro_edge_sections
+            .get("micro_edge_layer_status")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "micro_edge_proof_changes": micro_edge_sections
+            .get("micro_edge_proof_changes")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "micro_flow_packet_delta": local_flow_packet_sections
+            .get("micro_flow_packet_delta")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "micro_flow_packet_integrity": local_flow_packet_sections
+            .get("micro_flow_packet_integrity")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "micro_flow_packet_layer_status": local_flow_packet_sections
+            .get("micro_flow_packet_layer_status")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "micro_flow_packet_proof_changes": local_flow_packet_sections
+            .get("micro_flow_packet_proof_changes")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    });
     let mut packet = ValidationPacket::new(
         changed_files,
-        json!({
-            "status": "updated",
-            "source_update_surface": "mcp_validate_edit_shared_indexer",
-            "summary": graph_delta,
-            "normalized_delta_summary": mcp_validate_edit_delta_summary_json(delta),
-            "delta_metrics": delta_metrics,
-        }),
+        graph_delta_packet,
         findings,
         rules,
         Vec::new(),
@@ -3483,6 +4108,7 @@ fn mcp_validate_edit_validation_packet(
         "calls": "exact_dangling_and_removed_target_checked",
         "imports": "exact_dangling_and_removed_target_checked",
         "aliases": "exact_alias_target_checked",
+        "local_returns_to": "exact_micro_edge_integrity_checked",
         "reads_writes_routes_tests_config": "not_checked_by_mcp_validate_edit_v1",
     });
     packet.activation_gate_state = json!({
@@ -3490,6 +4116,8 @@ fn mcp_validate_edit_validation_packet(
         "editor_daemon_integration": "not_implemented",
         "startup_auto_index": false,
         "dot_codegraph_fallback": false,
+        "micro_edge_integrity_validation": "enabled_for_local_returns_to",
+        "context_pack_micro_flow_enrichment": false,
     });
     Ok(packet)
 }
@@ -3665,6 +4293,8 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
     let mut escalated_total = 0usize;
     let mut external_or_builtin_count = 0usize;
     let mut dynamic_or_computed_count = 0usize;
+    let mut repo_local_definition_candidate_count = 0usize;
+    let mut repo_local_no_definition_count = 0usize;
 
     for entry in &delta.unresolved_references_added {
         if !changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path)) {
@@ -3686,9 +4316,14 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
             let Some(rule) = rule_by_id.get(rule_id).copied() else {
                 continue;
             };
-            escalated_total += 1;
             let lookup =
                 mcp_validate_edit_unresolved_reference_repo_graph_lookup(store, &entry.name)?;
+            if lookup.definition_count > 0 {
+                repo_local_definition_candidate_count += 1;
+                continue;
+            }
+            repo_local_no_definition_count += 1;
+            escalated_total += 1;
             let finding = mcp_validate_edit_unresolved_reference_warning(
                 rule,
                 lifecycle.clone(),
@@ -3748,11 +4383,19 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
         "by_class": by_class,
         "escalated": escalated_inline,
         "escalated_total": escalated_total,
+        "escalated_no_definition_count": repo_local_no_definition_count,
         "escalated_omitted_count": escalated_total.saturating_sub(
             escalated_inline.len().min(escalated_total)
         ),
+        "repo_local_definition_candidate_count": repo_local_definition_candidate_count,
+        "repo_local_no_definition_count": repo_local_no_definition_count,
         "external_or_builtin_count": external_or_builtin_count,
         "dynamic_or_computed_count": dynamic_or_computed_count,
+        "count_semantics": {
+            "new_count": "parser unresolved references after changed-file and CALLEE de-dup filters",
+            "escalated_total": "repo-local references with no defining entity in the current graph",
+            "repo_local_definition_candidate_count": "repo-local parser-unresolved references suppressed because a definition candidate exists elsewhere in the graph"
+        },
         "block_on_unresolved_local": block_on_unresolved_local,
         "expansion_handle": "validation_packet:unresolved_references",
         "not_graph_proof": true,
@@ -3771,6 +4414,16 @@ fn mcp_validate_edit_delta_summary_json(delta: &EntitySourceRoleDeltaReport) -> 
         "edges_added_count": delta.edges_added_count,
         "edges_removed_count": delta.edges_removed_count,
         "edges_changed_count": delta.edges_changed_count,
+        "micro_edges_added_count": delta.micro_edges_added_count,
+        "micro_edges_removed_count": delta.micro_edges_removed_count,
+        "micro_edges_changed_count": delta.micro_edges_changed_count,
+        "micro_edge_counts_by_kind": delta.micro_edge_counts_by_kind,
+        "micro_edge_counts_by_exactness": delta.micro_edge_counts_by_exactness,
+        "micro_edge_counts_by_language": delta.micro_edge_counts_by_language,
+        "micro_edge_integrity_changes": delta.micro_edge_integrity_changes,
+        "micro_edge_cap_omissions": delta.micro_edge_cap_omissions,
+        "normal_micro_edge_delta_not_error": delta.normal_micro_edge_delta_not_validation_error,
+        "micro_edge_layer_status_change": delta.micro_edge_layer_status_change,
         "closure_files_updated": delta.closure_files_updated,
         "closure_budget_hit": delta.closure_budget_hit,
         "warnings": delta.warnings,
@@ -3982,6 +4635,916 @@ fn mcp_validate_edit_collect_delta_findings(
     }
 
     Ok(findings)
+}
+
+fn mcp_validate_edit_collect_micro_edge_integrity_findings(
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+) -> Result<Value, ToolCallError> {
+    let mut inspected_files = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<BTreeSet<_>>();
+    inspected_files.extend(
+        delta
+            .micro_edges_added
+            .iter()
+            .chain(delta.micro_edges_removed.iter())
+            .chain(delta.micro_edges_changed.iter())
+            .map(|entry| normalize_repo_relative_path(&entry.repo_relative_path)),
+    );
+
+    let edge_table_available = store
+        .table_exists("ast_micro_edges")
+        .map_err(mcp_store_error)?;
+    let node_table_available = store
+        .table_exists("ast_micro_nodes")
+        .map_err(mcp_store_error)?;
+    if edge_table_available && node_table_available {
+        let mut seen = BTreeSet::<String>::new();
+        for path in &inspected_files {
+            let nodes = store
+                .ast_micro_nodes_for_file(path)
+                .map_err(mcp_store_error)?;
+            let nodes_by_id = nodes
+                .into_iter()
+                .map(|node| (node.micro_node_id.clone(), node))
+                .collect::<BTreeMap<_, _>>();
+            for edge in store
+                .ast_micro_edges_for_file(path)
+                .map_err(mcp_store_error)?
+            {
+                mcp_validate_edit_push_micro_edge_integrity_findings(
+                    store,
+                    rule_by_id,
+                    lifecycle.clone(),
+                    &edge,
+                    &nodes_by_id,
+                    findings,
+                    &mut seen,
+                )?;
+            }
+        }
+    }
+
+    let blocking_count = findings
+        .iter()
+        .filter(|finding| {
+            finding
+                .validation_rule_id
+                .starts_with("CG_MVP4_2_MICRO_EDGE")
+                || finding.validation_rule_id == CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION
+        })
+        .filter(|finding| finding.classification.is_blocking())
+        .count();
+    let warning_count = findings
+        .iter()
+        .filter(|finding| {
+            finding
+                .validation_rule_id
+                .starts_with("CG_MVP4_2_MICRO_EDGE")
+                || finding.validation_rule_id == CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION
+        })
+        .filter(|finding| finding.classification == ValidationClassification::Warn)
+        .count();
+    let unknown_count = findings
+        .iter()
+        .filter(|finding| {
+            finding
+                .validation_rule_id
+                .starts_with("CG_MVP4_2_MICRO_EDGE")
+                || finding.validation_rule_id == CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION
+        })
+        .filter(|finding| {
+            matches!(
+                finding.classification,
+                ValidationClassification::Unknown | ValidationClassification::Unsupported
+            )
+        })
+        .count();
+
+    Ok(json!({
+        "micro_edge_delta": mcp_validate_edit_micro_edge_delta_section(delta),
+        "micro_edge_integrity": {
+            "blocking_count": blocking_count,
+            "warning_count": warning_count,
+            "unknown_count": unknown_count,
+            "integrity_change_count": delta.micro_edge_integrity_changes.len(),
+            "integrity_changes": delta.micro_edge_integrity_changes,
+            "source_problem_vs_tool_integrity_separated": true,
+            "normal_micro_edge_delta_not_error": delta.normal_micro_edge_delta_not_validation_error,
+            "recommended_action_default": "reindex_or_repair",
+            "expansion_handle": "validation_packet:micro_edge_integrity"
+        },
+        "micro_edge_layer_status": mcp_validate_edit_micro_edge_layer_status_section(
+            delta,
+            edge_table_available,
+            node_table_available
+        ),
+        "micro_edge_proof_changes": mcp_validate_edit_micro_edge_proof_changes_section(delta),
+    }))
+}
+
+fn mcp_validate_edit_collect_local_flow_packet_integrity_findings(
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    delta: &EntitySourceRoleDeltaReport,
+    changed_files: &[String],
+    findings: &mut Vec<ValidationFinding>,
+) -> Result<Value, ToolCallError> {
+    let mut inspected_files = changed_files
+        .iter()
+        .chain(delta.closure_files_updated.iter())
+        .map(|path| normalize_repo_relative_path(path))
+        .collect::<BTreeSet<_>>();
+    inspected_files.extend(
+        delta
+            .local_flow_packets_added
+            .iter()
+            .chain(delta.local_flow_packets_removed.iter())
+            .chain(delta.local_flow_packets_changed.iter())
+            .map(|entry| normalize_repo_relative_path(&entry.repo_relative_path)),
+    );
+
+    let packet_table_available = store
+        .table_exists("local_flow_packets")
+        .map_err(mcp_store_error)?;
+    let edge_table_available = store
+        .table_exists("ast_micro_edges")
+        .map_err(mcp_store_error)?;
+    let node_table_available = store
+        .table_exists("ast_micro_nodes")
+        .map_err(mcp_store_error)?;
+    if packet_table_available {
+        let mut seen = BTreeSet::<String>::new();
+        for path in &inspected_files {
+            let nodes = store
+                .ast_micro_nodes_for_file(path)
+                .map_err(mcp_store_error)?
+                .into_iter()
+                .map(|node| node.micro_node_id)
+                .collect::<BTreeSet<_>>();
+            let edges = store
+                .ast_micro_edges_for_file(path)
+                .map_err(mcp_store_error)?
+                .into_iter()
+                .map(|edge| edge.micro_edge_id)
+                .collect::<BTreeSet<_>>();
+            for packet in store
+                .local_flow_packets_for_file(path)
+                .map_err(mcp_store_error)?
+            {
+                mcp_validate_edit_push_local_flow_packet_integrity_findings(
+                    store,
+                    rule_by_id,
+                    lifecycle.clone(),
+                    &packet,
+                    &nodes,
+                    &edges,
+                    findings,
+                    &mut seen,
+                )?;
+            }
+        }
+    }
+
+    let packet_finding =
+        |finding: &&ValidationFinding| finding.validation_rule_id.starts_with("CG_MVP4_3_PACKET");
+    let blocking_count = findings
+        .iter()
+        .filter(packet_finding)
+        .filter(|finding| finding.classification.is_blocking())
+        .count();
+    let warning_count = findings
+        .iter()
+        .filter(packet_finding)
+        .filter(|finding| finding.classification == ValidationClassification::Warn)
+        .count();
+    let unknown_count = findings
+        .iter()
+        .filter(packet_finding)
+        .filter(|finding| {
+            matches!(
+                finding.classification,
+                ValidationClassification::Unknown | ValidationClassification::Unsupported
+            )
+        })
+        .count();
+
+    Ok(json!({
+        "micro_flow_packet_delta": mcp_validate_edit_local_flow_packet_delta_section(delta),
+        "micro_flow_packet_integrity": {
+            "blocking_count": blocking_count,
+            "warning_count": warning_count,
+            "unknown_count": unknown_count,
+            "integrity_change_count": delta.local_flow_packet_integrity_changes.len(),
+            "integrity_changes": delta.local_flow_packet_integrity_changes,
+            "source_problem_vs_packet_integrity_separated": true,
+            "normal_packet_delta_not_error": delta.normal_local_flow_packet_delta_not_validation_error,
+            "false_source_fix_recommendation_count": 0,
+            "recommended_action_default": "reindex_or_repair_codegraph_local_micro_flow_packet_state",
+            "expansion_handle": "validation_packet:micro_flow_packet_integrity"
+        },
+        "micro_flow_packet_layer_status": mcp_validate_edit_local_flow_packet_layer_status_section(
+            delta,
+            packet_table_available,
+            edge_table_available,
+            node_table_available
+        ),
+        "micro_flow_packet_proof_changes": mcp_validate_edit_local_flow_packet_proof_changes_section(delta),
+    }))
+}
+
+fn mcp_validate_edit_push_local_flow_packet_integrity_findings(
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    packet: &LocalFlowPacketRow,
+    node_ids: &BTreeSet<String>,
+    edge_ids: &BTreeSet<String>,
+    findings: &mut Vec<ValidationFinding>,
+    seen: &mut BTreeSet<String>,
+) -> Result<(), ToolCallError> {
+    let source_span = packet
+        .primary_source_span_id
+        .as_deref()
+        .and_then(|span_id| store.get_source_span(span_id).ok().flatten());
+    let source_span_present = source_span.is_some();
+    let provenance_present = packet.provenance_id.is_some();
+    let mut push = |rule_id: &'static str, reason: &'static str| -> Result<(), ToolCallError> {
+        let Some(rule) = rule_by_id.get(rule_id).copied() else {
+            return Ok(());
+        };
+        let key = format!("{rule_id}:{}", packet.packet_id);
+        if !seen.insert(key) {
+            return Ok(());
+        }
+        findings.push(mcp_validate_edit_local_flow_packet_integrity_finding(
+            rule,
+            lifecycle.clone(),
+            packet,
+            source_span.clone(),
+            reason,
+            source_span_present,
+            provenance_present,
+        ));
+        Ok(())
+    };
+
+    match serde_json::from_str::<DictV1PacketBody>(&packet.packet_body) {
+        Ok(body) => {
+            if body.to_ordered_steps().is_err() {
+                push(
+                    CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE,
+                    "dict_v1 packet body failed lossless audit ordered_steps expansion",
+                )?;
+            }
+            if body
+                .dictionary
+                .nodes
+                .values()
+                .any(|node_ref| !node_ids.contains(&node_ref.micro_node_id))
+            {
+                push(
+                    CG_MVP4_3_PACKET_MISSING_NODE,
+                    "packet references a missing current micro-node",
+                )?;
+            }
+            if body
+                .dictionary
+                .edges
+                .values()
+                .any(|edge_ref| !edge_ids.contains(&edge_ref.micro_edge_id))
+            {
+                push(
+                    CG_MVP4_3_PACKET_MISSING_EDGE,
+                    "packet references a missing current micro-edge",
+                )?;
+            }
+            if packet.proof_strength == "flow_proof" && !body.dictionary.gaps.is_empty() {
+                push(
+                    CG_MVP4_3_PACKET_FLOW_PROOF_UNKNOWN_GAP,
+                    "flow_proof packet contains unknown or unsupported gaps",
+                )?;
+            }
+            if packet.proof_strength == "flow_proof"
+                && (packet.omitted_count > 0 || !body.dictionary.cap_omissions.is_empty())
+            {
+                push(
+                    CG_MVP4_3_PACKET_FLOW_PROOF_CAP_OMISSION,
+                    "flow_proof packet hides relevant facts behind cap omissions",
+                )?;
+            }
+            if body.paths.iter().any(|path| {
+                path.branch_id
+                    .as_ref()
+                    .is_some_and(|id| !body.dictionary.branch_identities.contains_key(id))
+            }) {
+                push(
+                    CG_MVP4_3_PACKET_BRANCH_IDENTITY_MISSING,
+                    "packet path references missing branch identity",
+                )?;
+            }
+            if body.paths.iter().any(|path| {
+                path.return_path_id
+                    .as_ref()
+                    .is_some_and(|id| !body.dictionary.return_path_identities.contains_key(id))
+            }) {
+                push(
+                    CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING,
+                    "packet path references missing return-path identity",
+                )?;
+            }
+        }
+        Err(_) => push(
+            CG_MVP4_3_PACKET_DICT_V1_EXPANSION_FAILURE,
+            "dict_v1 packet body did not deserialize",
+        )?,
+    }
+    if !source_span_present {
+        push(
+            CG_MVP4_3_PACKET_MISSING_SOURCE_SPAN,
+            "claimable local micro-flow packet has no primary source span",
+        )?;
+    }
+    if !provenance_present {
+        push(
+            CG_MVP4_3_PACKET_MISSING_PROVENANCE,
+            "claimable local micro-flow packet has no packet provenance",
+        )?;
+    }
+    if packet.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION {
+        push(
+            CG_MVP4_3_PACKET_STALE_SOURCE_FACT,
+            "packet extraction version does not match the current MVP4.3 contract",
+        )?;
+    }
+    Ok(())
+}
+
+fn mcp_validate_edit_local_flow_packet_integrity_finding(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    packet: &LocalFlowPacketRow,
+    source_span: Option<SourceSpan>,
+    reason: &str,
+    source_span_present: bool,
+    provenance_present: bool,
+) -> ValidationFinding {
+    let evidence_id = format!("local-flow-packet://{}", packet.packet_id);
+    let mut input =
+        ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), reason);
+    input.graph_source_relation_reverified = false;
+    input.integrity_condition_reverified = true;
+    input.integrity_issue_present = true;
+    input.source_span_present = source_span_present;
+    input.provenance_required = true;
+    input.provenance_present = provenance_present;
+    input.source_role_allowed = packet.source_role == "production";
+    input.evidence_items = vec![ValidationEvidenceItem::graph_integrity(evidence_id, reason)];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mcp_validate_edit/local-flow-packet-integrity/{}/{}",
+            rule.validation_rule_id, packet.packet_id
+        ),
+        input,
+    );
+    finding.classification = ValidationClassification::Degraded;
+    finding.blocking_level = finding.classification.blocking_level();
+    let affected_file = normalize_repo_relative_path(&packet.file_id);
+    finding.file = Some(affected_file.clone());
+    finding.affected_file = Some(affected_file);
+    finding.source_span = source_span;
+    finding.source_role = Some(mcp_validate_edit_micro_edge_source_role(
+        &packet.source_role,
+    ));
+    finding.exactness = Some(mcp_validate_edit_micro_edge_exactness(&packet.exactness));
+    finding.integrity_kind = Some("local_flow_packet_integrity".to_string());
+    finding.proof_level = "packet_proof_availability".to_string();
+    finding.proof_strength = "degraded_local_micro_flow_packet_integrity".to_string();
+    finding.proof_status = ValidationProofStatus::NeedsReverification;
+    finding.affected_delta = json!({
+        "packet_id": packet.packet_id,
+        "packet_kind": packet.packet_kind,
+        "file": packet.file_id,
+        "function_entity_id": packet.function_entity_id,
+        "proof_status": packet.proof_status,
+        "proof_strength": packet.proof_strength,
+        "packet_status": packet.packet_status,
+        "source_code_edit_required": false,
+        "tool_integrity_repair_required": true,
+    });
+    finding.provenance = json!({
+        "required": true,
+        "present": packet.provenance_id.is_some(),
+        "provenance_id": packet.provenance_id,
+        "full_provenance_blob_inline": false,
+    });
+    finding.old_fact_claim_state = "persisted_local_flow_packet_claimed".to_string();
+    finding.new_fact_claim_state = "packet_proof_unavailable_until_repaired".to_string();
+    finding.reason = format!(
+        "{reason}; this is a CodeGraph packet/proof integrity finding, not evidence that source code must be edited"
+    );
+    finding.recommended_fix = Some(
+        "Reindex or repair CodeGraph local micro-flow packet state, then rerun validate-edit; do not edit source solely to satisfy this stored packet."
+            .to_string(),
+    );
+    finding.suggested_next_steps = vec![
+        "Run an explicit changed-file update or rebuild the production profile DB.".to_string(),
+        "Rerun validate-edit and confirm packet integrity clears.".to_string(),
+    ];
+    finding
+        .diagnostics
+        .push("source_problem_vs_packet_integrity_separated".to_string());
+    finding.expansion_handle = Some(format!(
+        "validation_packet:micro_flow_packet_integrity:{}",
+        packet.packet_id
+    ));
+    finding
+}
+
+fn mcp_validate_edit_push_micro_edge_integrity_findings(
+    store: &SqliteGraphStore,
+    rule_by_id: &BTreeMap<&str, &ValidationRule>,
+    lifecycle: ValidationLifecycleState,
+    edge: &AstMicroEdgeRow,
+    nodes_by_id: &BTreeMap<String, AstMicroNodeRow>,
+    findings: &mut Vec<ValidationFinding>,
+    seen: &mut BTreeSet<String>,
+) -> Result<(), ToolCallError> {
+    let Some(relation_kind) = MicroEdgeKind::from_storage_str(&edge.relation_kind) else {
+        return Ok(());
+    };
+    if relation_kind != MicroEdgeKind::LocalReturnsTo {
+        return Ok(());
+    }
+    let head = nodes_by_id.get(&edge.source_micro_node_id);
+    let tail = nodes_by_id.get(&edge.target_micro_node_id);
+    let relation_span = edge
+        .source_span_id
+        .as_deref()
+        .and_then(|span_id| store.get_source_span(span_id).ok().flatten());
+    let relation_span_present = relation_span.is_some();
+    let provenance_present = edge.provenance_id.is_some();
+
+    let mut push = |rule_id: &'static str,
+                    reason: &'static str,
+                    source_span_present: bool,
+                    provenance_present: bool|
+     -> Result<(), ToolCallError> {
+        let Some(rule) = rule_by_id.get(rule_id).copied() else {
+            return Ok(());
+        };
+        let key = format!("{rule_id}:{}", edge.micro_edge_id);
+        if !seen.insert(key) {
+            return Ok(());
+        }
+        let finding = mcp_validate_edit_micro_edge_integrity_finding(
+            rule,
+            lifecycle.clone(),
+            edge,
+            head,
+            tail,
+            relation_span.clone(),
+            reason,
+            source_span_present,
+            provenance_present,
+        );
+        findings.push(finding);
+        Ok(())
+    };
+
+    if head.is_none() {
+        push(
+            CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD,
+            "persisted LOCAL_RETURNS_TO edge references a missing ReturnSite head micro-node",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if tail.is_none() {
+        push(
+            CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL,
+            "persisted LOCAL_RETURNS_TO edge references a missing FunctionFrame tail micro-node",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    let Some(head) = head else {
+        return Ok(());
+    };
+    let Some(tail) = tail else {
+        return Ok(());
+    };
+    if head.micro_kind != "return_site" {
+        push(
+            CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
+            "persisted LOCAL_RETURNS_TO head endpoint is not a ReturnSite",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if tail.micro_kind != "function_frame" {
+        push(
+            CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
+            "persisted LOCAL_RETURNS_TO tail endpoint is not a FunctionFrame",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if head.file_id != edge.file_id || tail.file_id != edge.file_id || head.file_id != tail.file_id
+    {
+        push(
+            CG_MVP4_2_MICRO_EDGE_CROSS_FILE,
+            "persisted LOCAL_RETURNS_TO endpoints do not share the edge file identity",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if head.function_entity_id != tail.function_entity_id {
+        push(
+            CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION,
+            "persisted LOCAL_RETURNS_TO endpoints do not share the same function identity domain",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if edge.function_entity_id != head.function_entity_id {
+        push(
+            CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
+            "persisted LOCAL_RETURNS_TO edge does not point to the nearest enclosing FunctionFrame identity",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if !relation_span_present {
+        push(
+            CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
+            "persisted claimable LOCAL_RETURNS_TO edge is missing its relation source span",
+            false,
+            provenance_present,
+        )?;
+    }
+    if !provenance_present {
+        push(
+            CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE,
+            "persisted claimable LOCAL_RETURNS_TO edge is missing direct-AST provenance",
+            relation_span_present,
+            false,
+        )?;
+    }
+    let capability = mvp4_micro_edge_language_capability(&edge.language, relation_kind);
+    let source_role =
+        MicroSourceRole::from_storage_str(&edge.source_role).unwrap_or(MicroSourceRole::Unknown);
+    let exactness =
+        MicroExactness::from_storage_str(&edge.exactness).unwrap_or(MicroExactness::Unknown);
+    if !capability.supports_claimable_exact(
+        &edge.frontend,
+        source_role,
+        exactness,
+        &edge.claimability,
+        &edge.extraction_version,
+    ) {
+        push(
+            CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH,
+            "persisted LOCAL_RETURNS_TO edge does not meet an active exact claimable micro-edge language capability",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if Some(edge.extraction_version.as_str()) != capability.extraction_version
+        || edge.schema_version != MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION
+        || edge.payload_version != MVP4_2_MICRO_EDGE_PAYLOAD_VERSION
+    {
+        push(
+            CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH,
+            "persisted LOCAL_RETURNS_TO edge version does not match the current MVP4.2 extraction contract",
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    Ok(())
+}
+
+fn mcp_validate_edit_micro_edge_integrity_finding(
+    rule: &ValidationRule,
+    lifecycle: ValidationLifecycleState,
+    edge: &AstMicroEdgeRow,
+    head: Option<&AstMicroNodeRow>,
+    tail: Option<&AstMicroNodeRow>,
+    source_span: Option<SourceSpan>,
+    reason: &str,
+    source_span_present: bool,
+    provenance_present: bool,
+) -> ValidationFinding {
+    let evidence_id = format!("micro-edge://{}", edge.micro_edge_id);
+    let mut input =
+        ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), reason);
+    input.graph_source_relation_reverified = false;
+    input.integrity_condition_reverified = true;
+    input.integrity_issue_present = true;
+    input.source_span_present = source_span_present;
+    input.provenance_required = true;
+    input.provenance_present = provenance_present;
+    input.source_role_allowed = edge.source_role == "production";
+    input.evidence_items = vec![ValidationEvidenceItem::graph_integrity(evidence_id, reason)];
+    let mut finding = classify_validation_finding(
+        rule,
+        format!(
+            "finding://mcp_validate_edit/micro-edge-integrity/{}/{}",
+            rule.validation_rule_id, edge.micro_edge_id
+        ),
+        input,
+    );
+    let affected_file = normalize_repo_relative_path(&edge.file_id);
+    finding.file = Some(affected_file.clone());
+    finding.affected_file = Some(affected_file);
+    finding.source_span = source_span;
+    finding.source_role = Some(mcp_validate_edit_micro_edge_source_role(&edge.source_role));
+    finding.relation_kind = None;
+    finding.exactness = Some(mcp_validate_edit_micro_edge_exactness(&edge.exactness));
+    finding.integrity_kind = Some("micro_edge_proof_integrity".to_string());
+    finding.proof_level = "graph_relation_proof".to_string();
+    finding.proof_strength = "deterministic_graph_integrity".to_string();
+    finding.affected_edge = json!({
+        "micro_edge_id": edge.micro_edge_id,
+        "micro_edge_kind": edge.relation_kind,
+        "head_micro_node_id": edge.source_micro_node_id,
+        "head_micro_node_kind": head.map(|node| node.micro_kind.as_str()),
+        "tail_micro_node_id": edge.target_micro_node_id,
+        "tail_micro_node_kind": tail.map(|node| node.micro_kind.as_str()),
+        "file": edge.file_id,
+        "function_entity_id": edge.function_entity_id,
+        "source_span_id": edge.source_span_id,
+        "exactness": edge.exactness,
+        "claimability": edge.claimability,
+        "source_role": edge.source_role,
+        "language": edge.language,
+        "frontend": edge.frontend,
+        "extraction_version": edge.extraction_version,
+        "source_code_edit_required": false,
+        "tool_integrity_repair_required": true,
+        "flow_semantics": false,
+    });
+    finding.provenance = json!({
+        "required": true,
+        "present": edge.provenance_id.is_some(),
+        "provenance_id": edge.provenance_id,
+        "derivation_kind": "direct_ast_ownership",
+        "full_provenance_blob_inline": false,
+    });
+    finding.old_fact_claim_state = "persisted_micro_edge_claimed".to_string();
+    finding.new_fact_claim_state = "micro_edge_proof_unavailable_until_repaired".to_string();
+    finding.reason = format!(
+        "{reason}; this is a CodeGraph graph/proof integrity finding, not evidence that the source code must be edited"
+    );
+    finding.recommended_fix = Some(
+        "Reindex or repair CodeGraph micro-edge state, then rerun validate-edit; do not edit source solely to satisfy this stored edge."
+            .to_string(),
+    );
+    finding.suggested_next_steps = vec![
+        "Run an explicit changed-file update or rebuild the production profile DB.".to_string(),
+        "Rerun validate-edit and confirm LOCAL_RETURNS_TO integrity clears.".to_string(),
+    ];
+    finding
+        .diagnostics
+        .push("source_problem_vs_tool_integrity_separated".to_string());
+    finding
+        .diagnostics
+        .push("no_flow_or_mutation_proof_activated".to_string());
+    finding.expansion_handle = Some(format!(
+        "validation_packet:micro_edge_integrity:{}",
+        edge.micro_edge_id
+    ));
+    finding
+}
+
+fn mcp_validate_edit_micro_edge_source_role(source_role: &str) -> EvidenceRole {
+    EvidenceRole::from_source_role_label(source_role)
+}
+
+fn mcp_validate_edit_micro_edge_exactness(exactness: &str) -> Exactness {
+    match exactness {
+        "exact" => Exactness::ParserVerified,
+        "derived_with_provenance" => Exactness::DerivedFromVerifiedEdges,
+        "heuristic" => Exactness::StaticHeuristic,
+        _ => Exactness::Inferred,
+    }
+}
+
+fn mcp_validate_edit_micro_edge_delta_section(delta: &EntitySourceRoleDeltaReport) -> Value {
+    json!({
+        "normal_micro_edge_delta_not_error": delta.normal_micro_edge_delta_not_validation_error,
+        "added_count": delta.micro_edges_added_count,
+        "removed_count": delta.micro_edges_removed_count,
+        "changed_count": delta.micro_edges_changed_count,
+        "counts_by_kind": delta.micro_edge_counts_by_kind,
+        "counts_by_exactness": delta.micro_edge_counts_by_exactness,
+        "counts_by_language": delta.micro_edge_counts_by_language,
+        "top_added": mcp_validate_edit_compact_micro_edge_delta_entries(&delta.micro_edges_added, 3),
+        "top_removed": mcp_validate_edit_compact_micro_edge_delta_entries(&delta.micro_edges_removed, 3),
+        "top_changed": mcp_validate_edit_compact_micro_edge_delta_entries(&delta.micro_edges_changed, 3),
+        "omitted_count": delta.micro_edge_cap_omissions,
+        "expansion_handle": "validation_packet:micro_edge_delta",
+    })
+}
+
+fn mcp_validate_edit_compact_micro_edge_delta_entries(
+    entries: &[codegraph_index::MicroEdgeDeltaEntry],
+    limit: usize,
+) -> Vec<Value> {
+    entries
+        .iter()
+        .take(limit)
+        .map(|entry| {
+            json!({
+                "micro_edge_id": entry.micro_edge_id,
+                "micro_edge_kind": entry.micro_edge_kind,
+                "change_kind": entry.change_kind,
+                "file": normalize_repo_relative_path(&entry.repo_relative_path),
+                "function_identity": entry.function_identity,
+                "source_span": entry.relation_source_span,
+                "exactness": entry.exactness,
+                "claimability": entry.claimability_label,
+                "proof_strength": entry.proof_strength,
+                "graph_relation_proof_changed": entry.graph_relation_proof_changed,
+                "validation_error": entry.validation_error,
+            })
+        })
+        .collect()
+}
+
+fn mcp_validate_edit_micro_edge_layer_status_section(
+    delta: &EntitySourceRoleDeltaReport,
+    edge_table_available: bool,
+    node_table_available: bool,
+) -> Value {
+    let status_change = delta.micro_edge_layer_status_change.as_ref();
+    let status = status_change
+        .map(|change| change.new_status.as_str())
+        .unwrap_or(if edge_table_available {
+            "ready"
+        } else {
+            "unavailable"
+        });
+    json!({
+        "status": status,
+        "ready": status == "ready",
+        "edge_table_available": edge_table_available,
+        "node_table_available": node_table_available,
+        "core_graph_micro_edge_availability_separated": true,
+        "micro_node_availability_separate": true,
+        "local_flow_packet_availability": "not_applicable",
+        "cap_omission_count": delta.micro_edge_cap_omissions,
+        "truncated": delta.micro_edge_cap_omissions > 0 || status == "truncated",
+        "lifecycle_change": status_change,
+        "recovery_action": match status {
+            "ready" => "none",
+            "truncated" => "inspect audit output and cap-hit counts before relying on completeness",
+            "unavailable" | "not_applicable" => {
+                "run an MVP4.2-enabled index if micro-edge validation is required"
+            }
+            "stale" => "refresh the production profile DB before trusting micro-edge availability",
+            "incompatible" => "migrate or rebuild with the current schema before using micro-edge proof",
+            "corrupt" => "repair or rebuild the optional micro-edge layer",
+            _ => "inspect status/doctor output for the micro-edge layer",
+        },
+        "flow_proof_activated": false,
+        "mutation_proof_activated": false,
+    })
+}
+
+fn mcp_validate_edit_micro_edge_proof_changes_section(
+    delta: &EntitySourceRoleDeltaReport,
+) -> Value {
+    let graph_relation_proof_changed_count = delta
+        .micro_edges_added
+        .iter()
+        .chain(delta.micro_edges_removed.iter())
+        .chain(delta.micro_edges_changed.iter())
+        .filter(|entry| entry.graph_relation_proof_changed)
+        .count();
+    json!({
+        "proof_level": "graph_relation_proof",
+        "graph_relation_proof_changed_count": graph_relation_proof_changed_count,
+        "mutation_proof_changed_count": 0,
+        "flow_proof_changed_count": 0,
+        "cap_omissions_not_proof_changes": true,
+        "candidate_discovery_not_proof": true,
+    })
+}
+
+fn mcp_validate_edit_local_flow_packet_delta_section(delta: &EntitySourceRoleDeltaReport) -> Value {
+    json!({
+        "normal_packet_delta_not_error": delta.normal_local_flow_packet_delta_not_validation_error,
+        "added_count": delta.local_flow_packets_added_count,
+        "removed_count": delta.local_flow_packets_removed_count,
+        "changed_count": delta.local_flow_packets_changed_count,
+        "counts_by_proof_strength": delta.local_flow_packet_counts_by_proof_strength,
+        "counts_by_status": delta.local_flow_packet_counts_by_status,
+        "top_added": mcp_validate_edit_compact_local_flow_packet_delta_entries(&delta.local_flow_packets_added, 3),
+        "top_removed": mcp_validate_edit_compact_local_flow_packet_delta_entries(&delta.local_flow_packets_removed, 3),
+        "top_changed": mcp_validate_edit_compact_local_flow_packet_delta_entries(&delta.local_flow_packets_changed, 3),
+        "omitted_count": delta.local_flow_packet_cap_omissions,
+        "ordered_steps_inline": false,
+        "packet_body_inline": false,
+        "expansion_handle": "validation_packet:micro_flow_packet_delta",
+    })
+}
+
+fn mcp_validate_edit_compact_local_flow_packet_delta_entries(
+    entries: &[codegraph_index::LocalFlowPacketDeltaEntry],
+    limit: usize,
+) -> Vec<Value> {
+    entries
+        .iter()
+        .take(limit)
+        .map(|entry| {
+            json!({
+                "packet_id": entry.packet_id,
+                "packet_kind": entry.packet_kind,
+                "change_kind": entry.change_kind,
+                "file": normalize_repo_relative_path(&entry.repo_relative_path),
+                "function_identity": entry.function_identity,
+                "proof_status": entry.proof_status,
+                "proof_strength": entry.proof_strength,
+                "packet_status": entry.packet_status,
+                "primary_source_span_id": entry.primary_source_span_id,
+                "omitted_count": entry.omitted_count,
+                "proof_strength_changed": entry.proof_strength_changed,
+                "proof_status_changed": entry.proof_status_changed,
+                "flow_proof_changed": entry.flow_proof_changed,
+                "validation_error": entry.validation_error,
+            })
+        })
+        .collect()
+}
+
+fn mcp_validate_edit_local_flow_packet_layer_status_section(
+    delta: &EntitySourceRoleDeltaReport,
+    packet_table_available: bool,
+    edge_table_available: bool,
+    node_table_available: bool,
+) -> Value {
+    let status_change = delta.local_flow_packet_layer_status_change.as_ref();
+    let status = status_change
+        .map(|change| change.new_status.as_str())
+        .unwrap_or(if packet_table_available {
+            "ready"
+        } else {
+            "unavailable"
+        });
+    json!({
+        "status": status,
+        "ready": status == "ready" || status == "current",
+        "packet_table_available": packet_table_available,
+        "edge_table_available": edge_table_available,
+        "node_table_available": node_table_available,
+        "core_graph_micro_edge_packet_layers_separated": true,
+        "cap_omission_count": delta.local_flow_packet_cap_omissions,
+        "truncated": delta.local_flow_packet_cap_omissions > 0 || status == "truncated",
+        "lifecycle_change": status_change,
+        "recovery_action": match status {
+            "ready" | "current" => "none",
+            "truncated" => "inspect audit local-flow-packets and cap-hit counts before relying on completeness",
+            "unavailable" | "not_applicable" => {
+                "run an MVP4.3-enabled index if local-flow packet validation is required"
+            }
+            "stale" => "refresh the production profile DB before trusting packet availability",
+            "incompatible" => "migrate or rebuild with the current schema before using packet proof",
+            "corrupt" => "repair or rebuild the optional local-flow packet layer",
+            _ => "inspect status/doctor output for the local-flow packet layer",
+        },
+        "mutation_proof_activated": false,
+    })
+}
+
+fn mcp_validate_edit_local_flow_packet_proof_changes_section(
+    delta: &EntitySourceRoleDeltaReport,
+) -> Value {
+    let flow_proof_changed_count = delta
+        .local_flow_packets_added
+        .iter()
+        .chain(delta.local_flow_packets_removed.iter())
+        .chain(delta.local_flow_packets_changed.iter())
+        .filter(|entry| entry.flow_proof_changed)
+        .count();
+    json!({
+        "proof_level": "flow_proof",
+        "flow_proof_changed_count": flow_proof_changed_count,
+        "graph_relation_or_partial_packet_summary": true,
+        "mutation_proof_changed_count": 0,
+        "cap_omissions_not_proof_changes": true,
+        "candidate_discovery_not_proof": true,
+        "ordered_steps_inline": false,
+    })
 }
 
 fn mcp_validate_edit_rename_lifecycle_unknown(
@@ -4565,17 +6128,19 @@ fn mcp_validate_edit_response(
     timings: Value,
     normal_dot_codegraph_mutated: bool,
 ) -> Result<Value, ToolCallError> {
-    let full_packet = serde_json::to_value(packet).map_err(|error| {
+    let mut full_packet = serde_json::to_value(packet).map_err(|error| {
         ToolCallError::new(
             "serialization_failed",
             format!("could not encode validation packet: {error}"),
         )
     })?;
-    let validation_packet = match mode {
+    mcp_validate_edit_attach_micro_edge_sections(&mut full_packet);
+    let mut validation_packet = match mode {
         "agent-json" => packet.compact_agent_json(3),
         "explain" | "audit-json" => full_packet.clone(),
         _ => full_packet.clone(),
     };
+    mcp_validate_edit_attach_micro_edge_sections(&mut validation_packet);
     let expected_missing =
         mcp_validate_edit_expected_missing(&expected_touched_files, &path_preflight.accepted_paths);
     let empty_args = Map::new();
@@ -4673,6 +6238,14 @@ fn mcp_validate_edit_response(
         "claimability": full_packet.get("claimability").cloned().unwrap_or_else(|| json!({})),
         "lifecycle": full_packet.get("lifecycle").cloned().unwrap_or_else(|| json!({})),
         "proof_ladder_changes": full_packet.get("proof_ladder_changes").cloned().unwrap_or_else(|| json!({})),
+        "micro_edge_delta": validation_packet.get("micro_edge_delta").cloned().unwrap_or_else(|| json!({})),
+        "micro_edge_integrity": validation_packet.get("micro_edge_integrity").cloned().unwrap_or_else(|| json!({})),
+        "micro_edge_layer_status": validation_packet.get("micro_edge_layer_status").cloned().unwrap_or_else(|| json!({})),
+        "micro_edge_proof_changes": validation_packet.get("micro_edge_proof_changes").cloned().unwrap_or_else(|| json!({})),
+        "micro_flow_packet_delta": validation_packet.get("micro_flow_packet_delta").cloned().unwrap_or_else(|| json!({})),
+        "micro_flow_packet_integrity": validation_packet.get("micro_flow_packet_integrity").cloned().unwrap_or_else(|| json!({})),
+        "micro_flow_packet_layer_status": validation_packet.get("micro_flow_packet_layer_status").cloned().unwrap_or_else(|| json!({})),
+        "micro_flow_packet_proof_changes": validation_packet.get("micro_flow_packet_proof_changes").cloned().unwrap_or_else(|| json!({})),
         "db_lifecycle_read": mcp_db_lifecycle_preflight_json(preflight),
         "staged_availability": staged_availability,
         "rtds_freshness": rtds_freshness,
@@ -4949,6 +6522,120 @@ fn mcp_validate_edit_add_mode_aware_severity_fields(value: &mut Value, mode: &st
         object.insert("editor_policy".to_string(), editor_policy);
         object.insert("full_graph_dump_included".to_string(), json!(false));
         object.insert("full_source_bodies_included".to_string(), json!(false));
+    }
+}
+
+fn mcp_validate_edit_attach_micro_edge_sections(value: &mut Value) {
+    let graph_delta = value
+        .get("graph_delta")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    for key in [
+        "micro_edge_delta",
+        "micro_edge_integrity",
+        "micro_edge_layer_status",
+        "micro_edge_proof_changes",
+        "micro_flow_packet_delta",
+        "micro_flow_packet_integrity",
+        "micro_flow_packet_layer_status",
+        "micro_flow_packet_proof_changes",
+    ] {
+        if object.get(key).is_some() {
+            continue;
+        }
+        let section = graph_delta
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| mcp_validate_edit_default_validation_layer_section(key));
+        object.insert(key.to_string(), section);
+    }
+}
+
+fn mcp_validate_edit_default_validation_layer_section(key: &str) -> Value {
+    match key {
+        "micro_edge_delta" => json!({
+            "normal_micro_edge_delta_not_error": true,
+            "added_count": 0,
+            "removed_count": 0,
+            "changed_count": 0,
+            "counts_by_kind": {},
+            "counts_by_exactness": {},
+            "counts_by_language": {},
+            "omitted_count": 0,
+            "expansion_handle": "validation_packet:micro_edge_delta",
+        }),
+        "micro_edge_integrity" => json!({
+            "blocking_count": 0,
+            "warning_count": 0,
+            "unknown_count": 0,
+            "integrity_change_count": 0,
+            "integrity_changes": [],
+            "source_problem_vs_tool_integrity_separated": true,
+            "recommended_action_default": "reindex_or_repair",
+            "expansion_handle": "validation_packet:micro_edge_integrity",
+        }),
+        "micro_edge_layer_status" => json!({
+            "status": "not_applicable",
+            "ready": false,
+            "core_graph_micro_edge_availability_separated": true,
+            "micro_node_availability_separate": true,
+            "local_flow_packet_availability": "not_applicable",
+            "cap_omission_count": 0,
+            "truncated": false,
+            "flow_proof_activated": false,
+            "mutation_proof_activated": false,
+        }),
+        "micro_edge_proof_changes" => json!({
+            "proof_level": "graph_relation_proof",
+            "graph_relation_proof_changed_count": 0,
+            "mutation_proof_changed_count": 0,
+            "flow_proof_changed_count": 0,
+            "cap_omissions_not_proof_changes": true,
+            "candidate_discovery_not_proof": true,
+        }),
+        "micro_flow_packet_delta" => json!({
+            "normal_packet_delta_not_error": true,
+            "added_count": 0,
+            "removed_count": 0,
+            "changed_count": 0,
+            "counts_by_proof_strength": {},
+            "counts_by_status": {},
+            "omitted_count": 0,
+            "ordered_steps_inline": false,
+            "packet_body_inline": false,
+            "expansion_handle": "validation_packet:micro_flow_packet_delta",
+        }),
+        "micro_flow_packet_integrity" => json!({
+            "blocking_count": 0,
+            "warning_count": 0,
+            "unknown_count": 0,
+            "integrity_change_count": 0,
+            "integrity_changes": [],
+            "source_problem_vs_packet_integrity_separated": true,
+            "recommended_action_default": "reindex_or_repair_codegraph_local_micro_flow_packet_state",
+            "expansion_handle": "validation_packet:micro_flow_packet_integrity",
+        }),
+        "micro_flow_packet_layer_status" => json!({
+            "status": "not_applicable",
+            "ready": false,
+            "core_graph_micro_edge_packet_layers_separated": true,
+            "cap_omission_count": 0,
+            "truncated": false,
+            "mutation_proof_activated": false,
+        }),
+        "micro_flow_packet_proof_changes" => json!({
+            "proof_level": "flow_proof",
+            "flow_proof_changed_count": 0,
+            "graph_relation_or_partial_packet_summary": true,
+            "mutation_proof_changed_count": 0,
+            "cap_omissions_not_proof_changes": true,
+            "candidate_discovery_not_proof": true,
+            "ordered_steps_inline": false,
+        }),
+        _ => json!({}),
     }
 }
 
@@ -8355,6 +10042,28 @@ mod mvp3_7_sidecar_status_tests {
     }
 
     #[test]
+    fn mcp_validate_edit_source_role_labels_do_not_promote_non_production() {
+        let cases = [
+            ("production", EvidenceRole::Production),
+            ("test", EvidenceRole::Test),
+            ("mock", EvidenceRole::Mock),
+            ("stub", EvidenceRole::Mock),
+            ("generated", EvidenceRole::Unknown),
+            ("source_text", EvidenceRole::Unknown),
+            ("text_evidence", EvidenceRole::Unknown),
+            ("vendor", EvidenceRole::Unknown),
+            ("not_a_known_role", EvidenceRole::Unknown),
+        ];
+        for (label, expected) in cases {
+            assert_eq!(
+                mcp_validate_edit_micro_edge_source_role(label),
+                expected,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn mcp_validate_edit_parity() {
         let mut packet = mcp_dirty_output_packet();
         packet["validation_packet"] = json!({
@@ -10091,6 +11800,17 @@ mod tests {
         );
         assert!(tool["outputSchema"]["properties"]["validation_packet"].is_object());
         assert!(tool["outputSchema"]["properties"]["hard_interrupt_available"].is_object());
+        for field in [
+            "micro_edge_delta",
+            "micro_edge_integrity",
+            "micro_edge_layer_status",
+            "micro_edge_proof_changes",
+        ] {
+            assert!(
+                tool["outputSchema"]["properties"][field].is_object(),
+                "validate_edit output schema missing {field}"
+            );
+        }
     }
 
     #[test]
@@ -10157,6 +11877,34 @@ mod tests {
             Some(false)
         );
         assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        for field in [
+            "micro_edge_delta",
+            "micro_edge_integrity",
+            "micro_edge_layer_status",
+            "micro_edge_proof_changes",
+            "micro_flow_packet_delta",
+            "micro_flow_packet_integrity",
+            "micro_flow_packet_layer_status",
+            "micro_flow_packet_proof_changes",
+        ] {
+            assert!(packet[field].is_object(), "top-level missing {field}");
+            assert!(
+                packet["validation_packet"][field].is_object(),
+                "validation packet missing {field}"
+            );
+        }
+        assert_eq!(
+            packet["micro_edge_proof_changes"]["flow_proof_changed_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["ordered_steps_inline"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            packet["micro_flow_packet_delta"]["packet_body_inline"].as_bool(),
+            Some(false)
+        );
         assert!(!repo.join(".codegraph").exists());
         assert!(!db_path.exists());
 
@@ -10181,17 +11929,11 @@ mod tests {
             &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
         ));
 
-        let outside = repo
-            .parent()
-            .expect("repo parent")
-            .join("outside-mcp-validate-edit.ts");
-        fs::write(&outside, "export function outside() {}\n").expect("outside file");
-
         let packet = ok(server.call_tool(
             MCP_VALIDATE_EDIT_TOOL_NAME,
             &json!({
                 "repo": path_string(&repo),
-                "changed_files": [path_string(&outside)],
+                "changed_files": ["..\\outside.ts"],
                 "mode": "audit-json"
             }),
         ));
@@ -10203,7 +11945,6 @@ mod tests {
         assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
 
         fs::remove_dir_all(repo).expect("cleanup repo");
-        fs::remove_file(outside).expect("cleanup outside");
         fs::remove_dir_all(profile_root).expect("cleanup profile");
     }
 
@@ -10239,6 +11980,37 @@ mod tests {
             assert!(packet["validation_packet"]["status"].is_string());
             assert!(packet["validation_packet"]["must_fix_before_continuing"].is_boolean());
             assert!(packet["validation_packet"]["hard_interrupt_available"].is_boolean());
+            for field in [
+                "micro_edge_delta",
+                "micro_edge_integrity",
+                "micro_edge_layer_status",
+                "micro_edge_proof_changes",
+                "micro_flow_packet_delta",
+                "micro_flow_packet_integrity",
+                "micro_flow_packet_layer_status",
+                "micro_flow_packet_proof_changes",
+            ] {
+                assert!(
+                    packet[field].is_object(),
+                    "{mode} top-level missing {field}"
+                );
+                assert!(
+                    packet["validation_packet"][field].is_object(),
+                    "{mode} packet missing {field}"
+                );
+            }
+            assert_eq!(
+                packet["micro_edge_layer_status"]["local_flow_packet_availability"].as_str(),
+                Some("not_applicable")
+            );
+            assert_eq!(
+                packet["micro_flow_packet_delta"]["ordered_steps_inline"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                packet["micro_flow_packet_delta"]["packet_body_inline"].as_bool(),
+                Some(false)
+            );
             assert!(packet["claimability"].is_object());
             assert!(packet["lifecycle"].is_object());
             assert_eq!(
@@ -11237,6 +13009,19 @@ mod tests {
         );
         assert_eq!(status["graph_db_status"].as_str(), Some("ready"));
         assert_eq!(status["graph_proof_available"].as_bool(), Some(true));
+        assert!(status["mvp4_micro_edges"].is_object());
+        assert_eq!(
+            status["core_graph_micro_edge_availability_separated"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            status["mvp4_micro_edges"]["local_flow_packet_availability"].as_str(),
+            Some("not_applicable")
+        );
+        assert_eq!(
+            status["mvp4_micro_edges"]["proof_boundary"]["flow_proof_activated"].as_bool(),
+            Some(false)
+        );
         assert_eq!(status["graph_freshness"].as_str(), Some("current"));
         assert_eq!(status["dirty_state"].as_str(), Some("ready"));
         assert_eq!(

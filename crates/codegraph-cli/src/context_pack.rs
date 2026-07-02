@@ -8,12 +8,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use codegraph_core::{
-    classify_edge_evidence_role, classify_entity_source_role, ContextPacket, Edge, Entity,
-    EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, RelationKind, RetrievalCandidate,
-    SourceSpan,
+    classify_edge_evidence_role, classify_entity_source_role,
+    mvp4_3_local_micro_flow_packet_active_languages, ContextPacket, Edge, Entity, EntityKind,
+    EvidenceRole, Exactness, FileRecord, Metadata, RelationKind, RetrievalCandidate, SourceSpan,
 };
 use codegraph_query::{PromptSeed, PromptSeedKind};
-use codegraph_store::{GraphStore, SqliteGraphStore};
+use codegraph_store::{
+    GraphStore, LocalFlowPacketQueryOptions, LocalFlowPacketRow, SqliteGraphStore,
+};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
@@ -6538,6 +6540,254 @@ pub(crate) fn context_pack_metadata_u64(packet: &ContextPacket, key: &str) -> Va
         .unwrap_or(Value::Null)
 }
 
+pub(crate) const CONTEXT_PACK_MICRO_FLOW_HANDLE_LIMIT: usize = 4;
+
+pub(crate) fn attach_context_pack_micro_flow_handles(
+    packet: &mut ContextPacket,
+    db_path: &Path,
+) -> Result<usize, String> {
+    let store = SqliteGraphStore::open_read_only(db_path).map_err(|error| {
+        format!(
+            "failed to open local micro-flow packet DB {} read-only: {error}",
+            db_path.display()
+        )
+    })?;
+    let rows = load_context_pack_micro_flow_packet_rows(
+        &store,
+        packet,
+        CONTEXT_PACK_MICRO_FLOW_HANDLE_LIMIT,
+    )?;
+    let handles = rows
+        .iter()
+        .map(context_pack_micro_flow_handle_json)
+        .collect::<Vec<_>>();
+    let summary = context_pack_micro_flow_handle_summary_json(&handles);
+    packet
+        .metadata
+        .insert("micro_flow_handles".to_string(), json!(handles));
+    packet
+        .metadata
+        .insert("micro_flow_packet_summary".to_string(), summary);
+    packet.metadata.insert(
+        "micro_flow_handle_policy".to_string(),
+        json!({
+            "compact_default_full_packet_body_inline": false,
+            "compact_default_ordered_steps_inline": false,
+            "packet_handles_do_not_create_proof": true,
+            "context_entry_command_activated": false,
+            "proof_boundary": "handles reference persisted local_flow_packets only; opening the audit handle is required for dict_v1 body or ordered_steps expansion"
+        }),
+    );
+    Ok(rows.len())
+}
+
+fn load_context_pack_micro_flow_packet_rows(
+    store: &SqliteGraphStore,
+    packet: &ContextPacket,
+    limit: usize,
+) -> Result<Vec<LocalFlowPacketRow>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let active_languages = mvp4_3_local_micro_flow_packet_active_languages();
+    if active_languages.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rows = BTreeMap::<String, LocalFlowPacketRow>::new();
+    for file in context_pack_micro_flow_relevant_files(packet) {
+        for language in &active_languages {
+            let query = LocalFlowPacketQueryOptions {
+                limit,
+                file_id: Some(file.clone()),
+                language: Some((*language).to_string()),
+                source_role: Some("production".to_string()),
+                ..LocalFlowPacketQueryOptions::default()
+            };
+            for row in store
+                .query_local_flow_packets(&query)
+                .map_err(|error| error.to_string())?
+            {
+                rows.entry(row.packet_id.clone()).or_insert(row);
+                if rows.len() >= limit {
+                    return Ok(rows.into_values().collect());
+                }
+            }
+        }
+    }
+    for function in context_pack_micro_flow_relevant_functions(packet) {
+        for language in &active_languages {
+            let query = LocalFlowPacketQueryOptions {
+                limit,
+                function_query: Some(function.clone()),
+                language: Some((*language).to_string()),
+                source_role: Some("production".to_string()),
+                ..LocalFlowPacketQueryOptions::default()
+            };
+            for row in store
+                .query_local_flow_packets(&query)
+                .map_err(|error| error.to_string())?
+            {
+                rows.entry(row.packet_id.clone()).or_insert(row);
+                if rows.len() >= limit {
+                    return Ok(rows.into_values().collect());
+                }
+            }
+        }
+    }
+    Ok(rows.into_values().collect())
+}
+
+fn context_pack_micro_flow_relevant_files(packet: &ContextPacket) -> Vec<String> {
+    let mut files = BTreeSet::<String>::new();
+    for path in &packet.verified_paths {
+        for span in &path.source_spans {
+            let normalized = context_planning_normalize_path(&span.repo_relative_path);
+            if !normalized.is_empty() {
+                files.insert(normalized);
+            }
+        }
+    }
+    for snippet in &packet.snippets {
+        let normalized = context_planning_normalize_path(&snippet.file);
+        if !normalized.is_empty() {
+            files.insert(normalized);
+        }
+    }
+    if let Some(likely_files) = packet
+        .metadata
+        .get("likely_files")
+        .and_then(Value::as_array)
+    {
+        for file in likely_files.iter().filter_map(Value::as_str) {
+            let normalized = context_planning_normalize_path(file);
+            if !normalized.is_empty() {
+                files.insert(normalized);
+            }
+        }
+    }
+    files
+        .into_iter()
+        .take(CONTEXT_PACK_MICRO_FLOW_HANDLE_LIMIT)
+        .collect()
+}
+
+fn context_pack_micro_flow_relevant_functions(packet: &ContextPacket) -> Vec<String> {
+    unique_limited_strings(
+        packet
+            .symbols
+            .iter()
+            .filter(|symbol| context_planning_symbol_allowed(symbol))
+            .cloned(),
+        CONTEXT_PACK_MICRO_FLOW_HANDLE_LIMIT,
+    )
+}
+
+pub(crate) fn context_pack_micro_flow_handle_json(row: &LocalFlowPacketRow) -> Value {
+    let cap_state: Value = serde_json::from_str(&row.cap_state_json).unwrap_or(Value::Null);
+    let source_span_ids: Value =
+        serde_json::from_str(&row.source_span_ids_json).unwrap_or_else(|_| json!([]));
+    let packet_body: Value = serde_json::from_str(&row.packet_body).unwrap_or(Value::Null);
+    let path_count = packet_body
+        .get("paths")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let step_count = packet_body
+        .get("paths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|path| path.get("steps").and_then(Value::as_array))
+        .map(Vec::len)
+        .sum::<usize>();
+    json!({
+        "handle_id": format!("micro-flow-handle:{}", row.packet_id),
+        "packet_id": row.packet_id,
+        "packet_kind": row.packet_kind,
+        "function_identity": row.function_entity_id,
+        "function_frame_micro_node_id": row.function_frame_micro_node_id,
+        "file": row.file_id,
+        "function_span": row.primary_source_span_id,
+        "source_span_ids": source_span_ids,
+        "proof_status": row.proof_status,
+        "proof_strength": row.proof_strength,
+        "source_role": row.source_role,
+        "language": row.language,
+        "relation_path_summary": {
+            "encoding": row.encoding,
+            "path_count": path_count,
+            "step_count": step_count,
+            "compact_body_bytes": row.compact_body_bytes,
+            "audit_body_bytes": row.audit_body_bytes,
+        },
+        "unknown_count": cap_state.get("unknown_or_gap_count").or_else(|| cap_state.get("gap_count")).cloned().unwrap_or_else(|| json!(0)),
+        "risk_count": cap_state.get("risk_count").cloned().unwrap_or_else(|| json!(0)),
+        "omitted_count": row.omitted_count,
+        "truncation_reason": cap_state.get("truncation_reason").cloned().unwrap_or(Value::Null),
+        "expansion_handle": format!("audit.local_flow_packets.packet:{}", row.packet_id),
+        "lifecycle": {
+            "packet_status": row.packet_status,
+            "claimability": row.claimability,
+            "lifecycle_binding": row.lifecycle_binding,
+        },
+        "currentness": row.packet_status,
+        "included_reason": "matched context-pack file/function seed against persisted local_flow_packets",
+        "packet_body_inline": false,
+        "ordered_steps_inline": false,
+        "full_source_body_output": false,
+        "handle_creates_proof": false,
+        "proof_boundary": "handle summarizes persisted packet availability only; dict_v1 body and ordered_steps require explicit audit/explain expansion",
+    })
+}
+
+pub(crate) fn context_pack_micro_flow_handle_summary_json(handles: &[Value]) -> Value {
+    let mut proof_strength_counts = BTreeMap::<String, u64>::new();
+    let mut proof_status_counts = BTreeMap::<String, u64>::new();
+    let omitted_count = handles
+        .iter()
+        .map(|handle| {
+            handle
+                .get("omitted_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+        })
+        .sum::<u64>();
+    let unknown_count = handles
+        .iter()
+        .map(|handle| {
+            handle
+                .get("unknown_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+        })
+        .sum::<u64>();
+    for handle in handles {
+        if let Some(proof_strength) = handle.get("proof_strength").and_then(Value::as_str) {
+            *proof_strength_counts
+                .entry(proof_strength.to_string())
+                .or_default() += 1;
+        }
+        if let Some(proof_status) = handle.get("proof_status").and_then(Value::as_str) {
+            *proof_status_counts
+                .entry(proof_status.to_string())
+                .or_default() += 1;
+        }
+    }
+    json!({
+        "handle_count": handles.len(),
+        "proof_strength_counts": proof_strength_counts,
+        "proof_status_counts": proof_status_counts,
+        "unknown_count": unknown_count,
+        "omitted_count": omitted_count,
+        "compact_default_full_packet_body_inline": false,
+        "compact_default_ordered_steps_inline": false,
+        "explain_audit_expansion_available": !handles.is_empty(),
+        "packet_handles_do_not_create_proof": true,
+        "context_entry_command_activated": false,
+        "full_source_body_output": false,
+    })
+}
+
 pub(crate) fn context_pack_agent_json_response(
     options: &ContextPackOptions,
     packet: &ContextPacket,
@@ -6617,6 +6867,17 @@ pub(crate) fn context_pack_agent_json_response(
         .get("follow_up_queries")
         .cloned()
         .unwrap_or_else(|| json!([]));
+    let micro_flow_handles = packet
+        .metadata
+        .get("micro_flow_handles")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let micro_flow_packet_summary = packet
+        .metadata
+        .get("micro_flow_packet_summary")
+        .cloned()
+        .unwrap_or_else(|| context_pack_micro_flow_handle_summary_json(&[]));
     let claimability = packet.metadata.get("claimability").cloned();
     let snippets = packet
         .snippets
@@ -6818,6 +7079,15 @@ pub(crate) fn context_pack_agent_json_response(
         "graph_proof": graph_proof,
         "evidence_status": evidence_status,
         "graph_verification": graph_verification,
+        "micro_flow_handles": micro_flow_handles,
+        "micro_flow_packet_summary": micro_flow_packet_summary,
+        "micro_flow_packet_proof_boundary": {
+            "handles_do_not_create_proof": true,
+            "full_packet_body_inline": false,
+            "ordered_steps_inline": false,
+            "context_entry_command_activated": false,
+            "flow_proof_requires_opened_verified_packet": true
+        },
         "proof_failure_reason": packet.metadata.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
         "proof_path_count": packet.verified_paths.len(),
         "fallback_evidence": fallback_evidence,
@@ -7235,6 +7505,17 @@ pub(crate) fn context_pack_planning_packet_json(
     let likely_files_value = json!(likely_files.clone());
     let selected_role_coverage =
         context_planning_selected_role_coverage(fallback_evidence, snippets, &likely_files_value);
+    let micro_flow_handles = packet
+        .metadata
+        .get("micro_flow_handles")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let micro_flow_packet_summary = packet
+        .metadata
+        .get("micro_flow_packet_summary")
+        .cloned()
+        .unwrap_or_else(|| context_pack_micro_flow_handle_summary_json(&[]));
     let fallback_snippets = snippets
         .iter()
         .filter(|snippet| snippet.get("fallback_source").is_some())
@@ -7295,6 +7576,14 @@ pub(crate) fn context_pack_planning_packet_json(
         "selected_role_coverage": selected_role_coverage,
         "likely_symbols": likely_symbols,
         "evidence_items": evidence_items,
+        "micro_flow_handles": micro_flow_handles,
+        "micro_flow_packet_summary": micro_flow_packet_summary,
+        "micro_flow_packet_policy": {
+            "handles_do_not_create_proof": true,
+            "compact_default_full_packet_body_inline": false,
+            "compact_default_ordered_steps_inline": false,
+            "expansion_handle_required_for_packet_body": true
+        },
         "evidence_type": evidence_type,
         "confidence": confidence,
         "rank": if evidence_type == "unknown" { 0 } else { 1 },
@@ -8176,6 +8465,11 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.routing_packet += 1;
             continue;
         }
+        if pop_context_agent_routing_array_item(response, "implementation_trace_micro_flow_handles")
+        {
+            omitted.routing_packet += 1;
+            continue;
+        }
         if pop_context_agent_routing_array_item(response, "edit_plan") {
             omitted.routing_packet += 1;
             continue;
@@ -8456,7 +8750,6 @@ pub(crate) fn compact_context_agent_db_lifecycle_read(response: &mut Value) -> b
         "artifact_freshness": lifecycle.get("artifact_freshness").cloned().unwrap_or(Value::Null),
         "passport_status": lifecycle.get("passport_status").cloned().unwrap_or(Value::Null),
         "path_access_status": lifecycle.get("path_access_status").cloned().unwrap_or(Value::Null),
-        "exact_db_path_checked": lifecycle.get("exact_db_path_checked").cloned().unwrap_or(Value::Null),
         "repo_root_status": lifecycle.get("repo_root_status").cloned().unwrap_or(Value::Null),
         "schema_status": lifecycle.get("schema_status").cloned().unwrap_or(Value::Null),
         "scope_status": lifecycle.get("scope_status").cloned().unwrap_or(Value::Null),
@@ -8684,6 +8977,15 @@ pub(crate) fn compact_context_agent_routing_packet(response: &mut Value) -> bool
         "text_evidence": routing_take_array(packet, "text_evidence", 2),
         "source_navigation_evidence": routing_take_array(packet, "source_navigation_evidence", 3),
         "fallback_snippets": routing_take_array(packet, "fallback_snippets", 2),
+        "micro_flow_handles": routing_take_array(packet, "micro_flow_handles", 1),
+        "micro_flow_packet_summary": packet.get("micro_flow_packet_summary").cloned().unwrap_or(Value::Null),
+        "micro_flow_handle_policy": packet.get("micro_flow_handle_policy").cloned().unwrap_or_else(|| json!({
+            "packet_handles_do_not_create_proof": true,
+            "compact_default_full_packet_body_inline": false,
+            "compact_default_ordered_steps_inline": false,
+            "context_entry_command_activated": false,
+            "route_bridge_pull_forward_count": 0
+        })),
         "unknowns": routing_take_array(packet, "unknowns", 3),
         "risks": routing_take_array(packet, "risks", 3),
         "validation_steps": routing_take_array(packet, "validation_steps", 2),

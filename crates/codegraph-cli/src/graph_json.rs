@@ -534,7 +534,10 @@ pub(crate) fn edge_generated_or_degraded(edge: &Edge) -> bool {
 
 pub(crate) fn path_looks_generated(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    normalized.contains("/generated/")
+    normalized.starts_with("generated/")
+        || normalized.starts_with("gen/")
+        || normalized.contains("/generated/")
+        || normalized.contains("/gen/")
         || normalized.contains(".generated.")
         || normalized.ends_with(".pb.go")
         || normalized.ends_with(".g.dart")
@@ -542,7 +545,10 @@ pub(crate) fn path_looks_generated(path: &str) -> bool {
 
 pub(crate) fn path_looks_test(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    normalized.contains("/tests/")
+    normalized.starts_with("tests/")
+        || normalized.starts_with("test/")
+        || normalized.starts_with("fixtures/")
+        || normalized.contains("/tests/")
         || normalized.contains("/test/")
         || normalized.contains("/fixtures/")
         || normalized.ends_with("_test.py")

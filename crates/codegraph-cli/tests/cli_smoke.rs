@@ -3115,10 +3115,18 @@ fn unresolved_calls_query_is_bounded_and_instrumented() {
         .as_str()
         .expect("page query")
         .contains("FROM heuristic_edges e"));
-    assert!(!first_page["instrumentation"]["explain_query_plan"]
-        .as_array()
-        .expect("query plan")
-        .is_empty());
+    assert_eq!(
+        first_page["instrumentation"]["explain_query_plan_omitted"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        first_page["instrumentation"]["full_detail_handle"].as_str(),
+        Some("query.unresolved_calls.instrumentation.explain_query_plan")
+    );
+    assert!(
+        first_page["instrumentation"]["query_plan_analysis"].is_object(),
+        "query plan analysis"
+    );
     assert_eq!(
         first_page["instrumentation"]["snippets"]["requested"].as_bool(),
         Some(false)
@@ -4889,7 +4897,7 @@ fn agent_use_watch_once_deleted_renamed_text_and_atomic_edges() {
     assert_eq!(temp_update["status"].as_str(), Some("no_op"));
     assert_eq!(
         temp_update["reason"].as_str(),
-        Some("ignored_path_no_graph_changes")
+        Some("changed_paths_are_noop_after_input_preflight")
     );
     assert_eq!(temp_update["files_read"].as_u64(), Some(0));
     fs::remove_file(repo.join("src").join("atomic.ts.tmp")).expect("remove atomic temp");
@@ -5229,7 +5237,7 @@ fn agent_use_watch_once_source_role_ignored_outside_and_failpoint_boundaries() {
     assert_eq!(outside_value["status"].as_str(), Some("rejected"));
     assert_eq!(
         outside_value["reason"].as_str(),
-        Some("one_or_more_changed_paths_are_outside_repo")
+        Some("no_updateable_changed_paths_after_input_preflight")
     );
     assert_eq!(outside_value["files_read"].as_u64(), Some(0));
     assert_eq!(outside_value["facts_deleted"].as_u64(), Some(0));

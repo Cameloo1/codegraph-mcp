@@ -1,0 +1,693 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/context_entry_packet_agent_json.schema.json",
+  "title": "context_entry_packet_agent_json",
+  "$comment": "Dormant pre-MVP4 contract only. This schema does not activate a CLI command, MCP tool, parser extraction, packet generation, mutation_proof, or flow_proof.",
+  "type": "object",
+  "required": [
+    "schema_name",
+    "schema_version",
+    "packet_kind",
+    "seeds",
+    "entry_points",
+    "proof_neighbors",
+    "candidate_neighbors",
+    "micro_flow_handles",
+    "no_proof_path_found",
+    "evidence_state",
+    "budget",
+    "surface_activation"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_name": {
+      "const": "context_entry_packet_agent_json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "packet_kind": {
+      "const": "context_entry_packet"
+    },
+    "seeds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/seed"
+      }
+    },
+    "entry_points": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry_point"
+      }
+    },
+    "proof_neighbors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/proof_neighbor"
+      }
+    },
+    "candidate_neighbors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate_neighbor"
+      }
+    },
+    "micro_flow_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/micro_flow_handle"
+      }
+    },
+    "no_proof_path_found": {
+      "type": "boolean"
+    },
+    "evidence_state": {
+      "type": "string",
+      "enum": [
+        "proof_found",
+        "no_proof_path_found",
+        "no_evidence_found",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    },
+    "expansion_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/expansion_handle"
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "claimability": {
+      "$ref": "#/$defs/claimability"
+    },
+    "proof_status": {
+      "$ref": "#/$defs/proof_status"
+    },
+    "proof_strength": {
+      "$ref": "#/$defs/proof_strength"
+    },
+    "surface_activation": {
+      "type": "object",
+      "required": [
+        "context_entry_command_activated",
+        "context_entry_mcp_tool_registered",
+        "parser_extraction_active",
+        "production_packet_generation_active",
+        "aggregation_creates_proof"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "context_entry_command_activated": {
+          "const": false
+        },
+        "context_entry_mcp_tool_registered": {
+          "const": false
+        },
+        "parser_extraction_active": {
+          "const": false
+        },
+        "production_packet_generation_active": {
+          "const": false
+        },
+        "aggregation_creates_proof": {
+          "const": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "source_span_or_null": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/source_span"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_role": {
+      "type": "string",
+      "enum": [
+        "production",
+        "test",
+        "mock",
+        "stub",
+        "generated",
+        "source_text",
+        "unknown",
+        "mixed"
+      ]
+    },
+    "exactness": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "derived_with_provenance",
+        "heuristic",
+        "unsupported",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "claimability": {
+      "type": "string",
+      "enum": [
+        "claimable_local_fact",
+        "claimable_local_flow",
+        "candidate_only",
+        "non_claimable",
+        "partial_non_claimable",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "proof_status": {
+      "type": "string",
+      "enum": [
+        "graph_relation_proof",
+        "mutation_proof",
+        "flow_proof",
+        "source_navigation_evidence",
+        "candidate_evidence",
+        "text_evidence",
+        "symbol_evidence",
+        "no_proof_path_found",
+        "no_evidence_found",
+        "unsupported",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "proof_strength": {
+      "type": "string",
+      "enum": [
+        "text_evidence",
+        "symbol_evidence",
+        "candidate_evidence",
+        "source_navigation_evidence",
+        "graph_relation_proof",
+        "mutation_proof",
+        "flow_proof",
+        "unsupported",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "provenance_kind",
+        "source",
+        "creates_proof"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "provenance_kind": {
+          "type": "string",
+          "enum": [
+            "graph_store",
+            "path_evidence",
+            "context_pack",
+            "routing_packet",
+            "source_navigation",
+            "text_retrieval",
+            "vector_retrieval",
+            "binary_retrieval",
+            "nuance_retrieval",
+            "micro_flow_handle",
+            "route_adapter",
+            "bridge_adapter",
+            "unresolved_seed",
+            "unknown"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "source_fact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        },
+        "source_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/source_span"
+          }
+        },
+        "creates_proof": {
+          "const": false
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
+        }
+      }
+    },
+    "seed": {
+      "type": "object",
+      "required": [
+        "seed_id",
+        "seed_kind",
+        "label",
+        "resolution_status",
+        "proof_label",
+        "source_span",
+        "fabricated",
+        "provenance"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "seed_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "seed_kind": {
+          "type": "string",
+          "enum": [
+            "symbol",
+            "route",
+            "literal",
+            "file",
+            "current_selection",
+            "task_prompt",
+            "unknown"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "resolution_status": {
+          "type": "string",
+          "enum": [
+            "resolved",
+            "unresolved",
+            "candidate",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "proof_label": {
+          "$ref": "#/$defs/proof_strength"
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span_or_null"
+        },
+        "source_role": {
+          "$ref": "#/$defs/source_role"
+        },
+        "fabricated": {
+          "const": false
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "entry_point": {
+      "type": "object",
+      "required": [
+        "entry_id",
+        "entry_kind",
+        "label",
+        "proof_label",
+        "exactness",
+        "claimability",
+        "source_span",
+        "source_role",
+        "route_support_status",
+        "provenance"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "entry_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "entry_kind": {
+          "type": "string",
+          "enum": [
+            "main",
+            "exported",
+            "test",
+            "current",
+            "route",
+            "symbol",
+            "unknown"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "proof_label": {
+          "$ref": "#/$defs/proof_strength"
+        },
+        "exactness": {
+          "$ref": "#/$defs/exactness"
+        },
+        "claimability": {
+          "$ref": "#/$defs/claimability"
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span_or_null"
+        },
+        "source_role": {
+          "$ref": "#/$defs/source_role"
+        },
+        "route_support_status": {
+          "type": "string",
+          "enum": [
+            "not_applicable",
+            "exact_route_support_exists",
+            "route_candidate_only",
+            "adapter_absent",
+            "unknown"
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "neighbor_endpoint": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "source_span"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span_or_null"
+        },
+        "source_role": {
+          "$ref": "#/$defs/source_role"
+        }
+      }
+    },
+    "proof_neighbor": {
+      "type": "object",
+      "required": [
+        "neighbor_id",
+        "relation_kind",
+        "head",
+        "tail",
+        "proof_label",
+        "exactness",
+        "claimability",
+        "source_spans",
+        "provenance",
+        "relation_allowlist_status"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "neighbor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "relation_kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "head": {
+          "$ref": "#/$defs/neighbor_endpoint"
+        },
+        "tail": {
+          "$ref": "#/$defs/neighbor_endpoint"
+        },
+        "proof_label": {
+          "$ref": "#/$defs/proof_strength"
+        },
+        "exactness": {
+          "$ref": "#/$defs/exactness"
+        },
+        "claimability": {
+          "$ref": "#/$defs/claimability"
+        },
+        "source_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/source_span"
+          }
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "relation_allowlist_status": {
+          "type": "string",
+          "enum": [
+            "allowed",
+            "not_applicable",
+            "unsupported",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "candidate_neighbor": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "candidate_source",
+        "label",
+        "proof_label",
+        "candidate_only",
+        "rank",
+        "provenance"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "candidate_source": {
+          "type": "string",
+          "enum": [
+            "text",
+            "vector",
+            "binary",
+            "nuance",
+            "source_navigation",
+            "lexical",
+            "unknown"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "proof_label": {
+          "type": "string",
+          "enum": [
+            "candidate_evidence",
+            "text_evidence",
+            "source_navigation_evidence",
+            "unknown"
+          ]
+        },
+        "candidate_only": {
+          "const": true
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span_or_null"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "micro_flow_handle": {
+      "type": "object",
+      "required": [
+        "handle",
+        "availability_status",
+        "proof_status",
+        "claimability",
+        "full_body_inline",
+        "provenance"
+      ],
+      "additionalProperties": true,
+      "not": {
+        "anyOf": [
+          {
+            "required": ["ordered_steps"]
+          },
+          {
+            "required": ["full_packet_body"]
+          },
+          {
+            "required": ["packet_body"]
+          }
+        ]
+      },
+      "properties": {
+        "handle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "availability_status": {
+          "type": "string",
+          "enum": [
+            "not_applicable",
+            "absent",
+            "available",
+            "stale",
+            "unknown"
+          ]
+        },
+        "proof_status": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "claimability": {
+          "$ref": "#/$defs/claimability"
+        },
+        "function_id": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "file": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "full_body_inline": {
+          "const": false
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "expansion_handle": {
+      "type": "object",
+      "required": [
+        "handle",
+        "handle_kind",
+        "available",
+        "proof_boundary"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "handle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "handle_kind": {
+          "type": "string",
+          "enum": [
+            "context_entry_explain",
+            "context_entry_audit",
+            "source_span",
+            "micro_flow_packet",
+            "route_adapter_trace",
+            "bridge_adapter_trace",
+            "unknown"
+          ]
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "proof_boundary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "max_output_bytes",
+        "omitted_count",
+        "evidence_first_shedding",
+        "deterministic_shedding",
+        "expansion_handles"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "default": 16384
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_first_shedding": {
+          "const": true
+        },
+        "deterministic_shedding": {
+          "const": true
+        },
+        "omitted_by_section": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "max_output_bytes_exceeded": {
+          "type": "boolean"
+        },
+        "expansion_handles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/expansion_handle"
+          }
+        }
+      }
+    }
+  }
+}

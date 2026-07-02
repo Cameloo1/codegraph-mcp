@@ -231,6 +231,13 @@ pub fn classify_entity_source_role(entity: &Entity) -> EvidenceRoleDecision {
             "qualified_name",
         );
     }
+    if is_mock_path(&entity.repo_relative_path) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Mock,
+            "entity is in a mock/stub path",
+            "file_path",
+        );
+    }
     if is_test_path(&entity.repo_relative_path) {
         return EvidenceRoleDecision::new(
             EvidenceRole::Test,
@@ -272,6 +279,13 @@ pub fn classify_edge_evidence_role(edge: &Edge) -> EvidenceRoleDecision {
             EvidenceRole::Mock,
             "edge endpoint looks like mock/stub",
             "endpoint_id",
+        );
+    }
+    if is_mock_path(&edge.source_span.repo_relative_path) {
+        return EvidenceRoleDecision::new(
+            EvidenceRole::Mock,
+            "edge source span is in a mock/stub path",
+            "file_path",
         );
     }
     if endpoint_looks_test(&edge.head_id) || endpoint_looks_test(&edge.tail_id) {
@@ -366,6 +380,7 @@ pub fn infer_edge_context(edge: &Edge) -> EdgeContext {
     if is_mock_relation(edge.relation)
         || endpoint_looks_mock(&edge.head_id)
         || endpoint_looks_mock(&edge.tail_id)
+        || is_mock_path(&edge.source_span.repo_relative_path)
     {
         return EdgeContext::Mock;
     }
@@ -375,6 +390,9 @@ pub fn infer_edge_context(edge: &Edge) -> EdgeContext {
         || endpoint_looks_test(&edge.tail_id)
     {
         return EdgeContext::Test;
+    }
+    if is_non_claimable_source_path(&edge.source_span.repo_relative_path) {
+        return EdgeContext::Unknown;
     }
     if edge.context != EdgeContext::Unknown {
         return edge.context;
@@ -429,13 +447,7 @@ fn metadata_reason(metadata: &Metadata) -> Option<String> {
 }
 
 fn evidence_role_from_label(value: &str) -> EvidenceRole {
-    match normalize_context_label(value) {
-        EdgeContext::Production => EvidenceRole::Production,
-        EdgeContext::Test => EvidenceRole::Test,
-        EdgeContext::Mock => EvidenceRole::Mock,
-        EdgeContext::Mixed => EvidenceRole::Mixed,
-        EdgeContext::Unknown => EvidenceRole::Unknown,
-    }
+    EvidenceRole::from_source_role_label(value)
 }
 
 fn evidence_role_from_edge_context(context: EdgeContext) -> EvidenceRole {
@@ -471,17 +483,12 @@ fn relation_source_role(relation: RelationKind) -> Option<EvidenceRole> {
 }
 
 fn normalize_context_label(value: &str) -> EdgeContext {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.contains("mixed") {
-        EdgeContext::Mixed
-    } else if normalized.contains("mock") || normalized.contains("stub") {
-        EdgeContext::Mock
-    } else if normalized.contains("test") || normalized.contains("spec") {
-        EdgeContext::Test
-    } else if normalized.contains("unknown") || normalized.contains("unresolved") {
-        EdgeContext::Unknown
-    } else {
-        EdgeContext::Production
+    match EvidenceRole::from_source_role_label(value) {
+        EvidenceRole::Production => EdgeContext::Production,
+        EvidenceRole::Test => EdgeContext::Test,
+        EvidenceRole::Mock => EdgeContext::Mock,
+        EvidenceRole::Mixed => EdgeContext::Mixed,
+        EvidenceRole::Unknown => EdgeContext::Unknown,
     }
 }
 
@@ -567,9 +574,18 @@ fn is_mock_relation(relation: RelationKind) -> bool {
 
 fn endpoint_looks_test(value: &str) -> bool {
     let normalized = value.replace('\\', "/").to_ascii_lowercase();
-    normalized.contains("/tests/")
-        || normalized.contains("/test/")
-        || normalized.contains(".test.")
+    path_has_component(
+        &normalized,
+        &[
+            "tests",
+            "test",
+            "__tests__",
+            "spec",
+            "specs",
+            "examples",
+            "benches",
+        ],
+    ) || normalized.contains(".test.")
         || normalized.contains(".spec.")
         || normalized.contains("#test")
         || normalized.contains("testcase")
@@ -600,9 +616,19 @@ fn qualified_name_contains_test_module(value: &str) -> bool {
 
 fn is_test_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    normalized.contains("/tests/")
-        || normalized.contains("/test/")
-        || normalized.ends_with(".test.ts")
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    path_has_component(
+        &normalized,
+        &[
+            "tests",
+            "test",
+            "__tests__",
+            "spec",
+            "specs",
+            "examples",
+            "benches",
+        ],
+    ) || normalized.ends_with(".test.ts")
         || normalized.ends_with(".test.tsx")
         || normalized.ends_with(".test.js")
         || normalized.ends_with(".test.jsx")
@@ -610,6 +636,70 @@ fn is_test_path(path: &str) -> bool {
         || normalized.ends_with(".spec.tsx")
         || normalized.ends_with(".spec.js")
         || normalized.ends_with(".spec.jsx")
+        || normalized.ends_with("_test.go")
+        || normalized.ends_with("_test.py")
+        || normalized.ends_with("_test.rb")
+        || normalized.ends_with("_spec.rb")
+        || normalized.ends_with("_test.php")
+        || normalized.ends_with("_spec.php")
+        || (file_name.starts_with("test_") && file_name.ends_with(".py"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".rb"))
+        || (file_name.starts_with("test_") && file_name.ends_with(".php"))
+        || file_name.ends_with("test.java")
+        || file_name.ends_with("tests.java")
+        || file_name.ends_with("spec.java")
+        || file_name.ends_with("test.cs")
+        || file_name.ends_with("tests.cs")
+        || file_name.ends_with("spec.cs")
+        || file_name.ends_with("test.php")
+        || file_name.ends_with("testcase.php")
+        || file_name.ends_with("test.rb")
+        || file_name.ends_with("spec.rb")
+}
+
+fn is_mock_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    path_has_component(
+        &normalized,
+        &[
+            "__mocks__",
+            "mocks",
+            "mock",
+            "stubs",
+            "stub",
+            "fakes",
+            "fake",
+        ],
+    ) || file_name.contains(".mock.")
+        || file_name.contains(".stub.")
+        || file_name.ends_with("_mock.py")
+        || file_name.ends_with("_stub.py")
+        || looks_mock_like(file_name)
+}
+
+fn is_non_claimable_source_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    path_has_component(
+        &normalized,
+        &[
+            "generated",
+            "gen",
+            "vendor",
+            "vendored",
+            "third_party",
+            "node_modules",
+        ],
+    ) || file_name.ends_with(".d.ts")
+        || file_name.contains(".generated.")
+        || file_name.contains(".gen.")
+}
+
+fn path_has_component(normalized_path: &str, components: &[&str]) -> bool {
+    normalized_path
+        .split('/')
+        .any(|part| components.iter().any(|component| part == *component))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

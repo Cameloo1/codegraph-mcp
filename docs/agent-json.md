@@ -3,8 +3,8 @@
 This document defines the compact agent JSON contract for stable
 `--agent-json` and compact lifecycle output modes. The schemas are public,
 machine-readable contracts, and Rust regression tests assert that emitted agent
-JSON includes the required top-level fields and stays under documented size
-targets.
+JSON includes the required top-level fields. Size targets are compact-output
+goals with known current exceptions called out below.
 
 Schema files live in `docs/schemas/agent-json/`:
 
@@ -19,6 +19,15 @@ Schema files live in `docs/schemas/agent-json/`:
 - `doctor_compact_json.schema.json`
 - `validation_packet_agent_json.schema.json`
 - `common.schema.json`
+
+MVP4 packet schemas also live there. `local_micro_flow_packet_agent_json` is
+active only for the verified MVP4.3 TypeScript `.ts` production local-flow
+packet slice; unsupported languages and non-production source roles do not emit
+packet rows or `flow_proof`. `context_entry_packet_agent_json` remains dormant
+planning surface until its implementation gate passes.
+
+- `local_micro_flow_packet_agent_json.schema.json`
+- `context_entry_packet_agent_json.schema.json`
 
 ## Versioning
 
@@ -121,7 +130,8 @@ from compact agent JSON by default.
 
 ## Size Guards
 
-Regression tests enforce these default size targets:
+Compact modes target these default sizes where the current implementation has
+size guards:
 
 - `index_agent_json`: 4 KiB
 - query agent JSON surfaces: 12 KiB
@@ -131,6 +141,15 @@ Regression tests enforce these default size targets:
   `agent-use` namespace): 12 KiB by default. Compaction preserves the
   schema-required fields and trims optional diagnostic sections first; the
   `--explain` and audit modes raise this bound for richer output.
+
+Current release verification found known over-budget exceptions: plain
+`query path --agent-json` can exceed compact targets without byte-budget
+metadata, `agent-use query path` and `agent-use query unresolved-calls` can
+exceed the 12 KiB default target while preserving required safety fields, and
+`agent-use validate-edit --explain` / `--audit-json` are large diagnostic
+packets rather than tight-loop compact packets. Consumers must parse
+`truncation`, budget, warning, lifecycle, and claimability fields instead of
+assuming byte size alone proves whether output is safe or complete.
 
 Agent JSON must not include non-empty `scope.included_examples` or
 `scope.excluded_examples` arrays. Scope examples and full audit payloads remain
@@ -142,14 +161,14 @@ available through explicit audit/verbose flags.
 truncation metadata without audit-grade scope examples by default.
 
 `query_symbols_agent_json`, `query_text_agent_json`, and
-`query_files_agent_json` return bounded result arrays with source spans where
+`query_files_agent_json` return result-limited arrays with source spans where
 available and compact lifecycle/truncation metadata.
 
 `callers_callees_agent_json` returns bounded call edges, resolved-entity
 metadata when available, source spans, exactness/confidence labels, and evidence
 roles.
 
-`query_unresolved_calls_agent_json` returns bounded unresolved-reference lane
+`query_unresolved_calls_agent_json` returns limited unresolved-reference lane
 rows plus lifecycle, claimability, and pagination state. It may include a
 legacy `calls` array, but the stable MVP3 release contract is the
 `unresolved_references` block with `filters`, `items`, `rows`,
@@ -170,7 +189,30 @@ proof eligibility.
 shape for status-like agent surfaces. The existing `status` and `doctor --json`
 commands still expose their historical rich diagnostic objects unless a compact
 mode is added; clients should treat these schemas as the compact lifecycle
-contract, not as a claim that the rich diagnostics were removed.
+contract, not as a claim that the rich diagnostics were removed. MVP4.2
+micro-edge visibility fields are additive summaries only: they report optional
+`LOCAL_RETURNS_TO` layer status, counts, caps, and recovery actions separately
+from core graph claimability.
+
+`query_local_flow_packets_agent_json` is the compact query envelope for the
+current packet layer. It reports packet-layer status, rows by language, proof
+status/strength counts, handles, truncation, and omitted counts without inlining
+full packet bodies by default. Query-level `graph_proof=false` means the query
+envelope itself is not a proof claim; individual TypeScript packet rows may
+carry `proof_strength: "flow_proof"` only when the packet is complete,
+current, source-spanned, provenance-safe, production-role, and eligible.
+
+`local_micro_flow_packet_agent_json` is the opened packet-body contract for the
+verified MVP4.3 TypeScript `.ts` production local-flow packet slice. Compact
+packet bodies use `encoding: "dict_v1"` plus a dictionary/path program
+(`packet_body`) so repeated source spans, micro-node refs, micro-edge refs,
+provenance, branch ids, return-path ids, and labels are interned once. Verbose
+`ordered_steps` are an explain/audit expansion of the same facts, not the
+default context/routing payload and not a stronger proof source. For
+JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, PHP, and
+text-only/unsupported files, packet support remains `not_implemented` or
+`not_applicable`; missing packet rows are not source errors and cannot create a
+hard interrupt.
 
 `languages --json` is release capability metadata for language frontend
 support. It is intentionally outside the agent JSON packet schema set unless a

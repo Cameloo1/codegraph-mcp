@@ -44,8 +44,9 @@ CodeGraph is built as four practical layers:
 3. **Graph/source verification.** Candidate lanes are not answers. The graph and
    source spans decide whether a relation is proven, source-text-only, or still
    unknown.
-4. **Agent-use and MCP surfaces.** The CLI and MCP server expose bounded,
-   lifecycle-checked packets for one linear coding-agent workflow.
+4. **Agent-use and MCP surfaces.** The CLI and MCP server expose
+   lifecycle-checked, budget-aware packets for one linear coding-agent
+   workflow.
 
 The short rule:
 
@@ -59,35 +60,48 @@ Three practical layers, one funnel:
 
 ```text
                          +----------------------+
-                         |       Codex/agent    |
-                         |  CLI / IDE / app UI  |
+                         |     coding agent     |
+                         | search / edit / test |
                          +----------+-----------+
                                     |
-                                    | MCP
+                                    | CLI / MCP
                                     v
                          +----------------------+
-                         |   codegraph-mcp      |
-                         |  context_pack API    |
+                         | agent-use status     |
+                         | index / watch        |
                          +----------+-----------+
+                                    |
         +---------------------------+---------------------------+
         v                           v                           v
 +-----------------+       +---------------------+      +------------------+
-| Exact graph     |       | Compressed retrieval |      | Ranker           |
-| AST/CFG/DFG/    |       | binary/int8/PQ/MRL   |      | + uncertainty    |
-| types/auth/test |       |                      |      |                  |
+| Typed graph     |       | Candidate lanes      |      | MVP3 validator   |
+| entities/edges  |       | text/vector/path/    |      | validate-edit    |
+| spans/provenance|       | binary/nuance/spool  |      | blockers/unknown |
 +--------+--------+       +----------+----------+      +--------+---------+
-         +---------------------------+---------------------------+
+         |                           |                          |
+         +---------------------------+--------------------------+
                                      v
                          +----------------------+
-                         |  Exact verification  |
-                         |  paths + spans       |
+                         | graph/source verify  |
+                         | proof or no proof    |
                          +----------+-----------+
                                     v
-                         +----------------------+
-                         |  Compact context     |
-                         |  proof packet        |
-                         +----------------------+
+                 +------------------+------------------+
+                 v                                     v
+      +----------------------+              +----------------------+
+      | compact context      |              | MVP4.2 micro-edge    |
+      | micro-flow packets*  |              | MVP3 linter signal   |
+      | planning packet      |              | containment only     |
+      +----------------------+              | no value-flow proof  |
+                                            +----------------------+
 ```
+
+`*` Micro-flow packets are active only for the verified MVP4.3 TypeScript `.ts`
+production slice. MVP4.2 `LOCAL_RETURNS_TO` and related local micro-edge data
+remain separate from core graph claimability; `flow_proof` appears only through
+complete eligible TypeScript packet rows. Packet surfaces are handle-first;
+opened packet bodies are compact `dict_v1` dictionary/path programs, with
+verbose ordered steps reserved for explain/audit expansion.
 
 ## What Ships Today
 
@@ -244,6 +258,23 @@ The graph model currently defines 55 entity kinds, 67 relation kinds, and 8
 exactness labels in [crates/codegraph-core/src/kinds.rs](../crates/codegraph-core/src/kinds.rs).
 Relation coverage varies by language and extractor, and unsupported proof-mode
 relations do not receive precision claims.
+
+Registered frontend support is not a blanket exactness claim. Current verified
+support is surface-specific:
+
+- TypeScript `.ts` production files have the active MVP4.3 local-flow packet
+  slice: source-spanned local micro-nodes, local micro-edges, compact
+  `local_flow_packets`, and `flow_proof` only for complete eligible local
+  chains.
+- JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, and PHP keep
+  their verified parser/symbol/text/context/validate surfaces, but packet
+  support is `not_implemented` or `not_applicable` unless a later
+  fixture-backed gate changes that status.
+- Dynamic dispatch, reflection, macro/preprocessor expansion, runtime
+  dependency injection, compiler/LSP-only resolution, framework conventions,
+  and cross-language bridges remain unknown, heuristic, unsupported, or
+  externally required unless deterministic source-spanned resolver evidence is
+  present.
 
 Relation groups include:
 

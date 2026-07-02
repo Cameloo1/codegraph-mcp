@@ -1392,13 +1392,20 @@ pub(crate) fn query_unresolved_calls(
         .as_deref()
         .map(|path| normalize_unresolved_calls_path_filter(repo_root, path))
         .transpose()?;
-    let lane_rows = query_unresolved_reference_lane_page(
+    let lane_raw_limit = options
+        .limit
+        .saturating_mul(4)
+        .clamp(options.limit, MAX_UNRESOLVED_CALL_LIMIT);
+    let lane_raw_rows = query_unresolved_reference_lane_page(
         &connection,
-        options.limit,
+        lane_raw_limit,
         options.offset,
         options.class_filter.as_deref(),
         normalized_path_filter.as_deref(),
     )?;
+    let raw_lane_row_count = lane_raw_rows.len();
+    let (lane_rows, lane_default_filter) =
+        filter_default_unresolved_reference_lane_items(&connection, lane_raw_rows, options.limit)?;
     let lane_query_ms = elapsed_ms(lane_start);
 
     let mut source_scan = json!({
@@ -1444,6 +1451,8 @@ pub(crate) fn query_unresolved_calls(
         "unresolved_references": {
             "rows": lane_rows.len(),
             "items": lane_rows,
+            "raw_rows_considered": raw_lane_row_count,
+            "default_filter": lane_default_filter,
             "filters": {
                 "class": options.class_filter,
                 "path": normalized_path_filter,
@@ -1482,8 +1491,7 @@ pub(crate) fn query_unresolved_calls(
                 "count_query": if options.count_total { Value::String(UNRESOLVED_CALLS_COUNT_SQL.to_string()) } else { Value::Null },
             },
             "query_plan_analysis": query_plan_analysis,
-            "explain_query_plan": explain_plan,
-            "explain_query_plan_omitted": false,
+            "explain_query_plan_omitted": true,
             "full_detail_handle": "query.unresolved_calls.instrumentation.explain_query_plan",
             "elapsed_ms": {
                 "open_db": open_ms,
@@ -1716,6 +1724,125 @@ pub(crate) fn query_unresolved_reference_lane_page(
         )
         .map_err(|error| error.to_string())?;
     collect_sqlite_values(rows)
+}
+
+pub(crate) fn filter_default_unresolved_reference_lane_items(
+    connection: &Connection,
+    rows: Vec<Value>,
+    limit: usize,
+) -> Result<(Vec<Value>, Value), String> {
+    let mut filtered = Vec::new();
+    let mut callee_duplicate_count = 0usize;
+    let mut non_call_relation_count = 0usize;
+    let mut definition_candidate_count = 0usize;
+
+    for mut item in rows {
+        let relation = item
+            .get("relation")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if relation == "CALLEE" {
+            callee_duplicate_count += 1;
+            continue;
+        }
+        if relation != "CALLS" {
+            non_call_relation_count += 1;
+            continue;
+        }
+
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let definition_count = unresolved_reference_repo_definition_count(connection, &name)?;
+        if let Some(object) = item.as_object_mut() {
+            object.insert(
+                "definition_candidate_count".to_string(),
+                json!(definition_count),
+            );
+            object.insert(
+                "repo_graph_lookup".to_string(),
+                if definition_count == 0 {
+                    json!(format!(
+                        "no_defining_entity_named_{}",
+                        unresolved_reference_lookup_name(&name)
+                    ))
+                } else {
+                    json!(format!("{definition_count}_definition_candidates_exist"))
+                },
+            );
+        }
+        if definition_count > 0 {
+            definition_candidate_count += 1;
+            continue;
+        }
+
+        filtered.push(item);
+        if filtered.len() >= limit {
+            break;
+        }
+    }
+
+    Ok((
+        filtered,
+        json!({
+            "schema_version": 1,
+            "kept": "CALLS rows with no defining entity in the current graph",
+            "callee_duplicate_omitted_count": callee_duplicate_count,
+            "non_call_relation_omitted_count": non_call_relation_count,
+            "definition_candidate_omitted_count": definition_candidate_count,
+            "not_graph_proof": true,
+        }),
+    ))
+}
+
+fn unresolved_reference_repo_definition_count(
+    connection: &Connection,
+    reference_name: &str,
+) -> Result<i64, String> {
+    if !sqlite_table_exists(connection, "entities")?
+        || !sqlite_table_exists(connection, "symbol_dict")?
+        || !sqlite_table_exists(connection, "entity_kind_dict")?
+    {
+        return Ok(0);
+    }
+    let lookup_name = unresolved_reference_lookup_name(reference_name);
+    if lookup_name.is_empty() {
+        return Ok(0);
+    }
+    connection
+        .query_row(
+            r#"
+            SELECT COUNT(1)
+            FROM entities entity
+            JOIN symbol_dict name ON name.id = entity.name_id
+            JOIN entity_kind_dict kind ON kind.id = entity.kind_id
+            WHERE name.value = ?1
+              AND kind.value NOT IN (
+                'Import',
+                'Export',
+                'CallSite',
+                'Return',
+                'Expression',
+                'Parameter',
+                'LocalVariable'
+              )
+            "#,
+            params![lookup_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn unresolved_reference_lookup_name(reference_name: &str) -> String {
+    let after_path = reference_name.rsplit("::").next().unwrap_or(reference_name);
+    after_path
+        .rsplit('.')
+        .next()
+        .unwrap_or(after_path)
+        .trim()
+        .to_string()
 }
 
 pub(crate) fn query_unresolved_calls_page(

@@ -155,14 +155,35 @@ structured tool result rather than an MCP tool error.
 The output shape includes `validation_packet`, `hard_interrupt_available`,
 `hard_interrupt`, `must_fix_before_continuing`, `changed_files`,
 `rejected_paths`, `no_op_paths`, `warnings`, `unknowns`, `diagnostics`,
-`claimability`, `lifecycle`, `recovery_commands`, `final_severity`,
-finding-count fields, the `unresolved_references` warning lane when present,
-severity trace handles, `editor_policy`,
+`claimability`, `lifecycle`, `micro_edge_delta`, `micro_edge_integrity`,
+`micro_edge_layer_status`, `micro_edge_proof_changes`, `recovery_commands`,
+`final_severity`, finding-count fields, the `unresolved_references` warning lane
+when present, severity trace handles, `editor_policy`,
 `omitted_count`, `expansion_handles`, and `timings`. `blocking_graph_error`
 means the validation completed and found a stop condition. `warning`, `unknown`,
 and `diagnostic_only` values do not interrupt by default. Compact mode preserves
 safety-critical severity fields; `explain` and `audit-json` include severity
 mapping and aggregation trace details.
+
+MVP4.2 micro-edge fields report exact `LOCAL_RETURNS_TO` graph-relation deltas
+and proof-integrity state. Normal add/remove/move deltas are not validation
+errors. Reverified persisted-edge contradictions are tool graph/proof integrity
+findings with a reindex/repair recovery action; they are not automatically
+source-code edit instructions. These fields activate `flow_proof` only through
+the verified MVP4.3 TypeScript `.ts` production local-flow packet layer; they
+do not activate `mutation_proof`, route/auth semantics, context-entry, or
+packet support for other languages.
+
+MVP4.3 packet surfaces are handle-first in MCP results for TypeScript `.ts`
+production packets only. A context or validation packet may expose a
+micro-flow handle and bounded summary only; the opened packet body uses
+`encoding: "dict_v1"` and `packet_body` in
+`local_micro_flow_packet_agent_json`. JavaScript, JSX, TSX, Python, Go, Rust,
+C, C++, Java, C#, Ruby, PHP, and text-only/unsupported files do not emit
+local-flow packets or `flow_proof`. Missing packet support is
+`not_implemented`/`not_applicable`, not a source-code validation failure. MCP
+context-entry handles remain inactive and must not inline `packet_body`,
+`ordered_steps`, or a full packet body.
 
 Unresolved-reference findings are surfaced as non-graph evidence. They may warn
 or, under explicit policy, become blocking validation findings, but they are not
@@ -280,7 +301,10 @@ or unknown DB state is not silently trusted.
 - Query and context tools refuse mismatched DBs unless an explicit diagnostic
   stale-read path is used, and diagnostic output must be labeled as such.
 - Status output includes passport state, the exact checked DB path, access
-  classification, `sqlite_sidecars`, and `sidecar_status`.
+  classification, `sqlite_sidecars`, `sidecar_status`, and bounded MVP4.2
+  micro-edge layer status where available. Core graph claimability, micro-node
+  availability, micro-edge availability, and local-flow packet availability are
+  reported separately.
 
 ## Safety
 
