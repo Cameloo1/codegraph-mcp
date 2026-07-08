@@ -12,7 +12,13 @@ pub enum DirtyEvidenceKind {
     SourceRoles,
     TextEvidence,
     FileManifest,
+    LanguageCapabilityTags,
     LanguageSourceRoleTags,
+    ParserFactBundle,
+    ResolverMetadata,
+    ProjectConfigMetadata,
+    CompilerLspMetadata,
+    UnresolvedReference,
     PathEvidence,
     ProofPathCache,
     GraphDeltaSnapshot,
@@ -481,6 +487,37 @@ pub fn dirty_evidence_registry() -> Vec<DirtyEvidenceRegistryEntry> {
             "not applicable only when no graph DB is expected",
         ),
         entry(
+            "language_capability_tags",
+            LanguageCapabilityTags,
+            LevelDiagnosticOnly,
+            false,
+            SupportsGraphProofWhenJoined,
+            GraphProofUnavailable,
+            Req,
+            Req,
+            Opt,
+            Opt,
+            Opt,
+            NA,
+            Req,
+            GraphStore,
+            &[
+                "changed_file_content",
+                "language_detection_changed",
+                "capability_registry_changed",
+                "resolver_status_changed",
+            ],
+            RefreshSourceRoleTags,
+            "stale capability tags are not used to claim exact parser/resolver support",
+            "stale capability tags are labeled and cannot upgrade fallback evidence to proof",
+            "stale capability tags make exact validation eligibility unavailable until refreshed",
+            "stale capability tags are emitted as capability metadata freshness, not proof",
+            "reported as language capability freshness; tier labels alone never authorize proof",
+            "capability tag corruption is graph-store metadata corruption",
+            graph_inaccessible_behavior(),
+            "not applicable for unsupported files outside the registered frontend matrix",
+        ),
+        entry(
             "language_source_role_tags",
             LanguageSourceRoleTags,
             LevelDiagnosticOnly,
@@ -505,6 +542,166 @@ pub fn dirty_evidence_registry() -> Vec<DirtyEvidenceRegistryEntry> {
             "tag corruption is graph-store metadata corruption",
             graph_inaccessible_behavior(),
             "not applicable for unsupported files outside the indexed language matrix",
+        ),
+        entry(
+            "parser_fact_bundles",
+            ParserFactBundle,
+            LevelSymbolEvidence,
+            true,
+            SupportsGraphProofWhenJoined,
+            GraphProofUnavailable,
+            Req,
+            Req,
+            Req,
+            Req,
+            Opt,
+            NA,
+            Req,
+            GraphStore,
+            &[
+                "changed_file_content",
+                "deleted_file",
+                "renamed_file",
+                "parser_error_changed",
+                "parser_version_changed",
+            ],
+            ReindexChangedFile,
+            "stale parser facts are not returned as claimable parser/source-span facts",
+            "stale parser facts are omitted or labeled parser_stale/no_proof until reindexed",
+            "stale parser facts cannot block validation as current source proof",
+            "stale parser facts are emitted as non-claimable parser freshness in MCP",
+            "reported as parser fact bundle freshness; parser facts remain separate from resolver/compiler proof",
+            "parser fact corruption is graph-store parser metadata corruption",
+            graph_inaccessible_behavior(),
+            "not applicable when the registered frontend cannot parse the file",
+        ),
+        entry(
+            "resolver_metadata",
+            ResolverMetadata,
+            LevelGraphRelationProof,
+            true,
+            SupportsGraphProofWhenJoined,
+            GraphProofUnavailable,
+            Req,
+            Req,
+            Opt,
+            Req,
+            Req,
+            NA,
+            Req,
+            GraphStore,
+            &[
+                "changed_file_content",
+                "deleted_file",
+                "renamed_file",
+                "project_config_changed",
+                "resolver_version_changed",
+                "dependency_metadata_changed",
+            ],
+            ReindexDirtyClosure,
+            "stale resolver metadata is not returned as compiler/resolver exactness",
+            "stale resolver metadata downgrades exact graph context to unknown/no-proof",
+            "stale resolver metadata cannot authorize blockers without fresh provenance",
+            "stale resolver metadata is emitted with reindex/repair recovery in MCP",
+            "reported as resolver provenance/currentness metadata where semantic exactness is claimed",
+            "resolver metadata corruption is graph-store resolver metadata corruption",
+            graph_inaccessible_behavior(),
+            "not applicable when the language resolver is not implemented or did not run",
+        ),
+        entry(
+            "project_config_metadata",
+            ProjectConfigMetadata,
+            LevelDiagnosticOnly,
+            false,
+            SupportsGraphProofWhenJoined,
+            GraphProofUnavailable,
+            Req,
+            Req,
+            NA,
+            Opt,
+            Opt,
+            NA,
+            Req,
+            GraphStore,
+            &[
+                "project_config_changed",
+                "dependency_metadata_changed",
+                "build_profile_changed",
+                "workspace_root_changed",
+            ],
+            ReindexDirtyClosure,
+            "stale project config metadata is not used for module/package exactness",
+            "stale project config metadata downgrades config-dependent context to compiler_required or unknown",
+            "stale project config metadata cannot create source-code findings; recommend reindex/repair",
+            "stale project config metadata is emitted as tool/project state in MCP",
+            "reported as project configuration currentness for resolver/build-aware facts",
+            "project config metadata corruption is tool metadata corruption, not source proof",
+            "project config metadata inaccessible makes config-dependent proof unavailable",
+            "not applicable for languages or repos without supported project config discovery",
+        ),
+        entry(
+            "compiler_lsp_metadata",
+            CompilerLspMetadata,
+            LevelGraphRelationProof,
+            true,
+            SupportsGraphProofWhenJoined,
+            GraphProofUnavailable,
+            Req,
+            Req,
+            Opt,
+            Req,
+            Req,
+            NA,
+            Req,
+            GraphStore,
+            &[
+                "changed_file_content",
+                "project_config_changed",
+                "compiler_diagnostics_changed",
+                "lsp_session_changed",
+                "resolver_version_changed",
+            ],
+            ReindexDirtyClosure,
+            "stale compiler/LSP metadata is not returned as semantic proof",
+            "stale compiler/LSP metadata downgrades exact semantic context to compiler_required/lsp_required",
+            "stale compiler/LSP metadata cannot block validation without fresh provenance",
+            "stale compiler/LSP metadata is emitted as resolver/tool-state freshness in MCP",
+            "reported as compiler/LSP provenance when such semantic exactness is claimed",
+            "compiler/LSP metadata corruption is tool metadata corruption, not source proof",
+            "compiler/LSP metadata inaccessible makes semantic proof unavailable",
+            "not applicable when compiler/LSP integration did not run for the language",
+        ),
+        entry(
+            "unresolved_references",
+            UnresolvedReference,
+            LevelDiagnosticOnly,
+            false,
+            NonProofEvidenceOnly,
+            NoGraphDbEffect,
+            Req,
+            Req,
+            Req,
+            Opt,
+            NA,
+            NA,
+            Req,
+            GraphStore,
+            &[
+                "changed_file_content",
+                "deleted_file",
+                "renamed_file",
+                "resolver_metadata_changed",
+                "source_role_changed",
+            ],
+            ReindexChangedFile,
+            "stale unresolved-reference rows are not returned as current hallucination diagnostics",
+            "stale unresolved-reference rows are omitted or labeled non-proof diagnostic context",
+            "stale unresolved-reference rows cannot hard-interrupt without fresh eligible policy proof",
+            "stale unresolved-reference rows are emitted as diagnostic freshness in MCP",
+            "reported as unresolved-reference classifier freshness; unresolved rows are not graph proof",
+            "unresolved-reference metadata corruption is diagnostic/index metadata corruption",
+            "unresolved-reference metadata inaccessible means the classifier lane is unavailable",
+            "not applicable when unresolved-reference extraction is unsupported for the language/relation",
         ),
         entry(
             "PathEvidence",
@@ -1134,6 +1331,12 @@ mod tests {
             "text_evidence",
             "file_manifest",
             "language_source_role_tags",
+            "language_capability_tags",
+            "parser_fact_bundles",
+            "resolver_metadata",
+            "project_config_metadata",
+            "compiler_lsp_metadata",
+            "unresolved_references",
             "PathEvidence",
             "proof_path_caches",
             "graph_delta_snapshots",
@@ -1268,6 +1471,49 @@ mod tests {
             entry.claimability_effect_for_state(DirtyEvidenceFreshnessState::Stale),
             DirtyEvidenceClaimabilityEffect::NoGraphDbEffect
         );
+    }
+
+    #[test]
+    fn language_capability_surfaces_gate_proof_without_creating_it() {
+        for surface in [
+            "language_capability_tags",
+            "project_config_metadata",
+            "unresolved_references",
+        ] {
+            let entry = registry_entry(surface);
+            assert!(
+                !entry.can_support_graph_proof_in_state(DirtyEvidenceFreshnessState::Fresh),
+                "{surface} should gate or diagnose proof rather than create graph proof"
+            );
+            assert!(
+                !entry.can_claim_graph_relation_proof_in_state(DirtyEvidenceFreshnessState::Stale)
+            );
+        }
+
+        for surface in [
+            "parser_fact_bundles",
+            "resolver_metadata",
+            "compiler_lsp_metadata",
+        ] {
+            let entry = registry_entry(surface);
+            assert!(entry.graph_proof_possible, "{surface}");
+            assert!(
+                !entry.can_claim_graph_relation_proof_in_state(DirtyEvidenceFreshnessState::Stale)
+            );
+            assert_eq!(
+                entry.claimability_effect_for_state(DirtyEvidenceFreshnessState::Stale),
+                DirtyEvidenceClaimabilityEffect::GraphProofUnavailable
+            );
+        }
+
+        let unresolved = registry_entry("unresolved_references");
+        assert_eq!(
+            unresolved.claimability_effect_for_state(DirtyEvidenceFreshnessState::Stale),
+            DirtyEvidenceClaimabilityEffect::NoGraphDbEffect
+        );
+        assert!(unresolved
+            .stale_behavior_in_validate_edit
+            .contains("cannot hard-interrupt"));
     }
 
     #[test]

@@ -136,14 +136,17 @@ records the parser behavior verified by the release command matrix, including
 codegraph-mcp agent-use query unresolved-calls --repo <repo> `
   --path src\file.ts `
   --class repo_local_candidate `
+  --language typescript `
   --limit 20 --agent-json
 ```
 
 Accepted classes are `repo_local_candidate`, `external_dependency`,
-`builtin_or_std`, `macro_or_codegen`, and `dynamic_or_computed`. A positional
-argument such as `unresolved-calls missing_symbol` is rejected with a targeted
-message. By default, the lane reports unresolved `CALLS` rows that have no
-defining entity in the current graph and summarizes omitted CALLEE duplicates or
+`builtin_or_std`, `macro_or_codegen`, `dynamic_or_computed`,
+`compiler_required`, `lsp_required`, `runtime_required`,
+`unsupported_language_or_relation`, and `unknown`. A positional argument such
+as `unresolved-calls missing_symbol` is rejected with a targeted message. By
+default, the lane reports unresolved `CALLS` rows that have no defining entity
+in the current graph and summarizes omitted CALLEE duplicates or
 definition-backed candidates. This lane is non-graph evidence; it supports
 warning/query parity for unresolved references and does not fabricate proof.
 
@@ -306,10 +309,10 @@ evidence through other query/context/validate surfaces, but they do not emit
 `local_flow_packets`, micro-flow handles, or `flow_proof`. Missing packet
 support is not a source-code error and cannot hard-interrupt by itself.
 
-`query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets|--include-snippets] [--db <path>]`
+`query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets|--include-snippets] [--db <path>]`
 
-Lists the unresolved-reference lane with optional path and class filters. The
-command does not accept a positional symbol/query argument. Output includes the
+Lists the unresolved-reference lane with optional path, class, and language
+filters. The command does not accept a positional symbol/query argument. Output includes the
 bounded `unresolved_references` block populated in proof-mode DBs, and may also
 include the legacy `calls` array for retained heuristic-sidecar CALLS rows. The
 lane is `not_graph_proof`: it is useful for warning/query parity, but it does
@@ -426,7 +429,15 @@ Alias group for `serve-ui`.
 Lists language frontends, extensions, support tiers, tree-sitter grammar
 availability, optional compiler/LSP resolver availability, exactness per
 extractor, and known limitations. Use `--json` for machine-readable capability
-metadata.
+metadata. The JSON includes `capability_model`, `capability_flags`,
+`capability_status_values`, and per-frontend `capabilities`; support tiers stay
+present for compatibility but do not drive proof or validate-edit blocking.
+The final Pre-MVP4.4 documentation matrices are
+`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_language_capability_matrix.json`
+and
+`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_linter_capability_matrix.json`.
+They summarize the same capability truth for docs/readiness review; the CLI
+runtime remains the authoritative command surface.
 
 ## Developer / Diagnostic Commands
 

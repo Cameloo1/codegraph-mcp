@@ -199,6 +199,8 @@
         "eligible",
         "reason",
         "disqualifiers",
+        "capability_metadata_ok",
+        "old_tier_label_not_blocking",
         "lifecycle_ok",
         "claimability_ok",
         "classification_ok",
@@ -221,6 +223,12 @@
           "items": {
             "type": "string"
           }
+        },
+        "capability_metadata_ok": {
+          "type": "boolean"
+        },
+        "old_tier_label_not_blocking": {
+          "type": "boolean"
         },
         "lifecycle_ok": {
           "type": "boolean"

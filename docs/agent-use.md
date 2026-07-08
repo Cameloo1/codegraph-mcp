@@ -54,6 +54,7 @@ codegraph-mcp agent-use query path handle_request save_record --repo <repo> `
 codegraph-mcp agent-use query unresolved-calls --repo <repo> `
   --path src\file.ts `
   --class repo_local_candidate `
+  --language typescript `
   --limit 20 --agent-json
 
 codegraph-mcp agent-use context-pack --repo <repo> `
@@ -120,6 +121,7 @@ Recommended task loop:
    - `agent-use query text "<phrase>" --agent-json`
    - `agent-use query callers|callees|path ... --agent-json`
    - `agent-use query unresolved-calls --path <file> --class <class>
+     --language <language>
      --agent-json`
 4. After each meaningful edit batch, run
    `agent-use validate-edit --changed <path> --agent-json`.
@@ -155,13 +157,16 @@ post-edit hallucination checks. Skip it for trivial text-only edits where normal
 file reads are enough.
 
 `agent-use query unresolved-calls` does not accept a positional symbol or text
-query. Filter it with `--path` and/or `--class`. Accepted classes are
+query. Filter it with `--path`, `--class`, and/or `--language`. Accepted
+classes are
 `repo_local_candidate`, `external_dependency`, `builtin_or_std`,
-`macro_or_codegen`, and `dynamic_or_computed`. The output reads the
-unresolved-reference lane, is queryable immediately after validate-edit/index
-updates, and remains explicitly `not_graph_proof`; unresolved-reference
-findings warn by default and can only block through an explicit policy mode
-where supported.
+`macro_or_codegen`, `dynamic_or_computed`, `compiler_required`,
+`lsp_required`, `runtime_required`, `unsupported_language_or_relation`, and
+`unknown`. The output reads the unresolved-reference lane, is queryable
+immediately after validate-edit/index updates, and remains explicitly
+`not_graph_proof`; unresolved-reference findings warn by default and can only
+block through an explicit policy mode where repo-local capability metadata is
+eligible.
 
 Real-Time Delta Sync has a release-tested production-profile primitive:
 `agent-use watch --once --changed <path>`. It updates the same external
@@ -280,9 +285,12 @@ The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
 coding-agent context, not public metric verdicts by themselves.
 
+For a local packet gallery and DB-footprint view of the validate-edit loop, see
+[linter-experience-lab.md](linter-experience-lab.md).
+
 For local diagnostic measurement of the same edit-time guardrail loop, use the
 Agent Guard Playground guide in
-[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md).
+[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md#agent-guard-playground).
 It measures bad edits caught, clean edits passed, repairs cleared, proof/trust
 ledger discipline, stale-evidence safety, packet usability, and same-agent A/B
 scaffold invariants. The current verified local gate is
@@ -491,8 +499,10 @@ output excludes them by default.
   source-navigation evidence cannot hard-interrupt by themselves.
 - Unknown, unsupported, degraded, and diagnostic-only findings do not interrupt
   by default. Unsafe DB state is a lifecycle blocker, not source-code proof.
-- MVP4 micro-flow extraction is future-only and is not part of the MVP3
-  validate-edit contract.
+- MVP4.3 local micro-flow packets are active only for verified TypeScript `.ts`
+  production source. They do not create packet proof for TSX, JavaScript, JSX,
+  Python, Go, Rust, C, C++, Java, C#, Ruby, PHP, text-only files, or unsupported
+  source roles.
 - Local diagnostic metrics do not become public product claims unless they are
   intentionally promoted and claim-reviewed.
 

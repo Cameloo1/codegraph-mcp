@@ -3,7 +3,10 @@
 //!
 //! Extracted verbatim from `lib.rs` (F4 module split); behavior unchanged.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use codegraph_core::{Edge, Entity, FileRecord, Metadata};
 use rusqlite::Connection;
@@ -204,6 +207,7 @@ pub(crate) fn section_counts(sections: &Value) -> Value {
 }
 
 pub(crate) fn entity_json(entity: &Entity) -> Value {
+    let role = query_evidence_role_for_entity(entity);
     json!({
         "id": entity.id,
         "kind": entity.kind.to_string(),
@@ -212,6 +216,8 @@ pub(crate) fn entity_json(entity: &Entity) -> Value {
         "repo_relative_path": entity.repo_relative_path,
         "source_span": entity.source_span,
         "confidence": entity.confidence,
+        "source_role": role.role,
+        "language_capability": entity_language_capability_json(entity, &role),
     })
 }
 
@@ -283,6 +289,10 @@ pub(crate) fn insert_text_evidence_labels(object: &mut serde_json::Map<String, V
     object.insert(
         "claimability".to_string(),
         text_evidence_claimability_json(),
+    );
+    object.insert(
+        "language_capability".to_string(),
+        text_evidence_language_capability_json(),
     );
 }
 
@@ -491,6 +501,280 @@ pub(crate) fn insert_query_evidence_role_labels(
     object.insert("classification_source".to_string(), json!(label.source));
 }
 
+pub(crate) fn entity_language_capability_json(
+    entity: &Entity,
+    role: &QueryEvidenceRoleLabel,
+) -> Value {
+    let inferred_language = language_from_repo_relative_path(&entity.repo_relative_path);
+    let language =
+        metadata_string(&entity.metadata, "parser_fact_language").or_else(|| inferred_language);
+    let frontend = metadata_string(&entity.metadata, "parser_fact_frontend")
+        .or_else(|| language.clone())
+        .or_else(|| frontend_from_repo_relative_path(&entity.repo_relative_path));
+    language_capability_from_metadata(
+        &entity.metadata,
+        language,
+        frontend,
+        &role.role,
+        entity.source_span.is_some(),
+        "symbol_parser_fact",
+    )
+}
+
+pub(crate) fn file_language_capability_json(
+    file: &FileRecord,
+    role: &QueryEvidenceRoleLabel,
+) -> Value {
+    let language = file
+        .language
+        .clone()
+        .or_else(|| metadata_string(&file.metadata, "parser_fact_bundle_language"))
+        .or_else(|| language_from_repo_relative_path(&file.repo_relative_path));
+    let frontend = metadata_string(&file.metadata, "parser_fact_bundle_frontend")
+        .or_else(|| language.clone())
+        .or_else(|| frontend_from_repo_relative_path(&file.repo_relative_path));
+    language_capability_from_metadata(
+        &file.metadata,
+        language,
+        frontend,
+        &role.role,
+        true,
+        "file_parser_fact",
+    )
+}
+
+pub(crate) fn text_evidence_language_capability_json() -> Value {
+    json!({
+        "language": "unknown",
+        "frontend": "unknown",
+        "source_role": "text_evidence",
+        "capability_flags": ["text_evidence"],
+        "capability_status": "source_text_evidence",
+        "exactness": "textual_exact_match",
+        "resolver_status": "not_applicable",
+        "proof_strength": "text_evidence_non_graph",
+        "claimability": {
+            "claimable": true,
+            "claimable_as": ["source_text_existence"],
+            "not_claimable_as": ["typed_graph_relation", "caller_callee_proof", "resolver_exactness"],
+            "graph_proof": false
+        },
+        "source_span": {
+            "available": true,
+            "role": "text_match_line_or_snippet"
+        },
+        "not_graph_proof": true
+    })
+}
+
+fn language_capability_from_metadata(
+    metadata: &Metadata,
+    language: Option<String>,
+    frontend: Option<String>,
+    source_role: &str,
+    source_span_available: bool,
+    default_fact_family: &str,
+) -> Value {
+    let capability_flags = metadata_string_vec(metadata, "parser_capability_flag");
+    let capability_status = metadata_string(metadata, "parser_capability_status")
+        .unwrap_or_else(|| "unknown".to_string());
+    let exactness =
+        metadata_string(metadata, "parser_fact_exactness").unwrap_or_else(|| "unknown".to_string());
+    let unknown_boundary_reason = metadata_string(metadata, "parser_unknown_boundary_reason");
+    let resolver_status = metadata_string(metadata, "parser_resolver_status")
+        .unwrap_or_else(|| "unknown".to_string());
+    let resolver_version = metadata_string(metadata, "parser_resolver_version");
+    let resolver_provenance = metadata_string(metadata, "parser_resolver_provenance");
+    let proof_strength = language_capability_proof_strength(
+        exactness.as_str(),
+        resolver_status.as_str(),
+        resolver_provenance.as_deref(),
+        unknown_boundary_reason.as_deref(),
+        default_fact_family,
+    );
+    let provenance_ok = !matches!(exactness.as_str(), "compiler_verified" | "lsp_verified")
+        || resolver_provenance
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    let claimable = source_span_available
+        && provenance_ok
+        && unknown_boundary_reason.is_none()
+        && !matches!(
+            capability_status.as_str(),
+            "unsupported"
+                | "unknown"
+                | "not_implemented"
+                | "runtime_required"
+                | "compiler_required"
+                | "lsp_required"
+                | "macro_required"
+                | "preprocessor_required"
+                | "requires_runtime"
+                | "requires_compiler"
+                | "requires_lsp"
+                | "requires_macro_expansion"
+                | "requires_preprocessor"
+        );
+
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "language".to_string(),
+        json!(language.unwrap_or_else(|| "unknown".to_string())),
+    );
+    object.insert(
+        "frontend".to_string(),
+        json!(frontend.unwrap_or_else(|| "unknown".to_string())),
+    );
+    object.insert("source_role".to_string(), json!(source_role));
+    object.insert(
+        "capability_flags".to_string(),
+        json!(if capability_flags.is_empty() {
+            vec!["unknown".to_string()]
+        } else {
+            capability_flags
+        }),
+    );
+    object.insert("capability_status".to_string(), json!(capability_status));
+    object.insert(
+        "capability_scope".to_string(),
+        json!(metadata_string(metadata, "parser_capability_scope")
+            .unwrap_or_else(|| "unknown".to_string())),
+    );
+    object.insert(
+        "fact_family".to_string(),
+        json!(metadata_string(metadata, "parser_fact_family")
+            .unwrap_or_else(|| default_fact_family.to_string())),
+    );
+    object.insert("exactness".to_string(), json!(exactness));
+    object.insert("resolver_status".to_string(), json!(resolver_status));
+    if let Some(version) = resolver_version {
+        object.insert("resolver_version".to_string(), json!(version));
+    }
+    if let Some(resolver) = metadata_string(metadata, "parser_resolver") {
+        object.insert("resolver".to_string(), json!(resolver));
+    }
+    if let Some(provenance) = resolver_provenance {
+        object.insert("provenance_ref".to_string(), json!(provenance));
+    }
+    if let Some(project_config) = metadata_string(metadata, "parser_resolver_project_config_source")
+    {
+        object.insert("project_config_source".to_string(), json!(project_config));
+    }
+    if let Some(reason) = unknown_boundary_reason {
+        object.insert("unknown_boundary_reason".to_string(), json!(reason));
+    }
+    if let Some(reason) = metadata_string(metadata, "parser_unsupported_reason") {
+        object.insert("unsupported_reason".to_string(), json!(reason));
+    }
+    object.insert("proof_strength".to_string(), json!(proof_strength));
+    object.insert(
+        "claimability".to_string(),
+        json!({
+            "claimable": claimable,
+            "claimable_as": if claimable {
+                vec!["source_spanned_language_fact"]
+            } else {
+                Vec::<&str>::new()
+            },
+            "not_claimable_as": ["typed_graph_relation_without_matching_edge", "caller_callee_proof_without_resolver_edge"],
+            "graph_proof": false,
+            "reason": if claimable {
+                "language fact has source-span metadata; relation proof still requires matching exact graph evidence"
+            } else if !provenance_ok {
+                "compiler/LSP exactness requires resolver provenance before claimability"
+            } else {
+                "language capability is unknown, unsupported, or missing source-span/provenance requirements"
+            }
+        }),
+    );
+    object.insert(
+        "source_span".to_string(),
+        json!({
+            "available": source_span_available,
+            "required_for_claimable_fact": true,
+        }),
+    );
+    object.insert("not_graph_proof".to_string(), json!(true));
+    Value::Object(object)
+}
+
+fn language_capability_proof_strength(
+    exactness: &str,
+    resolver_status: &str,
+    resolver_provenance: Option<&str>,
+    unknown_boundary_reason: Option<&str>,
+    default_fact_family: &str,
+) -> &'static str {
+    if unknown_boundary_reason.is_some() {
+        return "unknown_boundary_non_proof";
+    }
+    match exactness {
+        "compiler_verified" | "lsp_verified"
+            if resolver_status != "unknown"
+                && resolver_provenance.is_some_and(|value| !value.trim().is_empty()) =>
+        {
+            "resolver_verified_fact"
+        }
+        "compiler_verified" | "lsp_verified" => "resolver_claim_missing_provenance",
+        "exact" | "parser_verified" => "parser_source_fact",
+        "static_heuristic" => "heuristic_source_fact",
+        "dynamic_trace" => "runtime_trace_fact",
+        "inferred" => "inferred_non_proof",
+        _ if default_fact_family == "symbol_parser_fact" => "symbol_source_navigation",
+        _ if default_fact_family == "file_parser_fact" => "file_source_navigation",
+        _ => "unknown",
+    }
+}
+
+fn metadata_string(metadata: &Metadata, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn metadata_string_vec(metadata: &Metadata, key: &str) -> Vec<String> {
+    match metadata.get(key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => vec![value.to_string()],
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToString::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn language_from_repo_relative_path(path: &str) -> Option<String> {
+    frontend_from_repo_relative_path(path)
+}
+
+fn frontend_from_repo_relative_path(path: &str) -> Option<String> {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase();
+    let language = match extension.as_str() {
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "jsx",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "py" => "python",
+        "go" => "go",
+        "rs" => "rust",
+        "java" => "java",
+        "cs" => "csharp",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+        "rb" => "ruby",
+        "php" => "php",
+        _ => return None,
+    };
+    Some(language.to_string())
+}
+
 pub(crate) fn metadata_has_any_label(metadata: Option<&Metadata>, needles: &[&str]) -> bool {
     let Some(metadata) = metadata else {
         return false;
@@ -647,6 +931,10 @@ pub(crate) fn agent_entity_ref_json(entity: &Entity) -> Value {
     object.insert("evidence_role".to_string(), json!(role.role));
     object.insert("classification_reason".to_string(), json!(role.reason));
     object.insert("classification_source".to_string(), json!(role.source));
+    object.insert(
+        "language_capability".to_string(),
+        entity_language_capability_json(entity, &role),
+    );
     if let Some(span) = entity.source_span.as_ref() {
         object.insert("span".to_string(), agent_source_span_json(span));
         object.insert("source_span".to_string(), agent_source_span_json(span));
@@ -656,17 +944,45 @@ pub(crate) fn agent_entity_ref_json(entity: &Entity) -> Value {
 
 pub(crate) fn agent_symbol_search_hit_json(hit: &SymbolSearchHit) -> Value {
     let role = query_evidence_role_for_entity(&hit.entity);
+    let language_capability = entity_language_capability_json(&hit.entity, &role);
     let mut object = serde_json::Map::new();
     object.insert("file".to_string(), json!(hit.entity.repo_relative_path));
     object.insert("symbol".to_string(), json!(hit.entity.name));
     object.insert("kind".to_string(), json!(hit.entity.kind.to_string()));
+    if let Some(language) = language_capability.get("language").cloned() {
+        object.insert("language".to_string(), language);
+    }
+    if let Some(frontend) = language_capability.get("frontend").cloned() {
+        object.insert("frontend".to_string(), frontend);
+    }
     if let Some(span) = hit.entity.source_span.as_ref().map(agent_source_span_json) {
         object.insert("span".to_string(), span);
     }
     object.insert("score".to_string(), json!(hit.score));
     object.insert("evidence_role".to_string(), json!(role.role));
+    object.insert("source_role".to_string(), json!(role.role));
     object.insert("classification_reason".to_string(), json!(role.reason));
     object.insert("classification_source".to_string(), json!(role.source));
+    object.insert(
+        "exactness".to_string(),
+        language_capability
+            .get("exactness")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
+    );
+    object.insert(
+        "proof_strength".to_string(),
+        language_capability
+            .get("proof_strength")
+            .cloned()
+            .unwrap_or_else(|| json!("symbol_source_navigation")),
+    );
+    object.insert("graph_proof".to_string(), json!(false));
+    object.insert(
+        "proof_status".to_string(),
+        json!("symbol_source_fact_found"),
+    );
+    object.insert("language_capability".to_string(), language_capability);
     object.insert("entity".to_string(), agent_entity_ref_json(&hit.entity));
     Value::Object(object)
 }
@@ -728,6 +1044,7 @@ pub(crate) fn agent_text_hit_json(hit: &Value) -> Value {
         "graph_extraction_skip_reason",
         "diagnostic_only",
         "claimability",
+        "language_capability",
     ] {
         if let Some(value) = hit.get(key).cloned() {
             object.insert(key.to_string(), value);
@@ -799,6 +1116,7 @@ pub(crate) fn agent_file_hit_json(hit: &Value) -> Value {
         "graph_extraction_skip_reason",
         "diagnostic_only",
         "claimability",
+        "language_capability",
     ] {
         if let Some(value) = hit.get(key).cloned() {
             object.insert(key.to_string(), value);
@@ -1028,4 +1346,89 @@ pub(crate) fn is_test_kind(kind: EntityKind) -> bool {
             | EntityKind::Stub
             | EntityKind::Assertion
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use codegraph_query::SymbolSearchHit;
+
+    use super::*;
+
+    #[test]
+    fn agent_symbol_result_exposes_language_capability_without_graph_overclaim() {
+        let mut metadata = Metadata::default();
+        metadata.insert("parser_fact_language".to_string(), json!("php"));
+        metadata.insert("parser_fact_frontend".to_string(), json!("php"));
+        metadata.insert(
+            "parser_capability_flag".to_string(),
+            json!("call_extracted"),
+        );
+        metadata.insert(
+            "parser_capability_status".to_string(),
+            json!("supported_parser_only"),
+        );
+        metadata.insert(
+            "parser_capability_scope".to_string(),
+            json!("language_frontend"),
+        );
+        metadata.insert(
+            "parser_fact_exactness".to_string(),
+            json!("parser_verified"),
+        );
+        metadata.insert("parser_resolver_status".to_string(), json!("unsupported"));
+        let entity = Entity {
+            id: "entity://php/run".to_string(),
+            kind: EntityKind::Function,
+            name: "run".to_string(),
+            qualified_name: "Demo\\run".to_string(),
+            repo_relative_path: "src/run.php".to_string(),
+            source_span: Some(SourceSpan::new("src/run.php", 3, 7)),
+            content_hash: None,
+            file_hash: Some("sha256:file".to_string()),
+            created_from: "fixture".to_string(),
+            confidence: 1.0,
+            metadata,
+        };
+        let hit = SymbolSearchHit {
+            entity,
+            score: 1.0,
+            features: BTreeMap::new(),
+            matched_terms: vec!["run".to_string()],
+        };
+
+        let result = agent_symbol_search_hit_json(&hit);
+        assert_eq!(result["language"].as_str(), Some("php"));
+        assert_eq!(result["frontend"].as_str(), Some("php"));
+        assert_eq!(
+            result["language_capability"]["capability_flags"][0].as_str(),
+            Some("call_extracted")
+        );
+        assert_eq!(
+            result["language_capability"]["exactness"].as_str(),
+            Some("parser_verified")
+        );
+        assert_eq!(
+            result["language_capability"]["resolver_status"].as_str(),
+            Some("unsupported")
+        );
+        assert_eq!(result["graph_proof"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn text_evidence_language_capability_is_non_graph_proof() {
+        let mut object = serde_json::Map::new();
+        insert_text_evidence_labels(&mut object);
+        let value = Value::Object(object);
+
+        assert_eq!(value["proof_status"].as_str(), Some("not_graph_proof"));
+        assert_eq!(value["graph_proof"].as_bool(), Some(false));
+        assert_eq!(
+            value["language_capability"]["proof_strength"].as_str(),
+            Some("text_evidence_non_graph")
+        );
+        assert_eq!(
+            value["language_capability"]["claimability"]["graph_proof"].as_bool(),
+            Some(false)
+        );
+    }
 }

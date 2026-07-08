@@ -3672,6 +3672,89 @@ fn validate_edit_surfaces_local_flows_to_derived_micro_edge_delta() {
 }
 
 #[test]
+fn validate_edit_micro_edge_integrity_sweep_accepts_all_active_relation_kinds() {
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(&repo, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(seed: number, extra: number) {\n  return seed + extra;\n}\n",
+    );
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("index baseline");
+
+    // The edit persists the full active-relation spread for the file: exact
+    // LOCAL_READS + LOCAL_WRITES, derived LOCAL_FLOWS_TO, and LOCAL_RETURNS_TO.
+    write_cli_fixture_file(
+        &repo,
+        "src/service.ts",
+        "export function handle(seed: number, extra: number) {\n  const base = seed;\n  let total = base;\n  total = base + extra;\n  return total;\n}\n",
+    );
+    let validate = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "validate-edit".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--changed".to_string(),
+            "src/service.ts".to_string(),
+            "--explain".to_string(),
+            "--max-output-bytes".to_string(),
+            "2000000".to_string(),
+        ])
+    })
+    .expect("validate-edit with all active micro-edge kinds");
+
+    // Fixture sanity: the edit really added rows of every mvp4_2b relation.
+    let counts_by_kind = &validate["micro_edge_delta"]["counts_by_kind"];
+    for kind in ["local_reads", "local_writes", "local_flows_to"] {
+        assert!(
+            counts_by_kind[kind].as_u64().unwrap_or_default() >= 1,
+            "fixture must persist {kind} micro-edges: {validate}"
+        );
+    }
+
+    // Regression (2026-07-05 shakeout): the integrity sweep hard-coded
+    // LocalReturnsTo, so every persisted reads/writes/flows_to row spuriously
+    // warned CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH on every TS edit. The sweep
+    // now tracks the active capability matrix (exact + derived-with-provenance
+    // contracts), so a healthy all-kinds file produces no micro-edge integrity
+    // findings at all.
+    let mut findings = validate_edit_warning_findings(&validate);
+    for section in ["errors", "diagnostics"] {
+        if let Some(items) = validate
+            .pointer(&format!("/validation_packet/{section}"))
+            .and_then(Value::as_array)
+        {
+            findings.extend(items.iter().cloned());
+        }
+    }
+    let micro_edge_findings = findings
+        .iter()
+        .filter(|finding| {
+            finding["validation_rule_id"].as_str().is_some_and(|rule| {
+                rule.contains("MICRO_EDGE") || rule.contains("LOCAL_RETURNS_TO")
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        micro_edge_findings.is_empty(),
+        "healthy active-kind micro-edge rows must not produce integrity findings: {micro_edge_findings:?}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
 fn permission_denied_not_false_not_indexed() {
     let _guard = lock_env_test();
     let data_root = temp_repo();
@@ -3859,7 +3942,7 @@ fn context_pack_status_query_and_doctor_share_explicit_external_db() {
         context["lifecycle"]["decision"].as_str(),
         Some("read_reuse")
     );
-    assert_eq!(context["status"].as_str(), Some("ok"));
+    assert_eq!(context["status"].as_str(), Some("ok"), "{context}");
     assert_no_dot_codegraph_sqlite(&repo);
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
@@ -4954,11 +5037,17 @@ fn query_unresolved_calls_help_and_parser_agree() {
     let usage = super::unresolved_calls_usage();
     assert!(usage.contains("--path <repo-relative-or-absolute-path>"));
     assert!(usage.contains("--class <reference_class>"));
+    assert!(usage.contains("--language <language>"));
     assert!(usage.contains("repo_local_candidate"));
     assert!(usage.contains("external_dependency"));
     assert!(usage.contains("builtin_or_std"));
     assert!(usage.contains("macro_or_codegen"));
     assert!(usage.contains("dynamic_or_computed"));
+    assert!(usage.contains("compiler_required"));
+    assert!(usage.contains("lsp_required"));
+    assert!(usage.contains("runtime_required"));
+    assert!(usage.contains("unsupported_language_or_relation"));
+    assert!(usage.contains("unknown"));
     assert!(usage.contains("does not accept a positional"));
 
     let parsed = super::parse_unresolved_calls_args(&[
@@ -4966,6 +5055,8 @@ fn query_unresolved_calls_help_and_parser_agree() {
         "repo_local_candidate".to_string(),
         "--path".to_string(),
         "src/service.js".to_string(),
+        "--language".to_string(),
+        "JavaScript".to_string(),
         "--limit".to_string(),
         "5".to_string(),
         "--agent-json".to_string(),
@@ -4973,11 +5064,13 @@ fn query_unresolved_calls_help_and_parser_agree() {
     .expect("parse documented unresolved-calls flags");
     assert_eq!(parsed.class_filter.as_deref(), Some("repo_local_candidate"));
     assert_eq!(parsed.path_filter.as_deref(), Some("src/service.js"));
+    assert_eq!(parsed.language_filter.as_deref(), Some("javascript"));
     assert_eq!(parsed.limit, 5);
 
     let parsed_equals = super::parse_unresolved_calls_args(&[
         "--class=repo_local_candidate".to_string(),
         "--path=src/service.js".to_string(),
+        "--language=TypeScript".to_string(),
     ])
     .expect("parse equals-form unresolved-calls flags");
     assert_eq!(
@@ -4985,6 +5078,15 @@ fn query_unresolved_calls_help_and_parser_agree() {
         Some("repo_local_candidate")
     );
     assert_eq!(parsed_equals.path_filter.as_deref(), Some("src/service.js"));
+    assert_eq!(parsed_equals.language_filter.as_deref(), Some("typescript"));
+
+    let parsed_runtime =
+        super::parse_unresolved_calls_args(&["--class=runtime_required".to_string()])
+            .expect("parse runtime-required unresolved-calls class");
+    assert_eq!(
+        parsed_runtime.class_filter.as_deref(),
+        Some("runtime_required")
+    );
 
     let invalid_class =
         super::parse_unresolved_calls_args(&["--class".to_string(), "local".to_string()])
@@ -5254,7 +5356,7 @@ fn validate_edit_forward_fixture_matrix_python() {
     // NEW_UNRESOLVED_LOCAL_CALL. The hallucination must therefore still be
     // caught at the import site: the dangling target has to surface in the
     // unresolved lane as text evidence. (JS/TS catch the same class at the call
-    // site instead; see `validate_edit_forward_fixture_matrix_js_ts`. The
+    // site instead — see `validate_edit_forward_fixture_matrix_js_ts`; the
     // asymmetry is intentional per-language import resolution.)
     write_cli_fixture_file(
         &repo,
@@ -5704,7 +5806,7 @@ fn validate_edit_forward_fixture_matrix_go() {
 }
 
 #[test]
-fn validate_edit_block_on_unresolved_local_promotes_escalated_warning() {
+fn validate_edit_js_ts_family_unresolved_refs_remain_warning_only_without_resolver() {
     // Holds ENV_TEST_LOCK: this test sets a process-wide policy env var.
     let _guard = lock_env_test();
     struct PolicyEnvGuard {
@@ -5755,32 +5857,780 @@ fn validate_edit_block_on_unresolved_local_promotes_escalated_warning() {
     let result = with_agent_use_data_root(&data_root, || {
         super::run_agent_use_command(&validate_edit_args_for(&repo))
     })
-    .expect("validate-edit with promotion policy");
+    .expect("validate-edit with unresolved-local policy");
     assert_eq!(
         result["must_fix_before_continuing"].as_bool(),
-        Some(true),
+        Some(false),
         "{result}"
     );
-    assert_eq!(result["_cli_exit_code"].as_i64(), Some(2), "{result}");
-    let blocking = result
-        .pointer("/validation_packet/blocking_errors")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("expected blocking_errors in validation packet; got {result}"));
     assert!(
-        blocking.iter().any(|finding| {
+        result["_cli_exit_code"]
+            .as_i64()
+            .map(|exit_code| exit_code == 0)
+            .unwrap_or(true),
+        "{result}"
+    );
+    assert_eq!(
+        result["hard_interrupt_available"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    let warnings = result
+        .pointer("/validation_packet/warnings")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("expected warnings in validation packet; got {result}"));
+    assert!(
+        warnings.iter().any(|finding| {
             finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+                && finding["proof_strength"].as_str() == Some("text_evidence")
         }),
+        "{result}"
+    );
+    assert!(
+        result
+            .pointer("/validation_packet/blocking_errors")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items.iter().all(|finding| {
+                    finding["validation_rule_id"]
+                        .as_str()
+                        .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                        .unwrap_or(true)
+                })
+            })
+            .unwrap_or(true),
         "{result}"
     );
     let result_unresolved = validate_edit_unresolved_references(&result)
         .unwrap_or_else(|| panic!("expected unresolved_references block; got {result}"));
+    assert_eq!(
+        result_unresolved["block_eligible_repo_local_no_definition_count"].as_u64(),
+        Some(0),
+        "{result}"
+    );
+    assert_eq!(
+        result_unresolved["block_ineligible_repo_local_no_definition_count"].as_u64(),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        result_unresolved["block_on_unresolved_local_policy"]["eligible_extensions"]
+            .as_array()
+            .map(Vec::len),
+        Some(0),
+        "{result}"
+    );
+    assert_eq!(
+        result_unresolved["block_on_unresolved_local_policy"]
+            ["js_ts_family_unresolved_delta_policy"]["unresolved_reference_delta_rows"]
+            .as_str(),
+        Some("warning_only_until_resolver_or_compiler_provenance_is_recorded"),
+        "{result}"
+    );
     assert!(
         result_unresolved["escalated"]
             .as_array()
             .expect("escalated")
             .iter()
-            .any(|item| item["severity"].as_str() == Some("blocking")),
+            .any(|item| { item["severity"].as_str() == Some("warning") }),
         "{result}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_java_csharp_unresolved_refs_remain_warning_only_without_resolver() {
+    // Holds ENV_TEST_LOCK: this test sets the process-wide unresolved-local
+    // promotion policy and verifies Java/C# remain ineligible without exact
+    // resolver provenance.
+    let _guard = lock_env_test();
+    let env_name = super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV;
+    let _policy = ProcessEnvGuard {
+        name: env_name.to_string(),
+        old: std::env::var_os(env_name),
+    };
+    std::env::set_var(env_name, "1");
+
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    let clean_java =
+        "package demo;\n\nclass App {\n    int run(int value) {\n        return value;\n    }\n}\n";
+    let clean_csharp = "namespace Demo {\n    class App {\n        int Run(int value) {\n            return value;\n        }\n    }\n}\n";
+    write_cli_fixture_file(&repo, "src/App.java", clean_java);
+    write_cli_fixture_file(&repo, "src/App.cs", clean_csharp);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/App.java",
+        "package demo;\n\nclass App {\n    int run(int value) {\n        return missingJavaHelper(value);\n    }\n}\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/App.cs",
+        "namespace Demo {\n    class App {\n        int Run(int value) {\n            return MissingCsharpHelper(value);\n        }\n    }\n}\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/App.java".to_string(),
+        "--changed".to_string(),
+        "src/App.cs".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let result =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit java/csharp unresolved refs");
+    assert_eq!(result["status"].as_str(), Some("warning"), "{result}");
+    assert_eq!(
+        result["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert_eq!(
+        result["hard_interrupt_available"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert!(
+        result.get("_cli_exit_code").is_none(),
+        "Java/C# warning-only refs must not fail --fail-on-blocking: {result}"
+    );
+
+    let unresolved = validate_edit_unresolved_references(&result)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {result}"));
+    assert_eq!(
+        unresolved["not_graph_proof"].as_bool(),
+        Some(true),
+        "{result}"
+    );
+    assert!(
+        unresolved["repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{result}"
+    );
+    assert_eq!(
+        unresolved["block_eligible_repo_local_no_definition_count"].as_u64(),
+        Some(0),
+        "{result}"
+    );
+    assert!(
+        unresolved["block_ineligible_repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{result}"
+    );
+    let escalated = unresolved["escalated"].as_array().expect("escalated");
+    assert!(
+        escalated.iter().all(|item| {
+            item["severity"].as_str() == Some("warning")
+                && item["proof_strength"].as_str() == Some("text_evidence")
+                && !item
+                    .get("block_on_unresolved_local_eligible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        }),
+        "inline compact Java/C# unresolved refs must stay warning-only; got {result}"
+    );
+    let warnings = validate_edit_warning_findings(&result);
+    assert!(
+        warnings.iter().any(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+                && (finding["proof_status"].as_str() == Some("not_graph_proof")
+                    || finding["proof_level"].as_str() == Some("not_graph_proof"))
+        }),
+        "expected non-graph unresolved warning; got {result}"
+    );
+    assert!(
+        result
+            .pointer("/validation_packet/blocking_errors")
+            .and_then(Value::as_array)
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "Java/C# unresolved refs must not become blockers without resolver proof: {result}"
+    );
+
+    write_cli_fixture_file(&repo, "src/App.java", clean_java);
+    write_cli_fixture_file(&repo, "src/App.cs", clean_csharp);
+    let fixed =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit java/csharp after fix");
+    let fixed_unresolved = validate_edit_unresolved_references(&fixed)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {fixed}"));
+    assert!(
+        fixed_unresolved["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{fixed}"
+    );
+    assert!(
+        validate_edit_warning_findings(&fixed)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{fixed}"
+    );
+    assert_eq!(
+        fixed["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{fixed}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_c_cpp_unresolved_refs_remain_warning_only_without_resolver() {
+    // Holds ENV_TEST_LOCK: this test sets the process-wide unresolved-local
+    // promotion policy and verifies C/C++ remain ineligible without exact
+    // compile database / compiler resolver provenance.
+    let _guard = lock_env_test();
+    let env_name = super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV;
+    let _policy = ProcessEnvGuard {
+        name: env_name.to_string(),
+        old: std::env::var_os(env_name),
+    };
+    std::env::set_var(env_name, "1");
+
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    let clean_c = "int run_c(int value) {\n  return value;\n}\n";
+    let clean_cpp = "int run_cpp(int value) {\n  return value;\n}\n";
+    write_cli_fixture_file(&repo, "src/main.c", clean_c);
+    write_cli_fixture_file(&repo, "src/main.cpp", clean_cpp);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/main.c",
+        "int run_c(int value) {\n  return missing_c_helper(value);\n}\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/main.cpp",
+        "int run_cpp(int value) {\n  return missingCppHelper(value);\n}\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/main.c".to_string(),
+        "--changed".to_string(),
+        "src/main.cpp".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let result =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit c/cpp unresolved refs");
+    assert_eq!(result["status"].as_str(), Some("warning"), "{result}");
+    assert_eq!(
+        result["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert_eq!(
+        result["hard_interrupt_available"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert!(
+        result.get("_cli_exit_code").is_none(),
+        "C/C++ warning-only refs must not fail --fail-on-blocking: {result}"
+    );
+
+    let unresolved = validate_edit_unresolved_references(&result)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {result}"));
+    assert_eq!(
+        unresolved["not_graph_proof"].as_bool(),
+        Some(true),
+        "{result}"
+    );
+    assert!(
+        unresolved["repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{result}"
+    );
+    assert_eq!(
+        unresolved["block_eligible_repo_local_no_definition_count"].as_u64(),
+        Some(0),
+        "{result}"
+    );
+    assert!(
+        unresolved["block_ineligible_repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{result}"
+    );
+    let escalated = unresolved["escalated"].as_array().expect("escalated");
+    assert!(
+        escalated.iter().all(|item| {
+            item["severity"].as_str() == Some("warning")
+                && item["proof_strength"].as_str() == Some("text_evidence")
+                && !item
+                    .get("block_on_unresolved_local_eligible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        }),
+        "inline compact C/C++ unresolved refs must stay warning-only; got {result}"
+    );
+    let warnings = validate_edit_warning_findings(&result);
+    assert!(
+        warnings.iter().any(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+                && (finding["proof_status"].as_str() == Some("not_graph_proof")
+                    || finding["proof_level"].as_str() == Some("not_graph_proof"))
+        }),
+        "expected non-graph unresolved warning; got {result}"
+    );
+    assert!(
+        result
+            .pointer("/validation_packet/blocking_errors")
+            .and_then(Value::as_array)
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "C/C++ unresolved refs must not become blockers without compiler proof: {result}"
+    );
+
+    write_cli_fixture_file(&repo, "src/main.c", clean_c);
+    write_cli_fixture_file(&repo, "src/main.cpp", clean_cpp);
+    let fixed =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit c/cpp after fix");
+    let fixed_unresolved = validate_edit_unresolved_references(&fixed)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {fixed}"));
+    assert!(
+        fixed_unresolved["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{fixed}"
+    );
+    assert!(
+        validate_edit_warning_findings(&fixed)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{fixed}"
+    );
+    assert_eq!(
+        fixed["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{fixed}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_python_go_rust_unresolved_refs_remain_warning_only_without_resolver() {
+    // Holds ENV_TEST_LOCK: this test sets the process-wide unresolved-local
+    // promotion policy and verifies Python/Go/Rust remain ineligible without
+    // exact project/compiler resolver provenance.
+    let _guard = lock_env_test();
+    let env_name = super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV;
+    let _policy = ProcessEnvGuard {
+        name: env_name.to_string(),
+        old: std::env::var_os(env_name),
+    };
+    std::env::set_var(env_name, "1");
+
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    let clean_python = "def run_python(value):\n    return value\n";
+    let clean_go = "package demo\n\nfunc RunGo(value int) int {\n\treturn value\n}\n";
+    let clean_rust = "pub fn run_rust(value: i32) -> i32 {\n    value\n}\n";
+    write_cli_fixture_file(
+        &repo,
+        "pyproject.toml",
+        "[project]\nname = \"pgr-fixture\"\nversion = \"0.1.0\"\n",
+    );
+    write_cli_fixture_file(&repo, "go.mod", "module example.com/pgr\n\ngo 1.22\n");
+    write_cli_fixture_file(
+        &repo,
+        "Cargo.toml",
+        "[package]\nname = \"pgr_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write_cli_fixture_file(&repo, "src/app.py", clean_python);
+    write_cli_fixture_file(&repo, "src/main.go", clean_go);
+    write_cli_fixture_file(&repo, "src/lib.rs", clean_rust);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "src/app.py",
+        "def run_python(value):\n    return missing_python_helper(value)\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/main.go",
+        "package demo\n\nfunc RunGo(value int) int {\n\treturn missingGoHelper(value)\n}\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/lib.rs",
+        "pub fn run_rust(value: i32) -> i32 {\n    missing_rust_helper(value)\n}\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/app.py".to_string(),
+        "--changed".to_string(),
+        "src/main.go".to_string(),
+        "--changed".to_string(),
+        "src/lib.rs".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let result =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit python/go/rust unresolved refs");
+    assert_eq!(result["status"].as_str(), Some("warning"), "{result}");
+    assert_eq!(
+        result["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert_eq!(
+        result["hard_interrupt_available"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert!(
+        result.get("_cli_exit_code").is_none(),
+        "Python/Go/Rust warning-only refs must not fail --fail-on-blocking: {result}"
+    );
+
+    let unresolved = validate_edit_unresolved_references(&result)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {result}"));
+    assert_eq!(
+        unresolved["not_graph_proof"].as_bool(),
+        Some(true),
+        "{result}"
+    );
+    assert!(
+        unresolved["repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 3,
+        "{result}"
+    );
+    assert_eq!(
+        unresolved["block_eligible_repo_local_no_definition_count"].as_u64(),
+        Some(0),
+        "{result}"
+    );
+    assert!(
+        unresolved["block_ineligible_repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 3,
+        "{result}"
+    );
+    let policy = &unresolved["block_on_unresolved_local_policy"];
+    assert_eq!(
+        policy["deferred_until_exact_resolver_extensions"],
+        serde_json::json!(["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php"]),
+        "{result}"
+    );
+    assert!(
+        unresolved["escalated_total"].as_u64().unwrap_or_default() >= 3,
+        "{result}"
+    );
+    let escalated = unresolved["escalated"].as_array().expect("escalated");
+    assert!(
+        escalated.iter().all(|item| {
+            item["severity"].as_str() == Some("warning")
+                && item["proof_strength"].as_str() == Some("text_evidence")
+                && !item
+                    .get("block_on_unresolved_local_eligible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        }),
+        "inline compact unresolved refs must stay warning-only; got {result}"
+    );
+    let warnings = validate_edit_warning_findings(&result);
+    assert!(
+        warnings.iter().any(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+                && (finding["proof_status"].as_str() == Some("not_graph_proof")
+                    || finding["proof_level"].as_str() == Some("not_graph_proof"))
+        }),
+        "expected non-graph unresolved warning; got {result}"
+    );
+    assert!(
+        result
+            .pointer("/validation_packet/blocking_errors")
+            .and_then(Value::as_array)
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "Python/Go/Rust unresolved refs must not become blockers without resolver proof: {result}"
+    );
+
+    write_cli_fixture_file(&repo, "src/app.py", clean_python);
+    write_cli_fixture_file(&repo, "src/main.go", clean_go);
+    write_cli_fixture_file(&repo, "src/lib.rs", clean_rust);
+    let fixed =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit python/go/rust after fix");
+    let fixed_unresolved = validate_edit_unresolved_references(&fixed)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {fixed}"));
+    assert!(
+        fixed_unresolved["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 3,
+        "{fixed}"
+    );
+    assert!(
+        validate_edit_warning_findings(&fixed)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{fixed}"
+    );
+    assert_eq!(
+        fixed["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{fixed}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn validate_edit_ruby_php_unresolved_refs_remain_warning_only_without_resolver() {
+    // Holds ENV_TEST_LOCK: this test sets the process-wide unresolved-local
+    // promotion policy and verifies Ruby/PHP remain ineligible without exact
+    // runtime/resolver provenance.
+    let _guard = lock_env_test();
+    let env_name = super::AGENT_USE_BLOCK_ON_UNRESOLVED_LOCAL_ENV;
+    let _policy = ProcessEnvGuard {
+        name: env_name.to_string(),
+        old: std::env::var_os(env_name),
+    };
+    std::env::set_var(env_name, "1");
+
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    let clean_ruby = "def run_ruby(value)\n  value\nend\n";
+    let clean_php = "<?php\nfunction run_php($value) {\n    return $value;\n}\n";
+    write_cli_fixture_file(&repo, "Gemfile", "source 'https://rubygems.org'\n");
+    write_cli_fixture_file(
+        &repo,
+        "composer.json",
+        "{\n  \"autoload\": {\"psr-4\": {\"App\\\\\": \"src/\"}}\n}\n",
+    );
+    write_cli_fixture_file(&repo, "lib/app.rb", clean_ruby);
+    write_cli_fixture_file(&repo, "src/App.php", clean_php);
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    write_cli_fixture_file(
+        &repo,
+        "lib/app.rb",
+        "def run_ruby(value)\n  missing_ruby_helper(value)\nend\n",
+    );
+    write_cli_fixture_file(
+        &repo,
+        "src/App.php",
+        "<?php\nfunction run_php($value) {\n    return missing_php_helper($value);\n}\n",
+    );
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "lib/app.rb".to_string(),
+        "--changed".to_string(),
+        "src/App.php".to_string(),
+        "--agent-json".to_string(),
+        "--fail-on-blocking".to_string(),
+    ];
+    let result =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit ruby/php unresolved refs");
+    assert_eq!(result["status"].as_str(), Some("warning"), "{result}");
+    assert_eq!(
+        result["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert_eq!(
+        result["hard_interrupt_available"].as_bool(),
+        Some(false),
+        "{result}"
+    );
+    assert!(
+        result.get("_cli_exit_code").is_none(),
+        "Ruby/PHP warning-only refs must not fail --fail-on-blocking: {result}"
+    );
+
+    let unresolved = validate_edit_unresolved_references(&result)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {result}"));
+    assert_eq!(
+        unresolved["not_graph_proof"].as_bool(),
+        Some(true),
+        "{result}"
+    );
+    assert!(
+        unresolved["repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{result}"
+    );
+    assert_eq!(
+        unresolved["block_eligible_repo_local_no_definition_count"].as_u64(),
+        Some(0),
+        "{result}"
+    );
+    assert!(
+        unresolved["block_ineligible_repo_local_no_definition_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{result}"
+    );
+    let policy = &unresolved["block_on_unresolved_local_policy"];
+    assert_eq!(
+        policy["deferred_until_exact_resolver_extensions"],
+        serde_json::json!(["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php"]),
+        "{result}"
+    );
+    assert_eq!(
+        policy["ruby_php_unresolved_delta_policy"]["unresolved_reference_delta_rows"].as_str(),
+        Some("warning_only_until_resolver_or_runtime_provenance_is_recorded"),
+        "{result}"
+    );
+    assert!(policy["ruby_php_unresolved_delta_policy"]["ruby"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("do not authorize hard interrupts without exact resolver"));
+    assert!(
+        unresolved["escalated_total"].as_u64().unwrap_or_default() >= 2,
+        "{result}"
+    );
+    let escalated = unresolved["escalated"].as_array().expect("escalated");
+    assert!(
+        escalated.iter().all(|item| {
+            item["severity"].as_str() == Some("warning")
+                && item["proof_strength"].as_str() == Some("text_evidence")
+                && !item
+                    .get("block_on_unresolved_local_eligible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        }),
+        "inline compact Ruby/PHP unresolved refs must stay warning-only; got {result}"
+    );
+    let warnings = validate_edit_warning_findings(&result);
+    assert!(
+        warnings.iter().any(|finding| {
+            finding["validation_rule_id"].as_str() == Some("CG_MVP3_REF_NEW_UNRESOLVED_LOCAL_CALL")
+                && (finding["proof_status"].as_str() == Some("not_graph_proof")
+                    || finding["proof_level"].as_str() == Some("not_graph_proof"))
+        }),
+        "expected non-graph unresolved warning; got {result}"
+    );
+    assert!(
+        result
+            .pointer("/validation_packet/blocking_errors")
+            .and_then(Value::as_array)
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "Ruby/PHP unresolved refs must not become blockers without resolver proof: {result}"
+    );
+
+    write_cli_fixture_file(&repo, "lib/app.rb", clean_ruby);
+    write_cli_fixture_file(&repo, "src/App.php", clean_php);
+    let fixed =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit ruby/php after fix");
+    let fixed_unresolved = validate_edit_unresolved_references(&fixed)
+        .unwrap_or_else(|| panic!("expected unresolved_references block; got {fixed}"));
+    assert!(
+        fixed_unresolved["resolved_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "{fixed}"
+    );
+    assert!(
+        validate_edit_warning_findings(&fixed)
+            .iter()
+            .all(|finding| {
+                finding["validation_rule_id"]
+                    .as_str()
+                    .map(|rule| !rule.starts_with("CG_MVP3_REF_"))
+                    .unwrap_or(true)
+            }),
+        "{fixed}"
+    );
+    assert_eq!(
+        fixed["must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{fixed}"
     );
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
@@ -6162,6 +7012,93 @@ fn agent_use_validate_edit_low_delta_cap_is_labeled_graph_delta_bounded() {
     assert!(
         serialized.contains("graph_delta_bounded"),
         "blocking-relevant delta omission must be labeled graph_delta_bounded: {packet}"
+    );
+
+    remove_dir_all_with_retry(&repo, "cleanup repo");
+    remove_dir_all_with_retry(&data_root, "cleanup data root");
+}
+
+#[test]
+fn agent_use_validate_edit_truncated_unresolved_lane_is_labeled_bounded_not_silent_ok() {
+    // MVP3 stress-test Q8 regression: a changed file whose unresolved-reference
+    // lane is truncated at the per-file cap is INCOMPLETE for forward checks (a
+    // NEW hallucinated call appended past the cap is shed at index time). The
+    // run must be labeled bounded/unknown (never a silent ok), and resolved_count
+    // must be marked bounded instead of reporting phantom "fixes".
+    let _guard = lock_env_test();
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_cli_fixture_file(
+        &repo,
+        "Cargo.toml",
+        "[package]\nname = \"fixture-crate\"\nversion = \"0.0.0\"\n",
+    );
+    // 300 distinct unresolved local calls overflow the 256-row/file lane cap, so
+    // indexing writes an `unresolved_reference_lane_truncated` extraction warning.
+    let flood_source = |calls: usize| {
+        let mut source = String::from("pub fn flood(input: i32) -> i32 {\n");
+        for index in 0..calls {
+            source.push_str(&format!("    missing_fn_{index}(input);\n"));
+        }
+        source.push_str("    input\n}\n");
+        source
+    };
+    write_cli_fixture_file(&repo, "src/flood.rs", &flood_source(300));
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index");
+
+    // Edit: append one more nonexistent call. With 301 unresolved refs the lane
+    // is still truncated and the appended call lands past the cap (the exact
+    // forward-miss the stress test caught).
+    write_cli_fixture_file(&repo, "src/flood.rs", &flood_source(301));
+    let validate_args = vec![
+        "validate-edit".to_string(),
+        "--repo".to_string(),
+        path_string(&repo),
+        "--changed".to_string(),
+        "src/flood.rs".to_string(),
+        "--agent-json".to_string(),
+    ];
+    let packet =
+        with_agent_use_data_root(&data_root, || super::run_agent_use_command(&validate_args))
+            .expect("validate-edit on truncated-lane file");
+
+    assert_ne!(
+        packet["status"].as_str(),
+        Some("ok"),
+        "a truncated unresolved-reference lane must never report a silent pass: {packet}"
+    );
+    let serialized = serde_json::to_string(&packet).unwrap_or_default();
+    assert!(
+        serialized.contains("unresolved_reference_lane_truncated"),
+        "the bounded-unknown finding must name the lane truncation: {packet}"
+    );
+    // The compact envelope nests unresolved_references inside validation_packet
+    // (top-level copy is shed under budget) — read via the shared helper.
+    let unresolved_references = validate_edit_unresolved_references(&packet)
+        .unwrap_or_else(|| panic!("unresolved_references block: {packet}"));
+    assert_eq!(
+        unresolved_references["resolved_count_bounded"].as_bool(),
+        Some(true),
+        "resolved_count must be marked bounded when a changed file's lane was truncated: {packet}"
+    );
+    let truncated = unresolved_references["lane_truncated_files"]
+        .as_array()
+        .expect("lane_truncated_files array");
+    assert!(
+        truncated.iter().any(|path| path
+            .as_str()
+            .unwrap_or_default()
+            .replace('\\', "/")
+            .ends_with("flood.rs")),
+        "the truncated changed file must be named: {packet}"
     );
 
     remove_dir_all_with_retry(&repo, "cleanup repo");
@@ -8041,7 +8978,11 @@ fn agent_use_watch_once_file_lifecycle_cases_use_external_profile_db() {
         ],
     )
     .expect("context deleted source");
-    assert_eq!(deleted_context["status"].as_str(), Some("ok"));
+    assert_eq!(
+        deleted_context["status"].as_str(),
+        Some("ok"),
+        "{deleted_context}"
+    );
     assert_eq!(
         deleted_context["fallback_evidence_count"].as_u64(),
         Some(0),
@@ -8955,7 +9896,7 @@ fn agent_use_context_pack_uses_graph_or_candidate_profile_context() {
         ])
     })
     .expect("agent-use context graph");
-    assert_eq!(graph["status"].as_str(), Some("ok"));
+    assert_eq!(graph["status"].as_str(), Some("ok"), "{graph}");
     assert_eq!(
         graph["profile_name"].as_str(),
         Some(super::PRODUCTION_AGENT_USE_PROFILE_NAME)
@@ -13925,6 +14866,25 @@ fn context_pack_agent_json_is_compact_and_proof_labeled() {
         result["candidate_count"].as_u64(),
         Some(candidates.len() as u64)
     );
+    let language_capability_context = &result["language_capability_context"];
+    let non_ts_packet_overclaim = language_capability_context["local_flow_packet_boundary"]
+        ["non_typescript_packet_overclaim_count"]
+        .as_u64()
+        .or_else(|| language_capability_context["non_typescript_packet_overclaim_count"].as_u64());
+    assert_eq!(non_ts_packet_overclaim, Some(0));
+    assert!(
+        language_capability_context["proof_boundary"]
+            ["capability_metadata_does_not_create_graph_proof"]
+            .as_bool()
+            == Some(true)
+            || language_capability_context["compact_output_contract"]
+                ["capability_metadata_does_not_create_graph_proof"]
+                .as_bool()
+                == Some(true)
+            || language_capability_context["capability_metadata_does_not_create_graph_proof"]
+                .as_bool()
+                == Some(true)
+    );
     assert_eq!(result["truncation"]["limit"].as_u64(), Some(2));
     assert!(serialized_len_for_test(&result) <= super::DEFAULT_CONTEXT_AGENT_MAX_OUTPUT_BYTES);
 }
@@ -15666,10 +16626,11 @@ fn context_pack_explain_budget_summary_does_not_starve_fallback_snippets() {
         Path::new("fixture/.codegraph/codegraph.sqlite"),
         json!({"wall_ms": 1.0}),
     );
-    assert!(!response["fallback_snippets"]
-        .as_array()
-        .expect("fallback snippets")
-        .is_empty());
+    let fallback_snippet_count = response["fallback_snippets"].as_array().map(Vec::len);
+    assert!(
+        fallback_snippet_count.is_some_and(|count| count > 0),
+        "fallback snippets missing or empty: {response}"
+    );
     assert_eq!(
         response["retrieval_explain"]["budget_limited"].as_bool(),
         Some(true)
@@ -15917,7 +16878,7 @@ fn context_pack_agent_json_makes_graph_verification_failure_explicit() {
                         .any(|source| source.as_str() == Some("exact_seed"))
                 })
         })
-        .unwrap_or_else(|| panic!("exact seed candidate in {candidates:?}"));
+        .unwrap_or_else(|| panic!("exact seed candidate in {candidates:?}; response: {response}"));
     assert_eq!(
         exact["verification_status"].as_str(),
         Some("no_proof_path_found")
@@ -16773,7 +17734,10 @@ fn context_pack_test_impact_fallback_surfaces_inline_test_seed_without_path() {
 
     assert_eq!(response["proof_path_available"].as_bool(), Some(false));
     assert!(response["paths"].as_array().expect("paths").is_empty());
-    assert!(response["result_count"].as_u64().unwrap_or_default() > 0);
+    assert!(
+        response["result_count"].as_u64().unwrap_or_default() > 0,
+        "{response}"
+    );
     assert!(response["fallback_evidence"]
         .as_array()
         .expect("fallback evidence")
@@ -18449,6 +19413,131 @@ fn routing_packet_unknown_task_is_conservative() {
 }
 
 #[test]
+fn routing_packet_language_capability_plan_marks_dynamic_boundaries_without_proof() {
+    let response = routing_packet_response_for_task(
+        "Plan change and trace boundary across Python dynamic import, Rust macro cfg, Go interface build tag, Java reflection, C macro preprocessor, Ruby Rails convention, PHP dynamic include, and JSX framework event handler.",
+        &[
+            routing_fixture_evidence(
+                "src/app.py",
+                "importlib __import__ getattr dynamic import boundary",
+            ),
+            routing_fixture_evidence(
+                "src/lib.rs",
+                "macro cfg feature unsafe trait target boundary",
+            ),
+            routing_fixture_evidence(
+                "cmd/main.go",
+                "interface go:build goroutine channel selector boundary",
+            ),
+            routing_fixture_evidence(
+                "src/Main.java",
+                "reflection Class.forName getMethod annotation DI runtime boundary",
+            ),
+            routing_fixture_evidence(
+                "src/native.c",
+                "#define #if macro function pointer preprocessor branch",
+            ),
+            routing_fixture_evidence(
+                "app/models/user.rb",
+                "Rails route send method_missing monkeypatch open class",
+            ),
+            routing_fixture_evidence(
+                "src/index.php",
+                "dynamic include require magic composer autoload boundary",
+            ),
+            routing_fixture_evidence(
+                "ui/App.jsx",
+                "React JSX event handler computed dynamic import props",
+            ),
+        ],
+        &["dynamicBoundary"],
+        None,
+        Some(65_536),
+    );
+    let routing = &response["routing_packet"];
+    let plan = &routing["language_capability_plan"];
+    assert_eq!(plan["status"].as_str(), Some("language_capability_aware"));
+    let languages = plan["languages"]
+        .as_array()
+        .expect("languages")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    for expected in ["python", "rust", "go", "java", "c", "ruby", "php", "jsx"] {
+        assert!(languages.contains(&expected), "{languages:?}");
+    }
+    let risk_ids = plan["unknown_dynamic_risks"]
+        .as_array()
+        .expect("risks")
+        .iter()
+        .filter_map(|risk| risk["risk_id"].as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "python_dynamic_runtime_unknown",
+        "rust_macro_cfg_trait_unknown",
+        "go_interface_build_tag_unknown",
+        "java_reflection_annotation_runtime_unknown",
+        "c_macro_preprocessor_unknown",
+        "ruby_runtime_framework_unknown",
+        "php_dynamic_include_magic_unknown",
+        "js_jsx_dynamic_framework_unknown",
+    ] {
+        assert!(risk_ids.contains(&expected), "{risk_ids:?}");
+    }
+    assert_eq!(
+        plan["local_flow_packet_boundary"]["non_typescript_packet_overclaim_count"].as_u64(),
+        Some(0)
+    );
+    assert!(plan["unsupported_relations"]
+        .as_array()
+        .expect("unsupported relations")
+        .iter()
+        .any(
+            |relation| relation["relation"].as_str() == Some("local_flow_packets")
+                && relation["blocking"].as_bool() == Some(false)
+        ));
+    assert!(
+        plan["proof_boundary"]["capability_metadata_does_not_create_graph_proof"].as_bool()
+            == Some(true)
+    );
+    assert!(
+        routing["agent_investigation_layer"]["language_capability_plan"]["unknown_dynamic_risks"]
+            .as_array()
+            .expect("investigation risks")
+            .iter()
+            .any(|risk| risk["risk_id"].as_str() == Some("python_dynamic_runtime_unknown"))
+    );
+    assert!(routing["unknowns"]
+        .as_array()
+        .expect("unknowns")
+        .iter()
+        .any(|unknown| unknown["reason"].as_str() == Some("language_capability_boundary_unknown")));
+    assert!(routing["validation_steps"]
+        .as_array()
+        .expect("validation steps")
+        .iter()
+        .all(|step| step["language_aware"].as_bool() == Some(true)
+            && step["capability_boundary"].as_str().is_some()));
+    // Under budget pressure the per-row policy boilerplate is hoisted into one
+    // packet-level `follow_up_query_policy` note (rows keep `compacted: true`
+    // and `shell_ready: false`); either form preserves the safety contract.
+    let policy = &routing["follow_up_query_policy"];
+    let packet_level_policy_present = policy["capability_boundary"].as_str().is_some()
+        && policy["unsupported_relations_are_not_blockers"].as_bool() == Some(true)
+        && policy["shell_ready"].as_bool() == Some(false);
+    assert!(routing["follow_up_queries"]
+        .as_array()
+        .expect("followups")
+        .iter()
+        .all(|query| {
+            let row_level = query["capability_boundary"].as_str().is_some()
+                && query["unsupported_relations_are_not_blockers"].as_bool() == Some(true);
+            (row_level || packet_level_policy_present)
+                && query["shell_ready"].as_bool() == Some(false)
+        }));
+}
+
+#[test]
 fn patch_assist_packet_has_required_sections_and_non_shell_followups() {
     let response = routing_packet_response_for_task(
         "Trace Buildroot generic package flow for adding a new package.",
@@ -18475,6 +19564,7 @@ fn patch_assist_packet_has_required_sections_and_non_shell_followups() {
     for key in [
         "task_intent",
         "task_roles",
+        "language_capability_plan",
         "critical_files",
         "critical_symbols",
         "source_navigation_evidence",
@@ -18487,6 +19577,8 @@ fn patch_assist_packet_has_required_sections_and_non_shell_followups() {
         "unknowns",
         "risks",
         "validation_steps",
+        "language_validation_steps",
+        "validation_steps_language_aware",
         "follow_up_queries",
         "expansion_handles",
         "artifact_or_db_inspection_requirements",

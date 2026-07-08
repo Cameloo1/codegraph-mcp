@@ -4,14 +4,19 @@ Status: current proof contract through MVP4.3 for the authorized TypeScript
 `.ts` production local-flow packet slice, plus the inactive boundary for later
 MVP4 work. This document freezes terminology, exactness, claimability, and
 prohibited proof transitions; it does not start MVP4.4 AST skeleton
-compression, route/bridge proof, context-entry activation, distribution, public
-benchmarking, or real-agent patch-quality claims.
+compression, route/bridge proof, context-entry activation, or distribution.
+`public_claim=false` and `real_agent_patch_quality_claim=false`.
 
 Current gate: `reports/final/mvp4_3_local_micro_flow_packet_quality_gate.json`
 and the Pre-MVP4.4 packet-language gate verify active TypeScript `.ts`
 production micro-node, micro-edge, and `local_flow_packets` behavior. Other
 registered languages remain `not_implemented` or `not_applicable` for packet
 support unless a later fixture-backed implementation changes that status.
+The final Pre-MVP4.4 language docs truth gate summarizes current packet,
+frontend, resolver, query/context, and linter capability rows in
+`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_language_capability_matrix.json`
+and
+`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_linter_capability_matrix.json`.
 
 ## Existing Names
 

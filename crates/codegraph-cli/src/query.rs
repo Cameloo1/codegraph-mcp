@@ -11,7 +11,9 @@ use codegraph_core::{Edge, Entity, Exactness, FileRecord, PathEvidence, Relation
 use codegraph_query::{
     ExactGraphQueryEngine, GraphPath, QueryLimits, SymbolSearchHit, TraversalDirection,
 };
-use codegraph_store::{GraphStore, SqliteGraphStore, TextSearchKind};
+use codegraph_store::{
+    CapabilityMetadataQueryOptions, GraphStore, SqliteGraphStore, TextSearchKind,
+};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
@@ -37,7 +39,7 @@ pub(crate) fn query_symbols_with_options(
             .iter()
             .map(agent_symbol_search_hit_json)
             .collect::<Vec<_>>();
-        return Ok(canonical_agent_query_response(
+        let mut response = canonical_agent_query_response(
             "query_symbols_agent_json",
             "query symbols",
             repo_root,
@@ -54,7 +56,9 @@ pub(crate) fn query_symbols_with_options(
             Vec::new(),
             options.output_mode,
             agent_timings_json(started),
-        ));
+        );
+        attach_query_capability_metadata(&mut response, &store);
+        return Ok(response);
     }
 
     let hits = hits
@@ -63,7 +67,7 @@ pub(crate) fn query_symbols_with_options(
         .map(|hit| symbol_search_hit_json(&hit))
         .collect::<Vec<_>>();
 
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "query": options.query,
         "result_count": hits.len(),
@@ -88,7 +92,9 @@ pub(crate) fn query_symbols_with_options(
         "bounded semantic SQL fallback"
     ],
         "proof": "Symbol search is ranked over exact symbol hits, file-path FTS candidates, and a bounded semantic SQL fallback.",
-    }))
+    });
+    attach_query_capability_metadata(&mut response, &store);
+    Ok(response)
 }
 
 pub(crate) fn symbol_search_hits(
@@ -305,6 +311,37 @@ fn attach_recall_scope_disclosure(response: &mut Value) {
     }
 }
 
+pub(crate) fn query_capability_metadata_summary_json(store: &SqliteGraphStore) -> Value {
+    match store.capability_metadata_summary(&CapabilityMetadataQueryOptions {
+        limit: 512,
+        ..CapabilityMetadataQueryOptions::default()
+    }) {
+        Ok(summary) => json!({
+            "status": "ok",
+            "summary": summary,
+            "bounded": true,
+            "limit": 512,
+            "not_graph_proof": true,
+            "proof_boundary": "capability metadata labels parser/resolver/source-role facts; it does not create relation proof by itself",
+        }),
+        Err(error) => json!({
+            "status": "unavailable",
+            "error": error.to_string(),
+            "not_graph_proof": true,
+            "proof_boundary": "capability metadata summary unavailable; query results must rely on per-row exactness labels only",
+        }),
+    }
+}
+
+pub(crate) fn attach_query_capability_metadata(response: &mut Value, store: &SqliteGraphStore) {
+    if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "capability_metadata".to_string(),
+            query_capability_metadata_summary_json(store),
+        );
+    }
+}
+
 pub(crate) fn query_text_with_options(
     repo_root: &Path,
     options: &QueryListOptions,
@@ -349,7 +386,11 @@ pub(crate) fn query_text_with_options(
             options.output_mode,
             agent_timings_json(started),
         );
+        response["proof_status"] = json!("not_graph_proof");
+        response["proof_strength"] = json!("text_evidence_non_graph");
+        response["graph_proof"] = json!(false);
         attach_recall_scope_disclosure(&mut response);
+        attach_query_capability_metadata(&mut response, &store);
         return Ok(response);
     }
 
@@ -366,9 +407,13 @@ pub(crate) fn query_text_with_options(
         "debug": options.debug,
         "explain": options.explain,
         "hits": hits,
+        "proof_status": "not_graph_proof",
+        "proof_strength": "text_evidence_non_graph",
+        "graph_proof": false,
         "proof": "Text query uses SQLite FTS when present and falls back to bounded on-demand source scanning over indexed files.",
     });
     attach_recall_scope_disclosure(&mut response);
+    attach_query_capability_metadata(&mut response, &store);
     Ok(response)
 }
 
@@ -504,7 +549,11 @@ pub(crate) fn query_files_with_options(
             options.output_mode,
             agent_timings_json(started),
         );
+        response["proof_status"] = json!("file_source_navigation");
+        response["proof_strength"] = json!("file_source_navigation");
+        response["graph_proof"] = json!(false);
         attach_recall_scope_disclosure(&mut response);
+        attach_query_capability_metadata(&mut response, &store);
         return Ok(response);
     }
 
@@ -521,9 +570,13 @@ pub(crate) fn query_files_with_options(
         "debug": options.debug,
         "explain": options.explain,
         "hits": hits,
+        "proof_status": "file_source_navigation",
+        "proof_strength": "file_source_navigation",
+        "graph_proof": false,
         "proof": "File query combines SQLite FTS file-path rows with repo-relative path matching.",
     });
     attach_recall_scope_disclosure(&mut response);
+    attach_query_capability_metadata(&mut response, &store);
     Ok(response)
 }
 
@@ -601,7 +654,12 @@ pub(crate) fn enrich_file_hit_with_text_evidence_preview(
 ) -> Result<(), String> {
     insert_file_degradation_labels(file, hit);
     if let Some(object) = hit.as_object_mut() {
-        insert_query_evidence_role_labels(object, query_evidence_role_for_file(file));
+        let role = query_evidence_role_for_file(file);
+        object.insert(
+            "language_capability".to_string(),
+            file_language_capability_json(file, &role),
+        );
+        insert_query_evidence_role_labels(object, role);
     }
     if !file_record_is_text_evidence(file) {
         return Ok(());
@@ -799,7 +857,7 @@ pub(crate) fn query_definitions_with_options(
         } else {
             Vec::new()
         };
-        return Ok(canonical_agent_query_response(
+        let mut response = canonical_agent_query_response(
             "query_definitions_agent_json",
             "query definitions",
             repo_root,
@@ -816,12 +874,14 @@ pub(crate) fn query_definitions_with_options(
             Vec::new(),
             options.output_mode,
             agent_timings_json(started),
-        ));
+        );
+        attach_query_capability_metadata(&mut response, &store);
+        return Ok(response);
     }
 
     let hits = hits.iter().map(symbol_search_hit_json).collect::<Vec<_>>();
 
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "query": options.query,
         "result_count": hits.len(),
@@ -833,7 +893,9 @@ pub(crate) fn query_definitions_with_options(
         "proof_status": if hits.is_empty() { "no_proof_path_found" } else { "symbol_definition_found" },
         "proof_strength": "symbol_definition",
         "proof": "Definitions are symbol-search hits constrained to declaration/executable entity kinds.",
-    }))
+    });
+    attach_query_capability_metadata(&mut response, &store);
+    Ok(response)
 }
 
 pub(crate) fn query_references_with_options(
@@ -894,7 +956,7 @@ pub(crate) fn query_references_with_options(
         } else {
             Vec::new()
         };
-        return Ok(canonical_agent_query_response(
+        let mut response = canonical_agent_query_response(
             "query_references_agent_json",
             "query references",
             repo_root,
@@ -912,7 +974,9 @@ pub(crate) fn query_references_with_options(
             Vec::new(),
             options.output_mode,
             agent_timings_json(started),
-        ));
+        );
+        attach_query_capability_metadata(&mut response, &store);
+        return Ok(response);
     }
 
     let graph_proof = references.iter().any(edge_is_graph_relation_proof);
@@ -921,7 +985,7 @@ pub(crate) fn query_references_with_options(
         .map(|edge| edge_with_entities_json(edge, &entity_by_id))
         .collect::<Vec<_>>();
 
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "query": options.query,
         "result_count": reference_rows.len(),
@@ -935,7 +999,9 @@ pub(crate) fn query_references_with_options(
         "proof_status": if graph_proof { "proof_path_found" } else { "no_proof_path_found" },
         "proof_strength": if graph_proof { "graph_relation_proof" } else { "none" },
         "proof": "References are graph edges connected to resolved symbol ids or explicit same-name unresolved placeholders.",
-    }))
+    });
+    attach_query_capability_metadata(&mut response, &store);
+    Ok(response)
 }
 
 pub(crate) fn query_chain_with_options(
@@ -972,7 +1038,7 @@ pub(crate) fn query_chain_with_options(
     let mut evidence = engine.path_evidence_from_paths(&paths);
     hydrate_path_evidence_endpoint_labels(&mut evidence, &entity_by_id);
     if options.output.output_mode.is_compact() {
-        return Ok(agent_path_query_response(
+        let mut response = agent_path_query_response(
             "query_chain_agent_json",
             "query chain",
             repo_root,
@@ -981,11 +1047,13 @@ pub(crate) fn query_chain_with_options(
             options,
             evidence,
             agent_timings_json(started),
-        ));
+        );
+        attach_query_capability_metadata(&mut response, &store);
+        return Ok(response);
     }
     let graph_proof = evidence.iter().any(path_evidence_is_graph_relation_proof);
 
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "source": options.source,
         "target": options.target,
@@ -1007,7 +1075,9 @@ pub(crate) fn query_chain_with_options(
             "static heuristic fallback"
         ],
         "proof": "Call-chain query traverses CALLS edges with explicit exactness and confidence labels; unresolved same-name joins remain heuristic evidence.",
-    }))
+    });
+    attach_query_capability_metadata(&mut response, &store);
+    Ok(response)
 }
 
 #[derive(Debug, Clone)]
@@ -1026,6 +1096,7 @@ pub(crate) struct UnresolvedCallsOptions {
     pub(crate) operation_kind: DbLifecycleOperationKind,
     pub(crate) class_filter: Option<String>,
     pub(crate) path_filter: Option<String>,
+    pub(crate) language_filter: Option<String>,
 }
 
 impl Default for UnresolvedCallsOptions {
@@ -1045,6 +1116,7 @@ impl Default for UnresolvedCallsOptions {
             operation_kind: DbLifecycleOperationKind::NormalRead,
             class_filter: None,
             path_filter: None,
+            language_filter: None,
         }
     }
 }
@@ -1063,6 +1135,11 @@ pub(crate) fn parse_unresolved_calls_args(
         }
         if let Some(value) = current.strip_prefix("--path=") {
             options.path_filter = Some(value.to_string());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = current.strip_prefix("--language=") {
+            options.language_filter = Some(parse_unresolved_calls_language_filter(value)?);
             index += 1;
             continue;
         }
@@ -1120,6 +1197,11 @@ pub(crate) fn parse_unresolved_calls_args(
                 let path = args.get(index).ok_or_else(unresolved_calls_usage)?;
                 options.path_filter = Some(path.clone());
             }
+            "--language" => {
+                index += 1;
+                let language = args.get(index).ok_or_else(unresolved_calls_usage)?;
+                options.language_filter = Some(parse_unresolved_calls_language_filter(language)?);
+            }
             other => {
                 if other.starts_with('-') {
                     return Err(format!(
@@ -1138,14 +1220,16 @@ pub(crate) fn parse_unresolved_calls_args(
     Ok(options)
 }
 
+pub(crate) fn parse_unresolved_calls_language_filter(raw: &str) -> Result<String, String> {
+    let value = canonical_unresolved_reference_language(raw);
+    if value.is_empty() {
+        return Err("unresolved-calls --language must not be empty".to_string());
+    }
+    Ok(value)
+}
+
 pub(crate) fn unresolved_reference_classes() -> &'static [&'static str] {
-    &[
-        REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
-        REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
-        REFERENCE_CLASS_BUILTIN_OR_STD,
-        REFERENCE_CLASS_MACRO_OR_CODEGEN,
-        REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
-    ]
+    REFERENCE_CLASS_ALL
 }
 
 pub(crate) fn parse_unresolved_calls_class_filter(raw: &str) -> Result<String, String> {
@@ -1205,7 +1289,7 @@ fn path_to_query_filter_string(path: &Path) -> String {
 
 pub(crate) fn unresolved_calls_usage() -> String {
     format!(
-        "Usage: codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class <reference_class>] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]\nAccepted --class values: {}\nThis command does not accept a positional symbol/query argument.",
+        "Usage: codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class <reference_class>] [--language <language>] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--include-snippets] [--db <path>] [--allow-stale-read] [--allow-foreign-db]\nAccepted --class values: {}\nThis command does not accept a positional symbol/query argument.",
         unresolved_reference_classes().join(", ")
     )
 }
@@ -1402,6 +1486,7 @@ pub(crate) fn query_unresolved_calls(
         options.offset,
         options.class_filter.as_deref(),
         normalized_path_filter.as_deref(),
+        options.language_filter.as_deref(),
     )?;
     let raw_lane_row_count = lane_raw_rows.len();
     let (lane_rows, lane_default_filter) =
@@ -1433,6 +1518,16 @@ pub(crate) fn query_unresolved_calls(
     }
 
     let total_ms = elapsed_ms(total_start);
+    let capability_metadata = SqliteGraphStore::open_read_only(&checked_db_path)
+        .map(|store| query_capability_metadata_summary_json(&store))
+        .unwrap_or_else(|error| {
+            json!({
+                "status": "unavailable",
+                "error": error.to_string(),
+                "not_graph_proof": true,
+                "proof_boundary": "capability metadata summary unavailable for unresolved-call query",
+            })
+        });
     Ok(json!({
         "status": "ok",
         "resolved_repo": path_string(repo_root),
@@ -1447,6 +1542,10 @@ pub(crate) fn query_unresolved_calls(
         "claimable": preflight.claimable,
         "diagnostic_only": preflight.diagnostic_only,
         "exact_db_path_checked": preflight.exact_db_path_checked,
+        "capability_metadata": capability_metadata,
+        "proof_status": "not_graph_proof",
+        "proof_strength": "unresolved_reference_diagnostic",
+        "graph_proof": false,
         "calls": unresolved,
         "unresolved_references": {
             "rows": lane_rows.len(),
@@ -1457,6 +1556,7 @@ pub(crate) fn query_unresolved_calls(
                 "class": options.class_filter,
                 "path": normalized_path_filter,
                 "path_input": options.path_filter,
+                "language": options.language_filter,
             },
             "pagination": {
                 "limit": options.limit,
@@ -1685,6 +1785,7 @@ pub(crate) fn query_unresolved_reference_lane_page(
     offset: usize,
     class_filter: Option<&str>,
     path_filter: Option<&str>,
+    language_filter: Option<&str>,
 ) -> Result<Vec<Value>, String> {
     if !sqlite_table_exists(connection, "unresolved_references")? {
         return Ok(Vec::new());
@@ -1702,6 +1803,7 @@ pub(crate) fn query_unresolved_reference_lane_page(
                     .and_then(Value::as_str)
                     .unwrap_or("unclassified")
                     .to_string();
+                let exactness = row.get::<_, String>("exactness")?;
                 Ok(json!({
                     "reference_id": row.get::<_, String>("reference_id")?,
                     "name": row.get::<_, String>("name")?,
@@ -1715,22 +1817,152 @@ pub(crate) fn query_unresolved_reference_lane_page(
                         row.get::<_, Option<i64>>("end_column")?,
                     ),
                     "file_hash": row.get::<_, Option<String>>("file_hash")?,
-                    "exactness": row.get::<_, String>("exactness")?,
+                    "exactness": exactness.clone(),
                     "extractor": row.get::<_, String>("extractor")?,
+                    "language_capability": unresolved_reference_language_capability_json(
+                        &metadata,
+                        &exactness,
+                        &reference_class,
+                    ),
                     "metadata": metadata,
                     "not_graph_proof": true,
                 }))
             },
         )
         .map_err(|error| error.to_string())?;
-    collect_sqlite_values(rows)
+    let mut values = collect_sqlite_values(rows)?;
+    if let Some(language_filter) = language_filter {
+        values.retain(|row| unresolved_reference_row_matches_language(row, language_filter));
+    }
+    Ok(values)
+}
+
+fn unresolved_reference_row_matches_language(row: &Value, language_filter: &str) -> bool {
+    let filter = canonical_unresolved_reference_language(language_filter);
+    if filter.is_empty() {
+        return false;
+    }
+    if let Some(metadata) = row.get("metadata") {
+        for key in [
+            "parser_fact_language",
+            "parser_fact_bundle_language",
+            "language",
+        ] {
+            if metadata
+                .get(key)
+                .and_then(Value::as_str)
+                .map(canonical_unresolved_reference_language)
+                .is_some_and(|language| language == filter)
+            {
+                return true;
+            }
+        }
+    }
+    row.pointer("/source_span/repo_relative_path")
+        .and_then(Value::as_str)
+        .and_then(unresolved_reference_language_from_path)
+        .is_some_and(|language| language == filter)
+}
+
+fn unresolved_reference_language_from_path(path: &str) -> Option<String> {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(canonical_unresolved_reference_language)
+        .filter(|language| !language.is_empty())
+}
+
+fn canonical_unresolved_reference_language(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "ts" | "typescript" => "typescript".to_string(),
+        "tsx" => "tsx".to_string(),
+        "js" | "javascript" => "javascript".to_string(),
+        "jsx" => "jsx".to_string(),
+        "py" | "python" => "python".to_string(),
+        "go" | "golang" => "go".to_string(),
+        "rs" | "rust" => "rust".to_string(),
+        "java" => "java".to_string(),
+        "cs" | "csharp" | "c#" => "csharp".to_string(),
+        "c" | "h" => "c".to_string(),
+        "cc" | "cxx" | "cpp" | "hpp" | "hh" | "hxx" | "c++" => "cpp".to_string(),
+        "rb" | "ruby" => "ruby".to_string(),
+        "php" => "php".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub(crate) fn unresolved_reference_language_capability_json(
+    metadata: &Value,
+    exactness: &str,
+    reference_class: &str,
+) -> Value {
+    let language = metadata
+        .get("parser_fact_language")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let frontend = metadata
+        .get("parser_fact_frontend")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let source_role = metadata
+        .get("source_role")
+        .or_else(|| metadata.get("parser_fact_source_role"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let capability_flag = metadata
+        .get("parser_capability_flag")
+        .and_then(Value::as_str)
+        .unwrap_or("unresolved_reference");
+    let capability_status = metadata
+        .get("parser_capability_status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let unknown_boundary_reason = metadata
+        .get("parser_unknown_boundary_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("parser emitted unresolved reference with no exact graph target");
+    json!({
+        "language": language,
+        "frontend": frontend,
+        "source_role": source_role,
+        "capability_flags": [capability_flag],
+        "capability_status": capability_status,
+        "exactness": exactness,
+        "resolver_status": metadata
+            .get("parser_resolver_status")
+            .and_then(Value::as_str)
+            .unwrap_or("unsupported"),
+        "resolver_version": metadata.get("parser_resolver_version").cloned().unwrap_or(Value::Null),
+        "reference_class": reference_class,
+        "unknown_boundary_reason": unknown_boundary_reason,
+        "proof_strength": "unresolved_reference_non_graph",
+        "claimability": {
+            "claimable": false,
+            "claimable_as": [],
+            "not_claimable_as": ["typed_graph_relation", "caller_callee_proof", "linter_blocker"],
+            "graph_proof": false,
+            "reason": "unresolved reference rows are diagnostic query facts until exact resolver provenance links a target"
+        },
+        "not_graph_proof": true
+    })
 }
 
 pub(crate) fn filter_default_unresolved_reference_lane_items(
     connection: &Connection,
-    rows: Vec<Value>,
+    mut rows: Vec<Value>,
     limit: usize,
 ) -> Result<(Vec<Value>, Value), String> {
+    // Q14/A2 (2026-07-05 shakeout): the page reads in span order, so a
+    // limit-bounded lane could keep dynamic/builtin noise while shedding an
+    // escalated repo-local row. Stable-sort by the same class priority the
+    // index-side persistence cap uses; span order is preserved within a class.
+    rows.sort_by_key(|row| {
+        codegraph_index::unresolved_reference_lane_class_priority(
+            row.get("reference_class")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        )
+    });
     let mut filtered = Vec::new();
     let mut callee_duplicate_count = 0usize;
     let mut non_call_relation_count = 0usize;
@@ -2146,7 +2378,7 @@ pub(crate) fn query_path_with_options(
     let entity_by_id = entities_by_id(&entities);
     hydrate_path_evidence_endpoint_labels(&mut evidence, &entity_by_id);
     if options.output.output_mode.is_compact() {
-        return Ok(agent_path_query_response(
+        let mut response = agent_path_query_response(
             "query_path_agent_json",
             "query path",
             repo_root,
@@ -2155,10 +2387,12 @@ pub(crate) fn query_path_with_options(
             options,
             evidence,
             agent_timings_json(started),
-        ));
+        );
+        attach_query_capability_metadata(&mut response, &store);
+        return Ok(response);
     }
     let graph_proof = evidence.iter().any(path_evidence_is_graph_relation_proof);
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "source": options.source,
         "target": options.target,
@@ -2173,7 +2407,9 @@ pub(crate) fn query_path_with_options(
         "proof_status": path_query_proof_status(&evidence),
         "proof_strength": path_query_proof_strength(&evidence),
         "proof": "Path query is exact graph traversal over local persisted edges.",
-    }))
+    });
+    attach_query_capability_metadata(&mut response, &store);
+    Ok(response)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2479,6 +2715,7 @@ pub(crate) fn query_call_relation(
     if let Some(object) = response.as_object_mut() {
         object.insert(key.to_string(), json!(legacy_rows));
     }
+    attach_query_capability_metadata(&mut response, &store);
     Ok(response)
 }
 
@@ -2735,6 +2972,9 @@ pub(crate) fn agent_call_relation_response(
         object.insert("graph_proof".to_string(), json!(graph_proof));
         object.insert("proof_status".to_string(), json!(proof_status));
         object.insert("proof_strength".to_string(), json!(proof_strength));
+        if let Some(capability_metadata) = rich.get("capability_metadata").cloned() {
+            object.insert("capability_metadata".to_string(), capability_metadata);
+        }
         if !graph_proof {
             let fallback_entities = if !ambiguous_candidates.is_empty() {
                 ambiguous_candidates.clone()

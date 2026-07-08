@@ -101,7 +101,15 @@ configured index is the external profile DB, not repo-local `.codegraph`.
 
 Resources return JSON text payloads for Codex clients that prefer a stable
 reference URI over an immediate tool call. The schema resource includes the
-current tool, resource, prompt, and safety metadata.
+current tool, resource, prompt, and safety metadata. `codegraph://languages`
+mirrors the release CLI language capability model with `capability_flags`,
+`capability_status_values`, and per-frontend `capabilities`; tier numbers
+remain compatibility summaries only.
+The final Pre-MVP4.4 docs/readiness matrices under
+`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/` summarize that
+same language and linter capability truth for review artifacts. MCP clients
+should still read `codegraph://languages` or tool output for live runtime
+metadata.
 
 ## Prompts
 
@@ -188,9 +196,13 @@ context-entry handles remain inactive and must not inline `packet_body`,
 Unresolved-reference findings are surfaced as non-graph evidence. They may warn
 or, under explicit policy, become blocking validation findings, but they are not
 typed relation proof by themselves. The corresponding CLI query surface is
-`agent-use query unresolved-calls --path <path> --class <class> --agent-json`;
-MCP clients should treat the same data as warning/query parity evidence rather
-than relation proof.
+`agent-use query unresolved-calls --path <path> --class <class> --language
+<language> --agent-json`; MCP clients should treat the same data as
+warning/query parity evidence rather than relation proof. The shared class
+taxonomy is
+`repo_local_candidate`, `external_dependency`, `builtin_or_std`,
+`macro_or_codegen`, `dynamic_or_computed`, `compiler_required`, `lsp_required`,
+`runtime_required`, `unsupported_language_or_relation`, and `unknown`.
 
 `codegraph.validate_edit` may update the configured SQLite graph DB and bounded
 profile sidecars. It must not mutate source files, must not start a background

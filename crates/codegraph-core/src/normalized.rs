@@ -16,6 +16,7 @@ pub enum NormalizedFactKind {
     File,
     Entity,
     Edge,
+    CapabilityMetadata,
     MicroEdge,
     LocalFlowPacket,
     SourceSpan,
@@ -32,6 +33,7 @@ impl NormalizedFactKind {
             Self::File => "file",
             Self::Entity => "entity",
             Self::Edge => "edge",
+            Self::CapabilityMetadata => "capability_metadata",
             Self::MicroEdge => "micro_edge",
             Self::LocalFlowPacket => "local_flow_packet",
             Self::SourceSpan => "source_span",
@@ -40,6 +42,147 @@ impl NormalizedFactKind {
             Self::PathEvidence => "path_evidence",
             Self::SidecarFreshness => "sidecar_freshness",
             Self::UnresolvedReference => "unresolved_reference",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedCapabilityMetadataFact {
+    pub stable_identity_key: String,
+    pub fact_hash: String,
+    pub fact_kind: NormalizedFactKind,
+    pub repo_relative_path: String,
+    pub file_id: String,
+    pub owner_fact_kind: String,
+    pub owner_fact_id: String,
+    pub language: Option<String>,
+    pub frontend: Option<String>,
+    pub capability_flag: String,
+    pub capability_status: Option<String>,
+    pub fact_family: Option<String>,
+    pub fact_exactness: Option<String>,
+    pub source_role: EvidenceRole,
+    pub evidence_role: Option<String>,
+    pub extractor_version: Option<String>,
+    pub resolver: Option<String>,
+    pub resolver_version: Option<String>,
+    pub resolver_status: Option<String>,
+    pub resolver_provenance: Option<String>,
+    pub project_config_source: Option<String>,
+    pub unknown_boundary_reason: Option<String>,
+    pub unknown_boundary_kind: Option<String>,
+    pub reference_class: Option<String>,
+    pub requirement: Option<String>,
+    pub metadata_bytes: u64,
+    pub not_graph_proof: bool,
+    pub claimability: NormalizedClaimabilityMetadata,
+    pub lifecycle: NormalizedLifecycleMetadata,
+}
+
+impl NormalizedCapabilityMetadataFact {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        repo_relative_path: impl AsRef<str>,
+        owner_fact_kind: impl Into<String>,
+        owner_fact_id: impl Into<String>,
+        language: Option<String>,
+        frontend: Option<String>,
+        capability_flag: impl Into<String>,
+        capability_status: Option<String>,
+        fact_family: Option<String>,
+        fact_exactness: Option<String>,
+        source_role: EvidenceRole,
+        evidence_role: Option<String>,
+        extractor_version: Option<String>,
+        resolver: Option<String>,
+        resolver_version: Option<String>,
+        resolver_status: Option<String>,
+        resolver_provenance: Option<String>,
+        project_config_source: Option<String>,
+        unknown_boundary_reason: Option<String>,
+        unknown_boundary_kind: Option<String>,
+        reference_class: Option<String>,
+        requirement: Option<String>,
+        metadata_bytes: u64,
+        extraction_version: impl Into<String>,
+    ) -> Self {
+        let repo_relative_path = normalize_repo_relative_path(repo_relative_path);
+        let file_id = repo_relative_path.clone();
+        let owner_fact_kind = owner_fact_kind.into();
+        let owner_fact_id = owner_fact_id.into();
+        let capability_flag = capability_flag.into();
+        let extraction_version = extraction_version.into();
+        let source_role_key = source_role.as_str().to_string();
+        let metadata_bytes_key = metadata_bytes.to_string();
+        let identity_values = [
+            repo_relative_path.clone(),
+            owner_fact_kind.clone(),
+            owner_fact_id.clone(),
+            capability_flag.clone(),
+        ];
+        let hash_values = [
+            repo_relative_path.clone(),
+            owner_fact_kind.clone(),
+            owner_fact_id.clone(),
+            language.clone().unwrap_or_default(),
+            frontend.clone().unwrap_or_default(),
+            capability_flag.clone(),
+            capability_status.clone().unwrap_or_default(),
+            fact_family.clone().unwrap_or_default(),
+            fact_exactness.clone().unwrap_or_default(),
+            source_role_key.clone(),
+            evidence_role.clone().unwrap_or_default(),
+            extractor_version.clone().unwrap_or_default(),
+            resolver.clone().unwrap_or_default(),
+            resolver_version.clone().unwrap_or_default(),
+            resolver_status.clone().unwrap_or_default(),
+            resolver_provenance.clone().unwrap_or_default(),
+            project_config_source.clone().unwrap_or_default(),
+            unknown_boundary_reason.clone().unwrap_or_default(),
+            unknown_boundary_kind.clone().unwrap_or_default(),
+            reference_class.clone().unwrap_or_default(),
+            requirement.clone().unwrap_or_default(),
+            metadata_bytes_key,
+            extraction_version.clone(),
+        ];
+        Self {
+            stable_identity_key: stable_fact_identity_key(
+                NormalizedFactKind::CapabilityMetadata.as_str(),
+                identity_values.iter().map(String::as_str),
+            ),
+            fact_hash: stable_fact_hash(
+                NormalizedFactKind::CapabilityMetadata.as_str(),
+                hash_values.iter().map(String::as_str),
+            ),
+            fact_kind: NormalizedFactKind::CapabilityMetadata,
+            repo_relative_path,
+            file_id,
+            owner_fact_kind,
+            owner_fact_id,
+            language,
+            frontend,
+            capability_flag,
+            capability_status,
+            fact_family,
+            fact_exactness,
+            source_role,
+            evidence_role,
+            extractor_version,
+            resolver,
+            resolver_version,
+            resolver_status,
+            resolver_provenance,
+            project_config_source,
+            unknown_boundary_reason,
+            unknown_boundary_kind,
+            reference_class,
+            requirement,
+            metadata_bytes,
+            not_graph_proof: true,
+            claimability: NormalizedClaimabilityMetadata::non_graph_proof(
+                "capability metadata describes proof boundaries and cannot by itself create graph proof",
+            ),
+            lifecycle: NormalizedLifecycleMetadata::current(extraction_version),
         }
     }
 }
@@ -1163,6 +1306,7 @@ macro_rules! impl_envelope_from_fact {
 impl_envelope_from_fact!(NormalizedFileFact);
 impl_envelope_from_fact!(NormalizedEntityFact);
 impl_envelope_from_fact!(NormalizedEdgeFact);
+impl_envelope_from_fact!(NormalizedCapabilityMetadataFact);
 impl_envelope_from_fact!(NormalizedMicroEdgeFact);
 impl_envelope_from_fact!(NormalizedLocalFlowPacketFact);
 impl_envelope_from_fact!(NormalizedSourceSpanFact);
@@ -1381,16 +1525,24 @@ fn micro_edge_claimability(
     provenance_id: Option<&str>,
     lifecycle_status: &str,
 ) -> NormalizedClaimabilityMetadata {
-    let exact = exactness.eq_ignore_ascii_case("exact");
+    // LOCAL_FLOWS_TO rows are derived_with_provenance by contract (mvp4_2b B4);
+    // they carry the same span/provenance/lifecycle prerequisites as exact rows.
+    let exact_or_derived = exactness.eq_ignore_ascii_case("exact")
+        || exactness.eq_ignore_ascii_case("derived_with_provenance");
     let claimable = claimability_label.starts_with("claimable_");
     let current = matches!(lifecycle_status, "db_passport" | "current" | "ready");
-    if exact && claimable && relation_source_span.is_some() && provenance_id.is_some() && current {
+    if exact_or_derived
+        && claimable
+        && relation_source_span.is_some()
+        && provenance_id.is_some()
+        && current
+    {
         NormalizedClaimabilityMetadata::graph_source_proof(
-            "exact micro-edge has source span, provenance, and current lifecycle binding",
+            "exact or derived-with-provenance micro-edge has source span, provenance, and current lifecycle binding",
         )
     } else {
         NormalizedClaimabilityMetadata::graph_diagnostic(
-            "micro-edge lacks an exact/source-spanned/provenance/current prerequisite and is diagnostic, not graph relation proof",
+            "micro-edge lacks an exact-or-derived/source-spanned/provenance/current prerequisite and is diagnostic, not graph relation proof",
         )
     }
 }

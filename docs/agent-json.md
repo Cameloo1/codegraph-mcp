@@ -27,6 +27,7 @@ packet rows or `flow_proof`. `context_entry_packet_agent_json` remains dormant
 planning surface until its implementation gate passes.
 
 - `local_micro_flow_packet_agent_json.schema.json`
+- `query_local_flow_packets_agent_json.schema.json`
 - `context_entry_packet_agent_json.schema.json`
 
 ## Versioning
@@ -142,7 +143,17 @@ size guards:
   schema-required fields and trims optional diagnostic sections first; the
   `--explain` and audit modes raise this bound for richer output.
 
-Current release verification found known over-budget exceptions: plain
+**The 12,288-byte (12 KiB) compact bound is advisory, not guaranteed, on
+findings-bearing packets.** Evidence-first shedding never drops the findings
+evidence needed to act (spans, rule ids, fix direction), so a validate-edit
+packet that carries real findings routinely lands somewhat above the bound
+(the 2026-07-05 thirteen-language shakeout measured 13,089–13,308 bytes) with
+`max_output_bytes_exceeded=true`, `evidence_first_shedding=true`, and
+`required_safety_fields_preserved=true` self-reported in the budget block.
+Downstream consumers must size buffers from the self-reported budget fields,
+not from the 12 KiB default.
+
+Current release verification found further known over-budget exceptions: plain
 `query path --agent-json` can exceed compact targets without byte-budget
 metadata, `agent-use query path` and `agent-use query unresolved-calls` can
 exceed the 12 KiB default target while preserving required safety fields, and
@@ -150,6 +161,12 @@ exceed the 12 KiB default target while preserving required safety fields, and
 packets rather than tight-loop compact packets. Consumers must parse
 `truncation`, budget, warning, lifecycle, and claimability fields instead of
 assuming byte size alone proves whether output is safe or complete.
+
+Unresolved-reference `reference_class` values are
+`repo_local_candidate`, `external_dependency`, `builtin_or_std`,
+`macro_or_codegen`, `dynamic_or_computed`, `compiler_required`, `lsp_required`,
+`runtime_required`, `unsupported_language_or_relation`, and `unknown`. These
+classes are query and validation diagnostics, not typed graph proof.
 
 Agent JSON must not include non-empty `scope.included_examples` or
 `scope.excluded_examples` arrays. Scope examples and full audit payloads remain
@@ -172,7 +189,11 @@ roles.
 rows plus lifecycle, claimability, and pagination state. It may include a
 legacy `calls` array, but the stable MVP3 release contract is the
 `unresolved_references` block with `filters`, `items`, `rows`,
-`not_graph_proof: true`, and pagination. This surface is warning/query parity
+`not_graph_proof: true`, and pagination. Lane items are ordered
+evidence-first: `repo_local_candidate` rows (the hallucination signal) sort
+before `macro_or_codegen`, `dynamic_or_computed`, `external_dependency`, and
+`builtin_or_std` noise, so bounded or compacted output sheds known-good noise
+before it sheds the signal. This surface is warning/query parity
 for references that could not be resolved; it is not graph relation proof.
 
 `validation_packet_agent_json` may include an `unresolved_references` block for
@@ -215,5 +236,15 @@ text-only/unsupported files, packet support remains `not_implemented` or
 hard interrupt.
 
 `languages --json` is release capability metadata for language frontend
-support. It is intentionally outside the agent JSON packet schema set unless a
-future release promotes it as a stable coding-agent packet surface.
+support. It exposes the same capability flags and status values as
+`codegraph://languages`, while old tier labels remain compatibility summaries.
+It is intentionally outside the agent JSON packet schema set unless a future
+release promotes it as a stable coding-agent packet surface.
+
+The final Pre-MVP4.4 docs truth gate writes review matrices at
+`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_language_capability_matrix.json`
+and
+`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_linter_capability_matrix.json`.
+Those artifacts summarize current language/query/context/linter/packet
+capability status. They do not add packet support beyond the verified
+TypeScript `.ts` production local-flow packet slice.

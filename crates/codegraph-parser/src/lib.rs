@@ -198,6 +198,126 @@ impl LanguageSupportTier {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageCapabilityFlag {
+    SyntaxExact,
+    SpanExact,
+    ImportExportExtracted,
+    PackageOrModuleResolved,
+    IncludeResolved,
+    RequireResolved,
+    CallExtracted,
+    CallerCalleeExact,
+    CompilerVerified,
+    LspVerified,
+    ProjectConfigResolved,
+    LocalBindingResolved,
+    ReadWriteExtracted,
+    LocalDataflowDerived,
+    LocalFlowPacketSupported,
+    TestImpactSupported,
+    TestAssertMockExtracted,
+    FrameworkHeuristic,
+    RouteExact,
+    BridgeExact,
+    SecurityPatternSupported,
+    RuntimeUnknown,
+    DynamicUnknown,
+    MacroUnknown,
+    PreprocessorUnknown,
+    CompilerRequired,
+    LspRequired,
+    BuildDatabaseRequired,
+    Unsupported,
+}
+
+pub const LANGUAGE_CAPABILITY_FLAGS: &[LanguageCapabilityFlag] = &[
+    LanguageCapabilityFlag::SyntaxExact,
+    LanguageCapabilityFlag::SpanExact,
+    LanguageCapabilityFlag::ImportExportExtracted,
+    LanguageCapabilityFlag::PackageOrModuleResolved,
+    LanguageCapabilityFlag::IncludeResolved,
+    LanguageCapabilityFlag::RequireResolved,
+    LanguageCapabilityFlag::CallExtracted,
+    LanguageCapabilityFlag::CallerCalleeExact,
+    LanguageCapabilityFlag::CompilerVerified,
+    LanguageCapabilityFlag::LspVerified,
+    LanguageCapabilityFlag::ProjectConfigResolved,
+    LanguageCapabilityFlag::LocalBindingResolved,
+    LanguageCapabilityFlag::ReadWriteExtracted,
+    LanguageCapabilityFlag::LocalDataflowDerived,
+    LanguageCapabilityFlag::LocalFlowPacketSupported,
+    LanguageCapabilityFlag::TestImpactSupported,
+    LanguageCapabilityFlag::TestAssertMockExtracted,
+    LanguageCapabilityFlag::FrameworkHeuristic,
+    LanguageCapabilityFlag::RouteExact,
+    LanguageCapabilityFlag::BridgeExact,
+    LanguageCapabilityFlag::SecurityPatternSupported,
+    LanguageCapabilityFlag::RuntimeUnknown,
+    LanguageCapabilityFlag::DynamicUnknown,
+    LanguageCapabilityFlag::MacroUnknown,
+    LanguageCapabilityFlag::PreprocessorUnknown,
+    LanguageCapabilityFlag::CompilerRequired,
+    LanguageCapabilityFlag::LspRequired,
+    LanguageCapabilityFlag::BuildDatabaseRequired,
+    LanguageCapabilityFlag::Unsupported,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageCapabilityStatus {
+    SupportedExact,
+    SupportedDerivedWithProvenance,
+    SupportedParserOnly,
+    SupportedHeuristic,
+    WarningOnly,
+    DiagnosticOnly,
+    Unknown,
+    Unsupported,
+    NotApplicable,
+    NotImplemented,
+    RequiresCompiler,
+    RequiresLsp,
+    RequiresRuntime,
+    RequiresMacroExpansion,
+    RequiresPreprocessor,
+    RequiresBuildDatabase,
+}
+
+pub const LANGUAGE_CAPABILITY_STATUS_VALUES: &[LanguageCapabilityStatus] = &[
+    LanguageCapabilityStatus::SupportedExact,
+    LanguageCapabilityStatus::SupportedDerivedWithProvenance,
+    LanguageCapabilityStatus::SupportedParserOnly,
+    LanguageCapabilityStatus::SupportedHeuristic,
+    LanguageCapabilityStatus::WarningOnly,
+    LanguageCapabilityStatus::DiagnosticOnly,
+    LanguageCapabilityStatus::Unknown,
+    LanguageCapabilityStatus::Unsupported,
+    LanguageCapabilityStatus::NotApplicable,
+    LanguageCapabilityStatus::NotImplemented,
+    LanguageCapabilityStatus::RequiresCompiler,
+    LanguageCapabilityStatus::RequiresLsp,
+    LanguageCapabilityStatus::RequiresRuntime,
+    LanguageCapabilityStatus::RequiresMacroExpansion,
+    LanguageCapabilityStatus::RequiresPreprocessor,
+    LanguageCapabilityStatus::RequiresBuildDatabase,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageCapabilityScope {
+    LanguageFrontend,
+    TypeScriptProductionTsOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LanguageCapability {
+    pub flag: LanguageCapabilityFlag,
+    pub status: LanguageCapabilityStatus,
+    pub scope: LanguageCapabilityScope,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractorCapability {
     pub name: &'static str,
@@ -215,10 +335,26 @@ pub struct LanguageFrontendInfo {
     pub tree_sitter_grammar_available: bool,
     pub compiler_resolver_available: bool,
     pub lsp_resolver_available: bool,
+    pub project_resolver_interface_version: &'static str,
+    pub project_resolver: &'static str,
+    pub project_resolver_status: ProjectResolverStatus,
     pub supported_entity_kinds: &'static [EntityKind],
     pub supported_relation_kinds: &'static [RelationKind],
     pub extractors: &'static [ExtractorCapability],
+    pub capabilities: &'static [LanguageCapability],
     pub known_limitations: &'static [&'static str],
+}
+
+impl LanguageFrontendInfo {
+    pub fn capability_status(
+        &self,
+        flag: LanguageCapabilityFlag,
+    ) -> Option<LanguageCapabilityStatus> {
+        self.capabilities
+            .iter()
+            .find(|capability| capability.flag == flag)
+            .map(|capability| capability.status)
+    }
 }
 
 pub trait LanguageFrontend {
@@ -371,6 +507,681 @@ pub trait SemanticResolver {
     ) -> SemanticResult<Vec<SemanticResolution>>;
 
     fn workspace_capabilities(&self, repo_root: &Path) -> WorkspaceCapabilities;
+}
+
+pub const PROJECT_RESOLVER_INTERFACE_VERSION: &str = "project_resolver_interface_v1";
+pub const NULL_PROJECT_RESOLVER_VERSION: &str = "null_project_resolver_v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectResolverStatus {
+    Exact,
+    CandidateSet,
+    External,
+    BuiltinOrStd,
+    DynamicUnknown,
+    Unsupported,
+    NotApplicable,
+    Error,
+}
+
+impl ProjectResolverStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::CandidateSet => "candidate_set",
+            Self::External => "external",
+            Self::BuiltinOrStd => "builtin_or_std",
+            Self::DynamicUnknown => "dynamic_unknown",
+            Self::Unsupported => "unsupported",
+            Self::NotApplicable => "not_applicable",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectResolverQueryKind {
+    ProjectRoots,
+    ProjectConfig,
+    FileMembership,
+    ModuleOrPackage,
+    IncludeOrRequire,
+    Symbol,
+    CallTarget,
+    LocalBinding,
+    ExternalDependency,
+    BuiltinOrStd,
+    DynamicUnknown,
+}
+
+impl ProjectResolverQueryKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectRoots => "project_roots",
+            Self::ProjectConfig => "project_config",
+            Self::FileMembership => "file_membership",
+            Self::ModuleOrPackage => "module_or_package",
+            Self::IncludeOrRequire => "include_or_require",
+            Self::Symbol => "symbol",
+            Self::CallTarget => "call_target",
+            Self::LocalBinding => "local_binding",
+            Self::ExternalDependency => "external_dependency",
+            Self::BuiltinOrStd => "builtin_or_std",
+            Self::DynamicUnknown => "dynamic_unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectResolverContext {
+    pub repo_root: Option<String>,
+    pub project_root: Option<String>,
+    pub repo_relative_path: Option<String>,
+    pub language: Option<String>,
+}
+
+impl ProjectResolverContext {
+    pub fn for_file(repo_relative_path: impl Into<String>, language: SourceLanguage) -> Self {
+        Self {
+            repo_root: None,
+            project_root: None,
+            repo_relative_path: Some(repo_relative_path.into()),
+            language: Some(language.as_str().to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectResolverProvenance {
+    pub resolver: String,
+    pub resolver_version: String,
+    pub provenance: String,
+    pub project_config_source: Option<String>,
+}
+
+impl ProjectResolverProvenance {
+    pub fn new(
+        resolver: impl Into<String>,
+        resolver_version: impl Into<String>,
+        provenance: impl Into<String>,
+        project_config_source: Option<String>,
+    ) -> Self {
+        Self {
+            resolver: resolver.into(),
+            resolver_version: resolver_version.into(),
+            provenance: provenance.into(),
+            project_config_source,
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        !self.resolver.trim().is_empty()
+            && !self.resolver_version.trim().is_empty()
+            && !self.provenance.trim().is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectResolverTarget {
+    pub name: Option<String>,
+    pub repo_relative_path: Option<String>,
+    pub source_span: Option<SourceSpan>,
+}
+
+impl ProjectResolverTarget {
+    pub fn source_spanned(
+        name: impl Into<String>,
+        repo_relative_path: impl Into<String>,
+        source_span: SourceSpan,
+    ) -> Self {
+        Self {
+            name: Some(name.into()),
+            repo_relative_path: Some(repo_relative_path.into()),
+            source_span: Some(source_span),
+        }
+    }
+
+    fn has_source_spanned_target(&self) -> bool {
+        self.repo_relative_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+            && self.source_span.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectResolverCandidate {
+    pub name: String,
+    pub repo_relative_path: Option<String>,
+    pub source_span: Option<SourceSpan>,
+    pub confidence: f64,
+    pub exactness: Option<Exactness>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectResolverResult {
+    pub query_kind: ProjectResolverQueryKind,
+    pub status: ProjectResolverStatus,
+    pub target: Option<ProjectResolverTarget>,
+    pub candidates: Vec<ProjectResolverCandidate>,
+    pub source: Option<ProjectResolverProvenance>,
+    pub project_config_used: Option<String>,
+    pub resolver_version: String,
+    pub confidence: Option<f64>,
+    pub exactness: Option<Exactness>,
+    pub warning_or_unknown_reason: Option<String>,
+    pub recommended_next_action: Option<String>,
+}
+
+impl ProjectResolverResult {
+    pub fn exact(
+        query_kind: ProjectResolverQueryKind,
+        target: ProjectResolverTarget,
+        source: ProjectResolverProvenance,
+        project_config_used: Option<String>,
+        confidence: f64,
+        exactness: Exactness,
+    ) -> Result<Self, ProjectResolverError> {
+        if !source.is_complete() {
+            return Err(ProjectResolverError::MissingProvenance(
+                "exact resolver results require resolver, resolver_version, and provenance",
+            ));
+        }
+        if !target.has_source_spanned_target() {
+            return Err(ProjectResolverError::MissingTargetSpan(
+                "exact resolver results require a target file and source span",
+            ));
+        }
+        Ok(Self {
+            query_kind,
+            status: ProjectResolverStatus::Exact,
+            target: Some(target),
+            candidates: Vec::new(),
+            project_config_used,
+            resolver_version: source.resolver_version.clone(),
+            confidence: Some(confidence),
+            exactness: Some(exactness),
+            source: Some(source),
+            warning_or_unknown_reason: None,
+            recommended_next_action: None,
+        })
+    }
+
+    pub fn candidate_set(
+        query_kind: ProjectResolverQueryKind,
+        resolver_version: impl Into<String>,
+        candidates: Vec<ProjectResolverCandidate>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::non_exact(
+            query_kind,
+            ProjectResolverStatus::CandidateSet,
+            resolver_version,
+            Some(reason.into()),
+            Some("Use exact resolver/compiler/LSP provenance before treating candidates as graph proof".to_string()),
+        )
+        .with_candidates(candidates)
+    }
+
+    pub fn external_dependency(
+        root_name: impl Into<String>,
+        resolver_version: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::non_exact(
+            ProjectResolverQueryKind::ExternalDependency,
+            ProjectResolverStatus::External,
+            resolver_version,
+            Some(reason.into()),
+            Some("Keep external dependency classification out of graph proof unless manifest/resolver evidence is recorded".to_string()),
+        )
+        .with_target_name(root_name.into())
+    }
+
+    pub fn builtin_or_std(
+        root_name: impl Into<String>,
+        resolver_version: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::non_exact(
+            ProjectResolverQueryKind::BuiltinOrStd,
+            ProjectResolverStatus::BuiltinOrStd,
+            resolver_version,
+            Some(reason.into()),
+            Some("Treat builtin/std classification as non-source graph proof unless a resolver provides a source-spanned target".to_string()),
+        )
+        .with_target_name(root_name.into())
+    }
+
+    pub fn dynamic_unknown(
+        query_kind: ProjectResolverQueryKind,
+        resolver_version: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::non_exact(
+            query_kind,
+            ProjectResolverStatus::DynamicUnknown,
+            resolver_version,
+            Some(reason.into()),
+            Some(
+                "Model the dynamic/runtime behavior or continue with warning-only evidence"
+                    .to_string(),
+            ),
+        )
+    }
+
+    pub fn unsupported(
+        query_kind: ProjectResolverQueryKind,
+        resolver_version: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::non_exact(
+            query_kind,
+            ProjectResolverStatus::Unsupported,
+            resolver_version,
+            Some(reason.into()),
+            Some(
+                "Use a language-specific resolver or keep the fact warning/unknown-only"
+                    .to_string(),
+            ),
+        )
+    }
+
+    pub fn not_applicable(
+        query_kind: ProjectResolverQueryKind,
+        resolver_version: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::non_exact(
+            query_kind,
+            ProjectResolverStatus::NotApplicable,
+            resolver_version,
+            Some(reason.into()),
+            None,
+        )
+    }
+
+    pub fn error(
+        query_kind: ProjectResolverQueryKind,
+        resolver_version: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::non_exact(
+            query_kind,
+            ProjectResolverStatus::Error,
+            resolver_version,
+            Some(reason.into()),
+            Some("Repair or re-run the resolver before using resolver-backed facts".to_string()),
+        )
+    }
+
+    fn non_exact(
+        query_kind: ProjectResolverQueryKind,
+        status: ProjectResolverStatus,
+        resolver_version: impl Into<String>,
+        warning_or_unknown_reason: Option<String>,
+        recommended_next_action: Option<String>,
+    ) -> Self {
+        Self {
+            query_kind,
+            status,
+            target: None,
+            candidates: Vec::new(),
+            source: None,
+            project_config_used: None,
+            resolver_version: resolver_version.into(),
+            confidence: None,
+            exactness: None,
+            warning_or_unknown_reason,
+            recommended_next_action,
+        }
+    }
+
+    fn with_target_name(mut self, name: String) -> Self {
+        self.target = Some(ProjectResolverTarget {
+            name: Some(name),
+            repo_relative_path: None,
+            source_span: None,
+        });
+        self
+    }
+
+    fn with_candidates(mut self, candidates: Vec<ProjectResolverCandidate>) -> Self {
+        self.candidates = candidates;
+        self
+    }
+
+    pub fn is_exact(&self) -> bool {
+        self.status == ProjectResolverStatus::Exact
+    }
+
+    pub fn can_block_linter(&self) -> bool {
+        self.status == ProjectResolverStatus::Exact
+            && self.exactness.is_some()
+            && self
+                .source
+                .as_ref()
+                .is_some_and(ProjectResolverProvenance::is_complete)
+            && self
+                .target
+                .as_ref()
+                .is_some_and(ProjectResolverTarget::has_source_spanned_target)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectResolverError {
+    MissingProvenance(&'static str),
+    MissingTargetSpan(&'static str),
+}
+
+impl fmt::Display for ProjectResolverError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingProvenance(message) => write!(formatter, "{message}"),
+            Self::MissingTargetSpan(message) => write!(formatter, "{message}"),
+        }
+    }
+}
+
+impl Error for ProjectResolverError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectResolverCapabilities {
+    pub interface_version: String,
+    pub resolver: String,
+    pub resolver_version: String,
+    pub language: Option<String>,
+    pub can_return_exact: bool,
+    pub project_roots: ProjectResolverStatus,
+    pub project_config: ProjectResolverStatus,
+    pub file_membership: ProjectResolverStatus,
+    pub module_or_package: ProjectResolverStatus,
+    pub include_or_require: ProjectResolverStatus,
+    pub symbol: ProjectResolverStatus,
+    pub call_target: ProjectResolverStatus,
+    pub local_binding: ProjectResolverStatus,
+    pub external_dependency: ProjectResolverStatus,
+    pub builtin_or_std: ProjectResolverStatus,
+    pub dynamic_unknown: ProjectResolverStatus,
+}
+
+pub trait ProjectResolver {
+    fn discover_project_roots(&self, repo_root: &Path) -> ProjectResolverResult;
+
+    fn load_project_config(&self, project_root: &Path) -> ProjectResolverResult;
+
+    fn classify_file_membership(
+        &self,
+        repo_relative_path: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn resolve_module_or_package(
+        &self,
+        import_specifier: &str,
+        from_file: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn resolve_include_or_require(
+        &self,
+        specifier: &str,
+        from_file: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn resolve_symbol(
+        &self,
+        symbol_ref: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn resolve_call_target(
+        &self,
+        callsite: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn resolve_local_binding(
+        &self,
+        reference: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn classify_external_dependency(
+        &self,
+        root_name: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn classify_builtin_or_std(
+        &self,
+        root_name: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn classify_dynamic_unknown(
+        &self,
+        reference: &str,
+        context: &ProjectResolverContext,
+    ) -> ProjectResolverResult;
+
+    fn resolver_capabilities(&self) -> ProjectResolverCapabilities;
+
+    fn resolver_version(&self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NullProjectResolver {
+    language: Option<SourceLanguage>,
+}
+
+impl NullProjectResolver {
+    pub const fn new(language: Option<SourceLanguage>) -> Self {
+        Self { language }
+    }
+
+    pub const fn for_language(language: SourceLanguage) -> Self {
+        Self {
+            language: Some(language),
+        }
+    }
+
+    fn language_label(&self) -> Option<String> {
+        self.language.map(|language| language.as_str().to_string())
+    }
+
+    fn unsupported(
+        &self,
+        query_kind: ProjectResolverQueryKind,
+        subject: &str,
+    ) -> ProjectResolverResult {
+        ProjectResolverResult::unsupported(
+            query_kind,
+            self.resolver_version(),
+            format!("null resolver has no project resolver implementation for {subject}"),
+        )
+    }
+
+    fn not_applicable(
+        &self,
+        query_kind: ProjectResolverQueryKind,
+        subject: &str,
+    ) -> ProjectResolverResult {
+        ProjectResolverResult::not_applicable(
+            query_kind,
+            self.resolver_version(),
+            format!("null resolver reports {subject} as not applicable"),
+        )
+    }
+}
+
+impl Default for NullProjectResolver {
+    fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl ProjectResolver for NullProjectResolver {
+    fn discover_project_roots(&self, _repo_root: &Path) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::ProjectRoots,
+            "project root discovery",
+        )
+    }
+
+    fn load_project_config(&self, _project_root: &Path) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::ProjectConfig,
+            "project config loading",
+        )
+    }
+
+    fn classify_file_membership(
+        &self,
+        _repo_relative_path: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::FileMembership,
+            "project file membership",
+        )
+    }
+
+    fn resolve_module_or_package(
+        &self,
+        _import_specifier: &str,
+        _from_file: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::ModuleOrPackage,
+            "module/package resolution",
+        )
+    }
+
+    fn resolve_include_or_require(
+        &self,
+        _specifier: &str,
+        _from_file: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        match self.language {
+            Some(
+                SourceLanguage::C
+                | SourceLanguage::Cpp
+                | SourceLanguage::Ruby
+                | SourceLanguage::Php,
+            ) => self.unsupported(
+                ProjectResolverQueryKind::IncludeOrRequire,
+                "include/require resolution",
+            ),
+            _ => self.not_applicable(
+                ProjectResolverQueryKind::IncludeOrRequire,
+                "include/require resolution",
+            ),
+        }
+    }
+
+    fn resolve_symbol(
+        &self,
+        _symbol_ref: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        self.unsupported(ProjectResolverQueryKind::Symbol, "symbol resolution")
+    }
+
+    fn resolve_call_target(
+        &self,
+        _callsite: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::CallTarget,
+            "call target resolution",
+        )
+    }
+
+    fn resolve_local_binding(
+        &self,
+        _reference: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::LocalBinding,
+            "local binding resolution",
+        )
+    }
+
+    fn classify_external_dependency(
+        &self,
+        _root_name: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::ExternalDependency,
+            "external dependency classification",
+        )
+    }
+
+    fn classify_builtin_or_std(
+        &self,
+        _root_name: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        self.unsupported(
+            ProjectResolverQueryKind::BuiltinOrStd,
+            "builtin/std classification",
+        )
+    }
+
+    fn classify_dynamic_unknown(
+        &self,
+        reference: &str,
+        _context: &ProjectResolverContext,
+    ) -> ProjectResolverResult {
+        ProjectResolverResult::dynamic_unknown(
+            ProjectResolverQueryKind::DynamicUnknown,
+            self.resolver_version(),
+            format!("null resolver cannot resolve dynamic/computed reference {reference:?}"),
+        )
+    }
+
+    fn resolver_capabilities(&self) -> ProjectResolverCapabilities {
+        ProjectResolverCapabilities {
+            interface_version: PROJECT_RESOLVER_INTERFACE_VERSION.to_string(),
+            resolver: "null_project_resolver".to_string(),
+            resolver_version: self.resolver_version().to_string(),
+            language: self.language_label(),
+            can_return_exact: false,
+            project_roots: ProjectResolverStatus::Unsupported,
+            project_config: ProjectResolverStatus::Unsupported,
+            file_membership: ProjectResolverStatus::Unsupported,
+            module_or_package: ProjectResolverStatus::Unsupported,
+            include_or_require: match self.language {
+                Some(
+                    SourceLanguage::C
+                    | SourceLanguage::Cpp
+                    | SourceLanguage::Ruby
+                    | SourceLanguage::Php,
+                ) => ProjectResolverStatus::Unsupported,
+                _ => ProjectResolverStatus::NotApplicable,
+            },
+            symbol: ProjectResolverStatus::Unsupported,
+            call_target: ProjectResolverStatus::Unsupported,
+            local_binding: ProjectResolverStatus::Unsupported,
+            external_dependency: ProjectResolverStatus::Unsupported,
+            builtin_or_std: ProjectResolverStatus::Unsupported,
+            dynamic_unknown: ProjectResolverStatus::DynamicUnknown,
+        }
+    }
+
+    fn resolver_version(&self) -> &'static str {
+        NULL_PROJECT_RESOLVER_VERSION
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -608,13 +1419,91 @@ const JS_TS_ENTITY_KINDS: &[EntityKind] = &[
     EntityKind::Assertion,
 ];
 
-const TIER1_ENTITY_KINDS: &[EntityKind] = &[
+const JAVA_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::File,
+    EntityKind::Package,
+    EntityKind::Module,
+    EntityKind::Class,
+    EntityKind::Interface,
+    EntityKind::Enum,
+    EntityKind::Method,
+    EntityKind::Constructor,
+    EntityKind::Field,
+    EntityKind::Parameter,
+    EntityKind::LocalVariable,
+    EntityKind::Import,
+    EntityKind::Export,
+    EntityKind::Type,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::TestFile,
+    EntityKind::TestCase,
+    EntityKind::Assertion,
+];
+
+const CSHARP_ENTITY_KINDS: &[EntityKind] = &[
     EntityKind::File,
     EntityKind::Module,
     EntityKind::Class,
     EntityKind::Interface,
-    EntityKind::Trait,
     EntityKind::Enum,
+    EntityKind::Method,
+    EntityKind::Constructor,
+    EntityKind::Field,
+    EntityKind::Property,
+    EntityKind::Parameter,
+    EntityKind::LocalVariable,
+    EntityKind::Import,
+    EntityKind::Export,
+    EntityKind::Type,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::TestFile,
+    EntityKind::TestCase,
+    EntityKind::Assertion,
+];
+
+const C_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::File,
+    EntityKind::Module,
+    EntityKind::Class,
+    EntityKind::Function,
+    EntityKind::Parameter,
+    EntityKind::LocalVariable,
+    EntityKind::Import,
+    EntityKind::Export,
+    EntityKind::Type,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::TestFile,
+    EntityKind::TestCase,
+    EntityKind::Assertion,
+];
+
+const CPP_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::File,
+    EntityKind::Module,
+    EntityKind::Class,
+    EntityKind::Function,
+    EntityKind::Method,
+    EntityKind::Constructor,
+    EntityKind::Field,
+    EntityKind::Parameter,
+    EntityKind::LocalVariable,
+    EntityKind::Import,
+    EntityKind::Export,
+    EntityKind::Type,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::TestFile,
+    EntityKind::TestCase,
+    EntityKind::Assertion,
+];
+
+const RUBY_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::File,
+    EntityKind::Module,
+    EntityKind::Class,
     EntityKind::Function,
     EntityKind::Method,
     EntityKind::Constructor,
@@ -622,6 +1511,37 @@ const TIER1_ENTITY_KINDS: &[EntityKind] = &[
     EntityKind::LocalVariable,
     EntityKind::Import,
     EntityKind::Export,
+    EntityKind::Type,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::TestFile,
+    EntityKind::TestCase,
+    EntityKind::Assertion,
+    EntityKind::Mock,
+    EntityKind::Stub,
+];
+
+const PHP_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::File,
+    EntityKind::Module,
+    EntityKind::Class,
+    EntityKind::Interface,
+    EntityKind::Trait,
+    EntityKind::Function,
+    EntityKind::Method,
+    EntityKind::Constructor,
+    EntityKind::Parameter,
+    EntityKind::LocalVariable,
+    EntityKind::Import,
+    EntityKind::Export,
+    EntityKind::Type,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::TestFile,
+    EntityKind::TestCase,
+    EntityKind::Assertion,
+    EntityKind::Mock,
+    EntityKind::Stub,
 ];
 
 const GENERIC_TIER3_ENTITY_KINDS: &[EntityKind] = &[
@@ -646,6 +1566,126 @@ const GENERIC_TIER3_ENTITY_KINDS: &[EntityKind] = &[
     EntityKind::Expression,
 ];
 
+const RUST_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::File,
+    EntityKind::Module,
+    EntityKind::Class,
+    EntityKind::Trait,
+    EntityKind::Enum,
+    EntityKind::Type,
+    EntityKind::Function,
+    EntityKind::Method,
+    EntityKind::Parameter,
+    EntityKind::LocalVariable,
+    EntityKind::Import,
+    EntityKind::Export,
+    EntityKind::TestFile,
+    EntityKind::TestSuite,
+    EntityKind::TestCase,
+    EntityKind::Fixture,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::Assertion,
+];
+
+const JAVA_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::Asserts,
+    RelationKind::Mocks,
+    RelationKind::Stubs,
+];
+
+const CSHARP_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::Asserts,
+    RelationKind::Mocks,
+    RelationKind::Stubs,
+];
+
+const C_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::Asserts,
+];
+
+const CPP_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::Asserts,
+];
+
+const RUBY_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::Asserts,
+    RelationKind::Mocks,
+    RelationKind::Stubs,
+];
+
+const PHP_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::Asserts,
+    RelationKind::Mocks,
+    RelationKind::Stubs,
+];
+
 const GENERIC_TIER3_RELATIONS: &[RelationKind] = &[
     RelationKind::Contains,
     RelationKind::DefinedIn,
@@ -659,6 +1699,67 @@ const GENERIC_TIER3_RELATIONS: &[RelationKind] = &[
     RelationKind::Argument1,
     RelationKind::ArgumentN,
     RelationKind::FlowsTo,
+];
+
+const RUST_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::FlowsTo,
+    RelationKind::Asserts,
+];
+
+const GO_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::File,
+    EntityKind::Module,
+    EntityKind::Package,
+    EntityKind::Class,
+    EntityKind::Interface,
+    EntityKind::Function,
+    EntityKind::Method,
+    EntityKind::Parameter,
+    EntityKind::LocalVariable,
+    EntityKind::Import,
+    EntityKind::Export,
+    EntityKind::CallSite,
+    EntityKind::Expression,
+    EntityKind::ReturnSite,
+    EntityKind::Task,
+    EntityKind::TestFile,
+    EntityKind::TestSuite,
+    EntityKind::TestCase,
+    EntityKind::Assertion,
+];
+
+const GO_RELATIONS: &[RelationKind] = &[
+    RelationKind::Contains,
+    RelationKind::DefinedIn,
+    RelationKind::Defines,
+    RelationKind::Declares,
+    RelationKind::Imports,
+    RelationKind::Exports,
+    RelationKind::Calls,
+    RelationKind::Callee,
+    RelationKind::Argument0,
+    RelationKind::Argument1,
+    RelationKind::ArgumentN,
+    RelationKind::Returns,
+    RelationKind::ReturnsTo,
+    RelationKind::Reads,
+    RelationKind::Writes,
+    RelationKind::Mutates,
+    RelationKind::AssignedFrom,
+    RelationKind::FlowsTo,
+    RelationKind::Spawns,
+    RelationKind::Asserts,
 ];
 
 const JS_EXTRACTORS: &[ExtractorCapability] = &[
@@ -824,37 +1925,851 @@ const GENERIC_TIER3_EXTRACTORS: &[ExtractorCapability] = &[
     },
 ];
 
-const GENERIC_TIER1_EXTRACTORS: &[ExtractorCapability] = &[ExtractorCapability {
-    name: "tree-sitter-language-frontend",
-    exactness: Exactness::ParserVerified,
-    supported_relations: &[
-        RelationKind::Contains,
-        RelationKind::DefinedIn,
-        RelationKind::Defines,
-        RelationKind::Declares,
-        RelationKind::Imports,
-        RelationKind::Exports,
-    ],
-    known_limitations: &["syntax/entities only; package/import resolution remains unsupported"],
-}];
+const PYTHON_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-python-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &[
+            "Python functions/classes/methods/import syntax are parser facts; import target resolution is not graph proof",
+        ],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-python-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+        ],
+        known_limitations: &[
+            "same-file direct call syntax can be parser verified when the declaration is in parser scope",
+            "cross-file, dynamic, imported, or runtime-dispatched calls are retained as static_heuristic or unknown evidence",
+        ],
+    },
+    ExtractorCapability {
+        name: "python-project-aware-unresolved-classifier",
+        exactness: Exactness::StaticHeuristic,
+        supported_relations: &[RelationKind::Imports, RelationKind::Calls, RelationKind::Callee],
+        known_limitations: &[
+            "pyproject/setup.cfg/setup.py dependency and sibling-module classification is diagnostic evidence only",
+            "classification does not create resolved module/package graph proof",
+        ],
+    },
+];
+
+const GO_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-go-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &[
+            "Go package, import, function, method, struct, and interface syntax are parser facts; package/module target resolution is diagnostic-only without go list/go/types provenance",
+        ],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-go-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Spawns,
+            RelationKind::Asserts,
+        ],
+        known_limitations: &[
+            "same-file direct calls can be parser verified when declarations are in parser scope",
+            "selector calls, interface dispatch, cgo, channel behavior, imported packages, and cross-file targets require go/types, go list, build tags, or runtime context",
+        ],
+    },
+    ExtractorCapability {
+        name: "go-mod-diagnostic-unresolved-classifier",
+        exactness: Exactness::StaticHeuristic,
+        supported_relations: &[RelationKind::Imports, RelationKind::Calls, RelationKind::Callee],
+        known_limitations: &[
+            "go.mod module and require classification is diagnostic evidence only",
+            "classification does not create resolved package/module graph proof or compiler-verified caller/callee proof",
+        ],
+    },
+];
+
+const RUST_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-rust-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &[
+            "Rust modules, use imports, structs, enums, traits, impl-local methods, functions, and type aliases are parser facts; Cargo target resolution is diagnostic-only without cargo metadata/rust-analyzer provenance",
+        ],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-rust-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::FlowsTo,
+            RelationKind::Asserts,
+        ],
+        known_limitations: &[
+            "same-file direct calls and parser-scope inherent method calls can be parser verified when declarations are visible",
+            "trait dispatch, macros, cfg-gated items, unsafe effects, cross-crate paths, and cross-file targets require cargo metadata, rust-analyzer, compiler, macro expansion, build configuration, or runtime context",
+        ],
+    },
+    ExtractorCapability {
+        name: "cargo-toml-diagnostic-unresolved-classifier",
+        exactness: Exactness::StaticHeuristic,
+        supported_relations: &[RelationKind::Imports, RelationKind::Calls, RelationKind::Callee],
+        known_limitations: &[
+            "Cargo.toml package and dependency roots classify unresolved-reference evidence only",
+            "classification does not create resolved crate/module graph proof or linter blockers",
+        ],
+    },
+];
+
+const JAVA_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-language-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &["Java package/import declarations are parser syntax facts; classpath resolution remains unsupported"],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-java-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Asserts,
+            RelationKind::Mocks,
+            RelationKind::Stubs,
+        ],
+        known_limitations: &[
+            "Java direct method calls and object creation are syntax facts only",
+            "callee target resolution, overloads, virtual dispatch, reflection, DI, and annotation processing require future compiler/build support",
+        ],
+    },
+];
+
+const CSHARP_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-language-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &["C# namespace/using declarations are parser syntax facts; MSBuild/Roslyn resolution remains unsupported"],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-csharp-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Asserts,
+            RelationKind::Mocks,
+            RelationKind::Stubs,
+        ],
+        known_limitations: &[
+            "C# direct invocation and object creation are syntax facts only",
+            "callee target resolution, overloads, virtual dispatch, reflection, dependency injection, and source generator expansion require future Roslyn/MSBuild/runtime support",
+        ],
+    },
+];
+
+const C_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-language-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &["C include declarations are parser syntax facts; compile database and include-path resolution remain unsupported"],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-c-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Asserts,
+        ],
+        known_limitations: &[
+            "C direct call syntax is recorded without compiler-resolved caller/callee proof",
+            "function pointers, macros, and preprocessor branches require future compiler/preprocessor/runtime support",
+        ],
+    },
+];
+
+const CPP_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-language-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &["C++ include, namespace, class, struct, function, method, constructor, destructor, operator, and template syntax are parser facts; compile database and include-path resolution remain unsupported"],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-cpp-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Asserts,
+        ],
+        known_limitations: &[
+            "C++ direct and member call syntax is recorded without compiler-resolved overload, ADL, virtual dispatch, template instantiation, or caller/callee proof",
+            "function pointers, macros, templates, and preprocessor branches require future compiler/preprocessor/runtime support",
+        ],
+    },
+];
+
+const RUBY_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-language-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &["Ruby module/class/method and require/load syntax are parser facts; load path, Bundler, Rails autoload, and runtime method lookup remain unsupported"],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-ruby-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Asserts,
+            RelationKind::Mocks,
+            RelationKind::Stubs,
+        ],
+        known_limitations: &[
+            "Ruby direct call syntax is recorded without runtime method lookup, method_missing, open-class, autoload, Bundler, or Rails resolver proof",
+            "Rails route and framework conventions are retained as heuristic or unknown boundary evidence only",
+        ],
+    },
+];
+
+const PHP_EXTRACTORS: &[ExtractorCapability] = &[
+    ExtractorCapability {
+        name: "tree-sitter-language-frontend",
+        exactness: Exactness::ParserVerified,
+        supported_relations: STRUCTURAL_RELATIONS,
+        known_limitations: &["PHP namespace/use/include/require/class/interface/trait/function/method syntax are parser facts; Composer/autoload/include-path resolution remains unsupported"],
+    },
+    ExtractorCapability {
+        name: "tree-sitter-php-call-syntax",
+        exactness: Exactness::ParserVerified,
+        supported_relations: &[
+            RelationKind::Calls,
+            RelationKind::Callee,
+            RelationKind::Argument0,
+            RelationKind::Argument1,
+            RelationKind::ArgumentN,
+            RelationKind::Asserts,
+            RelationKind::Mocks,
+            RelationKind::Stubs,
+        ],
+        known_limitations: &[
+            "PHP function, static, member, and object-creation call syntax is recorded without runtime method lookup or autoload proof",
+            "magic methods, dynamic includes/functions, framework containers, Composer autoload, and mixed PHP/HTML runtime behavior remain unknown or heuristic",
+        ],
+    },
+];
 
 const JS_LIMITATIONS: &[&str] = &[
-    "parser-verified local calls can be exact only when target declarations are in scope",
-    "cross-file import alias verification is not enabled for JavaScript in this tier",
+    "ESM imports/exports, CommonJS require/module.exports, direct calls, read/write syntax, and local dataflow hints are parser or heuristic facts unless resolver provenance proves stronger semantics",
+    "package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence, not resolved package/module graph proof",
+    "compiler_verified, lsp_verified, caller/callee exactness, and local binding exactness are unavailable for JavaScript until a resolver/runtime model runs and records provenance",
+    "dynamic import, computed property/call, prototype mutation, monkeypatching, eval/reflection, framework conventions, and bundler/runtime aliases remain unknown or heuristic",
+    "MVP4 local-flow packet support and flow_proof remain not_implemented for JavaScript; the active packet slice is TypeScript .ts production only",
+];
+const JSX_LIMITATIONS: &[&str] = &[
+    "JSX component declarations/usages, imports, exports, direct calls, event-handler syntax, and props syntax are parser or heuristic facts unless resolver provenance proves stronger semantics",
+    "package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence, not resolved package/module graph proof",
+    "compiler_verified, lsp_verified, caller/callee exactness, and local binding exactness are unavailable for JSX until a resolver/runtime model runs and records provenance",
+    "dynamic props, event handlers, component resolution, framework conventions, dynamic import, computed property/call, prototype mutation, monkeypatching, eval/reflection, and bundler/runtime aliases remain unknown or heuristic",
+    "MVP4 local-flow packet support and flow_proof remain not_implemented for JSX; the active packet slice is TypeScript .ts production only",
 ];
 const TS_LIMITATIONS: &[&str] = &[
-    "compiler resolver is optional and unavailable when Node or TypeScript is absent",
+    "tsconfig, path aliases, module resolution, symbol resolution, and call target resolution are compiler facts only when the optional TypeScript helper actually runs and records provenance",
+    ".d.ts, decorator, dynamic import, computed property, and framework/component runtime behavior remain unsupported, unknown, or heuristic unless source-spanned compiler facts prove them",
     "parser-only fallback preserves exactness labels and does not fake compiler proof",
+    "local binding/read-write/dataflow and local-flow packet support are claimable only for the current TypeScript .ts production slice",
+];
+const TSX_LIMITATIONS: &[&str] = &[
+    "TSX component declarations, JSX element references, imports, exports, props syntax, and local calls are parser facts unless compiler provenance proves stronger semantics",
+    "tsconfig, path aliases, module resolution, symbol resolution, and call target resolution are compiler facts only when the optional TypeScript helper actually runs and records provenance",
+    "event handlers, React/framework runtime behavior, dynamic import, computed property, and component resolution remain unknown or heuristic unless source-spanned compiler/runtime facts prove them",
+    "local binding exactness requires compiler evidence; read/write facts are parser-only and local dataflow remains heuristic for TSX",
+    "MVP4 local-flow packet support and flow_proof remain not_implemented for TSX; the active packet slice is TypeScript .ts production only",
 ];
 const TIER3_LIMITATIONS: &[&str] = &[
     "caller/callee extraction is conservative and parser-level only",
     "cross-file calls are not compiler verified",
     "dataflow, security, and test impact remain explicitly unsupported",
 ];
-const TIER1_LIMITATIONS: &[&str] = &[
-    "syntax/entity extraction only",
-    "imports are recorded only when the grammar exposes explicit import/use/include nodes",
-    "calls, dataflow, security, and test impact are explicitly unsupported in this tier",
+
+const PYTHON_LIMITATIONS: &[&str] = &[
+    "syntax/entity/import/from-import/decorator/type-hint/direct-call extraction is parser-only unless a local parser-scope declaration is proven",
+    "pyproject/setup.cfg/setup.py dependency and sibling-module classification is diagnostic evidence, not resolved package/module graph proof",
+    "importlib, __import__, getattr/setattr, monkeypatch/open runtime mutation, and dynamic dispatch remain unknown/runtime boundaries",
+    "read/write/dataflow and local-flow packets remain unsupported for Python",
+];
+
+const GO_LIMITATIONS: &[&str] = &[
+    "syntax/entity/package/import/function/method/struct/interface/direct-call/goroutine extraction is parser-only unless a local parser-scope declaration is proven",
+    "go.mod module/require and sibling-file classification is diagnostic evidence, not resolved package/module graph proof",
+    "selector dispatch, interface targets, build tags, cgo, channel behavior, and imported package targets require future go list/go/types/build/runtime support",
+    "local-flow packets remain unsupported for Go",
+];
+
+const RUST_LIMITATIONS: &[&str] = &[
+    "syntax/entity/module/use/function/method/impl/trait/type/direct-call extraction is parser-only unless a same-file parser-scope declaration is proven",
+    "Cargo.toml package/dependency and sibling-module classification is diagnostic evidence, not resolved crate/module graph proof",
+    "trait dispatch, macro expansion, cfg/feature-gated code, unsafe semantics, cross-crate targets, and rust-analyzer/cargo metadata resolution require future compiler/build/macro/runtime support",
+    "local-flow packets remain unsupported for Rust",
+];
+
+const JAVA_LIMITATIONS: &[&str] = &[
+    "syntax/entity/package/import/static-import extraction is parser-only",
+    "direct method call and object creation syntax is recorded without caller/callee proof",
+    "classpath, overload, virtual dispatch, reflection, annotation processing, and DI require future compiler/build or runtime support",
+    "read/write/dataflow and local-flow packets remain unsupported for Java",
+];
+
+const CSHARP_LIMITATIONS: &[&str] = &[
+    "syntax/entity/namespace/using extraction is parser-only",
+    "direct invocation and object creation syntax is recorded without caller/callee proof",
+    "Roslyn semantic model, MSBuild workspace resolution, overload dispatch, reflection, dependency injection, and source generators require future compiler/build or runtime support",
+    "read/write/dataflow and local-flow packets remain unsupported for C#",
+];
+
+const C_LIMITATIONS: &[&str] = &[
+    "syntax/entity/include/function/struct/typedef extraction is parser-only",
+    "direct call syntax is recorded without compiler-resolved caller/callee proof",
+    "compile database resolution, include-path resolution, macro expansion, inactive branch proof, and function pointer targets require future compiler/preprocessor/runtime support",
+    "read/write/dataflow and local-flow packets remain unsupported for C",
+];
+
+const CPP_LIMITATIONS: &[&str] = &[
+    "syntax/entity/include/namespace/class/struct/function/method/constructor/destructor/operator/template extraction is parser-only",
+    "direct and member call syntax is recorded without compiler-resolved caller/callee proof",
+    "compile database resolution, include-path resolution, overload resolution, ADL, virtual dispatch, template instantiation, macro expansion, inactive branch proof, and function pointer targets require future compiler/preprocessor/runtime support",
+    "read/write/dataflow and local-flow packets remain unsupported for C++",
+];
+
+const RUBY_LIMITATIONS: &[&str] = &[
+    "syntax/entity/module/class/method/require/load extraction is parser-only",
+    "direct method call syntax is recorded without runtime caller/callee proof",
+    "Ruby load path, Bundler, Rails autoload, method_missing, send/public_send, reflection, open classes, monkeypatching, and Rails route conventions require future runtime/framework support",
+    "read/write/dataflow and local-flow packets remain unsupported for Ruby",
+];
+
+const PHP_LIMITATIONS: &[&str] = &[
+    "syntax/entity/namespace/use/include/require/class/interface/trait/function/method extraction is parser-only",
+    "function, static, member, and object-creation call syntax is recorded without runtime caller/callee proof",
+    "Composer autoload, include-path resolution, magic methods, variable functions, framework containers, and mixed PHP/HTML runtime behavior require future runtime/framework support",
+    "read/write/dataflow and local-flow packets remain unsupported for PHP",
+];
+
+macro_rules! cap {
+    ($flag:ident, $status:ident) => {
+        LanguageCapability {
+            flag: LanguageCapabilityFlag::$flag,
+            status: LanguageCapabilityStatus::$status,
+            scope: LanguageCapabilityScope::LanguageFrontend,
+        }
+    };
+}
+
+macro_rules! scoped_cap {
+    ($flag:ident, $status:ident, $scope:ident) => {
+        LanguageCapability {
+            flag: LanguageCapabilityFlag::$flag,
+            status: LanguageCapabilityStatus::$status,
+            scope: LanguageCapabilityScope::$scope,
+        }
+    };
+}
+
+const JS_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, DiagnosticOnly),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, DiagnosticOnly),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresRuntime),
+    cap!(CompilerVerified, NotImplemented),
+    cap!(LspVerified, NotImplemented),
+    cap!(ProjectConfigResolved, DiagnosticOnly),
+    cap!(LocalBindingResolved, NotImplemented),
+    cap!(ReadWriteExtracted, SupportedParserOnly),
+    cap!(LocalDataflowDerived, SupportedHeuristic),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, SupportedHeuristic),
+    cap!(RouteExact, Unsupported),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, SupportedHeuristic),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, NotApplicable),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
+];
+
+const JSX_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, DiagnosticOnly),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, DiagnosticOnly),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresRuntime),
+    cap!(CompilerVerified, NotImplemented),
+    cap!(LspVerified, NotImplemented),
+    cap!(ProjectConfigResolved, DiagnosticOnly),
+    cap!(LocalBindingResolved, NotImplemented),
+    cap!(ReadWriteExtracted, SupportedParserOnly),
+    cap!(LocalDataflowDerived, SupportedHeuristic),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, SupportedHeuristic),
+    cap!(RouteExact, Unsupported),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, SupportedHeuristic),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, NotApplicable),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
+];
+
+const TYPESCRIPT_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresCompiler),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, NotImplemented),
+    cap!(ProjectConfigResolved, RequiresCompiler),
+    scoped_cap!(
+        LocalBindingResolved,
+        SupportedExact,
+        TypeScriptProductionTsOnly
+    ),
+    scoped_cap!(
+        ReadWriteExtracted,
+        SupportedExact,
+        TypeScriptProductionTsOnly
+    ),
+    scoped_cap!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        TypeScriptProductionTsOnly
+    ),
+    scoped_cap!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        TypeScriptProductionTsOnly
+    ),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, SupportedHeuristic),
+    cap!(RouteExact, Unsupported),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, SupportedHeuristic),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
+];
+
+const TSX_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresCompiler),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, NotImplemented),
+    cap!(ProjectConfigResolved, RequiresCompiler),
+    cap!(LocalBindingResolved, RequiresCompiler),
+    cap!(ReadWriteExtracted, SupportedParserOnly),
+    cap!(LocalDataflowDerived, SupportedHeuristic),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, SupportedHeuristic),
+    cap!(RouteExact, Unsupported),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, SupportedHeuristic),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
+];
+
+const TIER3_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, Unsupported),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, Unsupported),
+    cap!(CompilerVerified, NotImplemented),
+    cap!(LspVerified, NotImplemented),
+    cap!(ProjectConfigResolved, NotImplemented),
+    cap!(LocalBindingResolved, NotImplemented),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, WarningOnly),
+    cap!(FrameworkHeuristic, WarningOnly),
+    cap!(RouteExact, NotImplemented),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, Unknown),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
+];
+
+const PYTHON_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, DiagnosticOnly),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, Unsupported),
+    cap!(CompilerVerified, NotApplicable),
+    cap!(LspVerified, NotImplemented),
+    cap!(ProjectConfigResolved, DiagnosticOnly),
+    cap!(LocalBindingResolved, SupportedParserOnly),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, WarningOnly),
+    cap!(FrameworkHeuristic, WarningOnly),
+    cap!(RouteExact, NotImplemented),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, NotApplicable),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
+];
+
+const GO_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, DiagnosticOnly),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, NotImplemented),
+    cap!(ProjectConfigResolved, DiagnosticOnly),
+    cap!(LocalBindingResolved, RequiresCompiler),
+    cap!(ReadWriteExtracted, SupportedParserOnly),
+    cap!(LocalDataflowDerived, SupportedHeuristic),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, WarningOnly),
+    cap!(RouteExact, NotImplemented),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, RequiresBuildDatabase),
+    cap!(Unsupported, Unsupported),
+];
+
+const RUST_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, DiagnosticOnly),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, RequiresLsp),
+    cap!(ProjectConfigResolved, DiagnosticOnly),
+    cap!(LocalBindingResolved, SupportedParserOnly),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, SupportedHeuristic),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, WarningOnly),
+    cap!(RouteExact, NotImplemented),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, RequiresMacroExpansion),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, RequiresBuildDatabase),
+    cap!(Unsupported, Unsupported),
+];
+
+const JAVA_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresCompiler),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, RequiresLsp),
+    cap!(ProjectConfigResolved, RequiresCompiler),
+    cap!(LocalBindingResolved, RequiresCompiler),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, WarningOnly),
+    cap!(RouteExact, NotApplicable),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, RequiresBuildDatabase),
+    cap!(Unsupported, Unsupported),
+];
+
+const CSHARP_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresCompiler),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, RequiresLsp),
+    cap!(ProjectConfigResolved, RequiresCompiler),
+    cap!(LocalBindingResolved, RequiresCompiler),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, WarningOnly),
+    cap!(RouteExact, NotApplicable),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, RequiresBuildDatabase),
+    cap!(Unsupported, Unsupported),
+];
+
+const C_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresBuildDatabase),
+    cap!(IncludeResolved, RequiresPreprocessor),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, RequiresLsp),
+    cap!(ProjectConfigResolved, RequiresBuildDatabase),
+    cap!(LocalBindingResolved, RequiresCompiler),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, NotApplicable),
+    cap!(RouteExact, NotApplicable),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, RequiresMacroExpansion),
+    cap!(PreprocessorUnknown, RequiresPreprocessor),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, RequiresBuildDatabase),
+    cap!(Unsupported, Unsupported),
+];
+
+const CPP_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresBuildDatabase),
+    cap!(IncludeResolved, RequiresPreprocessor),
+    cap!(RequireResolved, NotApplicable),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresCompiler),
+    cap!(CompilerVerified, RequiresCompiler),
+    cap!(LspVerified, RequiresLsp),
+    cap!(ProjectConfigResolved, RequiresBuildDatabase),
+    cap!(LocalBindingResolved, RequiresCompiler),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, NotApplicable),
+    cap!(RouteExact, NotApplicable),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, RequiresMacroExpansion),
+    cap!(PreprocessorUnknown, RequiresPreprocessor),
+    cap!(CompilerRequired, RequiresCompiler),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, RequiresBuildDatabase),
+    cap!(Unsupported, Unsupported),
+];
+
+const PHP_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresRuntime),
+    cap!(IncludeResolved, RequiresRuntime),
+    cap!(RequireResolved, RequiresRuntime),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresRuntime),
+    cap!(CompilerVerified, NotApplicable),
+    cap!(LspVerified, RequiresLsp),
+    cap!(ProjectConfigResolved, RequiresRuntime),
+    cap!(LocalBindingResolved, RequiresRuntime),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, SupportedHeuristic),
+    cap!(RouteExact, NotImplemented),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, NotApplicable),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
+];
+
+const RUBY_CAPABILITIES: &[LanguageCapability] = &[
+    cap!(SyntaxExact, SupportedParserOnly),
+    cap!(SpanExact, SupportedParserOnly),
+    cap!(ImportExportExtracted, SupportedParserOnly),
+    cap!(PackageOrModuleResolved, RequiresRuntime),
+    cap!(IncludeResolved, NotApplicable),
+    cap!(RequireResolved, RequiresRuntime),
+    cap!(CallExtracted, SupportedParserOnly),
+    cap!(CallerCalleeExact, RequiresRuntime),
+    cap!(CompilerVerified, NotApplicable),
+    cap!(LspVerified, RequiresLsp),
+    cap!(ProjectConfigResolved, RequiresRuntime),
+    cap!(LocalBindingResolved, RequiresRuntime),
+    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(LocalFlowPacketSupported, NotImplemented),
+    cap!(TestImpactSupported, WarningOnly),
+    cap!(TestAssertMockExtracted, SupportedHeuristic),
+    cap!(FrameworkHeuristic, SupportedHeuristic),
+    cap!(RouteExact, NotImplemented),
+    cap!(BridgeExact, NotImplemented),
+    cap!(SecurityPatternSupported, NotImplemented),
+    cap!(RuntimeUnknown, Unknown),
+    cap!(DynamicUnknown, Unknown),
+    cap!(MacroUnknown, NotApplicable),
+    cap!(PreprocessorUnknown, NotApplicable),
+    cap!(CompilerRequired, NotApplicable),
+    cap!(LspRequired, RequiresLsp),
+    cap!(BuildDatabaseRequired, NotApplicable),
+    cap!(Unsupported, Unsupported),
 ];
 
 static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
@@ -866,9 +2781,13 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
         supported_entity_kinds: JS_TS_ENTITY_KINDS,
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: JS_EXTRACTORS,
+        capabilities: JS_CAPABILITIES,
         known_limitations: JS_LIMITATIONS,
     },
     &LanguageFrontendInfo {
@@ -879,10 +2798,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
         supported_entity_kinds: JS_TS_ENTITY_KINDS,
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: JS_EXTRACTORS,
-        known_limitations: JS_LIMITATIONS,
+        capabilities: JSX_CAPABILITIES,
+        known_limitations: JSX_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "typescript",
@@ -892,9 +2815,13 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: true,
         lsp_resolver_available: false,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
         supported_entity_kinds: JS_TS_ENTITY_KINDS,
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: TS_EXTRACTORS,
+        capabilities: TYPESCRIPT_CAPABILITIES,
         known_limitations: TS_LIMITATIONS,
     },
     &LanguageFrontendInfo {
@@ -905,10 +2832,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: true,
         lsp_resolver_available: false,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
         supported_entity_kinds: JS_TS_ENTITY_KINDS,
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: TS_EXTRACTORS,
-        known_limitations: TS_LIMITATIONS,
+        capabilities: TSX_CAPABILITIES,
+        known_limitations: TSX_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "python",
@@ -918,10 +2849,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
         supported_entity_kinds: GENERIC_TIER3_ENTITY_KINDS,
         supported_relation_kinds: GENERIC_TIER3_RELATIONS,
-        extractors: GENERIC_TIER3_EXTRACTORS,
-        known_limitations: TIER3_LIMITATIONS,
+        extractors: PYTHON_EXTRACTORS,
+        capabilities: PYTHON_CAPABILITIES,
+        known_limitations: PYTHON_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "go",
@@ -931,10 +2866,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: GENERIC_TIER3_ENTITY_KINDS,
-        supported_relation_kinds: GENERIC_TIER3_RELATIONS,
-        extractors: GENERIC_TIER3_EXTRACTORS,
-        known_limitations: TIER3_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: GO_ENTITY_KINDS,
+        supported_relation_kinds: GO_RELATIONS,
+        extractors: GO_EXTRACTORS,
+        capabilities: GO_CAPABILITIES,
+        known_limitations: GO_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "rust",
@@ -944,10 +2883,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: GENERIC_TIER3_ENTITY_KINDS,
-        supported_relation_kinds: GENERIC_TIER3_RELATIONS,
-        extractors: GENERIC_TIER3_EXTRACTORS,
-        known_limitations: TIER3_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: RUST_ENTITY_KINDS,
+        supported_relation_kinds: RUST_RELATIONS,
+        extractors: RUST_EXTRACTORS,
+        capabilities: RUST_CAPABILITIES,
+        known_limitations: RUST_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "java",
@@ -957,10 +2900,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: TIER1_ENTITY_KINDS,
-        supported_relation_kinds: STRUCTURAL_RELATIONS,
-        extractors: GENERIC_TIER1_EXTRACTORS,
-        known_limitations: TIER1_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: JAVA_ENTITY_KINDS,
+        supported_relation_kinds: JAVA_RELATIONS,
+        extractors: JAVA_EXTRACTORS,
+        capabilities: JAVA_CAPABILITIES,
+        known_limitations: JAVA_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "csharp",
@@ -970,10 +2917,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: TIER1_ENTITY_KINDS,
-        supported_relation_kinds: STRUCTURAL_RELATIONS,
-        extractors: GENERIC_TIER1_EXTRACTORS,
-        known_limitations: TIER1_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: CSHARP_ENTITY_KINDS,
+        supported_relation_kinds: CSHARP_RELATIONS,
+        extractors: CSHARP_EXTRACTORS,
+        capabilities: CSHARP_CAPABILITIES,
+        known_limitations: CSHARP_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "c",
@@ -983,10 +2934,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: TIER1_ENTITY_KINDS,
-        supported_relation_kinds: STRUCTURAL_RELATIONS,
-        extractors: GENERIC_TIER1_EXTRACTORS,
-        known_limitations: TIER1_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: C_ENTITY_KINDS,
+        supported_relation_kinds: C_RELATIONS,
+        extractors: C_EXTRACTORS,
+        capabilities: C_CAPABILITIES,
+        known_limitations: C_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "cpp",
@@ -996,10 +2951,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: TIER1_ENTITY_KINDS,
-        supported_relation_kinds: STRUCTURAL_RELATIONS,
-        extractors: GENERIC_TIER1_EXTRACTORS,
-        known_limitations: TIER1_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: CPP_ENTITY_KINDS,
+        supported_relation_kinds: CPP_RELATIONS,
+        extractors: CPP_EXTRACTORS,
+        capabilities: CPP_CAPABILITIES,
+        known_limitations: CPP_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "ruby",
@@ -1009,10 +2968,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: TIER1_ENTITY_KINDS,
-        supported_relation_kinds: STRUCTURAL_RELATIONS,
-        extractors: GENERIC_TIER1_EXTRACTORS,
-        known_limitations: TIER1_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: RUBY_ENTITY_KINDS,
+        supported_relation_kinds: RUBY_RELATIONS,
+        extractors: RUBY_EXTRACTORS,
+        capabilities: RUBY_CAPABILITIES,
+        known_limitations: RUBY_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "php",
@@ -1022,14 +2985,18 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
-        supported_entity_kinds: TIER1_ENTITY_KINDS,
-        supported_relation_kinds: STRUCTURAL_RELATIONS,
-        extractors: GENERIC_TIER1_EXTRACTORS,
-        known_limitations: TIER1_LIMITATIONS,
+        project_resolver_interface_version: PROJECT_RESOLVER_INTERFACE_VERSION,
+        project_resolver: "null_project_resolver",
+        project_resolver_status: ProjectResolverStatus::Unsupported,
+        supported_entity_kinds: PHP_ENTITY_KINDS,
+        supported_relation_kinds: PHP_RELATIONS,
+        extractors: PHP_EXTRACTORS,
+        capabilities: PHP_CAPABILITIES,
+        known_limitations: PHP_LIMITATIONS,
     },
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyntaxNodeRef {
     pub kind: String,
     pub is_named: bool,
@@ -1070,7 +3037,7 @@ impl SyntaxNodeRef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SourcePoint {
     pub line: u32,
     pub column: u32,
@@ -1085,7 +3052,7 @@ impl SourcePoint {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ParseDiagnostic {
     pub message: String,
     pub node: SyntaxNodeRef,
@@ -1126,6 +3093,239 @@ impl BasicExtraction {
 
     pub fn edge_count(&self) -> usize {
         self.edges.len()
+    }
+}
+
+pub const PARSER_FACT_BUNDLE_VERSION: &str = "parser_fact_bundle_v1";
+const PARSER_FACT_BUNDLE_EXTRACTOR_VERSION: &str = "tree-sitter-parser-fact-bundle-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParserFactFamily {
+    FileIdentity,
+    EntityDeclaration,
+    SourceSpan,
+    ImportIncludeRequireUse,
+    ExportReexport,
+    DirectCallSyntax,
+    LocalReference,
+    LocalDataflow,
+    TestAssertMock,
+    SecurityPattern,
+    FrameworkHeuristic,
+    UnresolvedReference,
+    UnknownBoundary,
+    ParseDiagnostic,
+}
+
+impl ParserFactFamily {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FileIdentity => "file_identity",
+            Self::EntityDeclaration => "entity_declaration",
+            Self::SourceSpan => "source_span",
+            Self::ImportIncludeRequireUse => "import_include_require_use",
+            Self::ExportReexport => "export_reexport",
+            Self::DirectCallSyntax => "direct_call_syntax",
+            Self::LocalReference => "local_reference",
+            Self::LocalDataflow => "local_dataflow",
+            Self::TestAssertMock => "test_assert_mock",
+            Self::SecurityPattern => "security_pattern",
+            Self::FrameworkHeuristic => "framework_heuristic",
+            Self::UnresolvedReference => "unresolved_reference",
+            Self::UnknownBoundary => "unknown_boundary",
+            Self::ParseDiagnostic => "parse_diagnostic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParserUnknownBoundaryKind {
+    DynamicImport,
+    ComputedCall,
+    ComputedProperty,
+    Reflection,
+    MonkeypatchOpenClassMetaprogramming,
+    MacroInvocation,
+    MacroDefinition,
+    TemplateBoundary,
+    PreprocessorBranch,
+    BuildTagCfgBoundary,
+    CompilerRequired,
+    LspRequired,
+    RuntimeRequired,
+    UnsupportedRelation,
+}
+
+impl ParserUnknownBoundaryKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DynamicImport => "dynamic_import",
+            Self::ComputedCall => "computed_call",
+            Self::ComputedProperty => "computed_property",
+            Self::Reflection => "reflection",
+            Self::MonkeypatchOpenClassMetaprogramming => "monkeypatch_open_class_metaprogramming",
+            Self::MacroInvocation => "macro_invocation",
+            Self::MacroDefinition => "macro_definition",
+            Self::TemplateBoundary => "template_boundary",
+            Self::PreprocessorBranch => "preprocessor_branch",
+            Self::BuildTagCfgBoundary => "build_tag_cfg_boundary",
+            Self::CompilerRequired => "compiler_required",
+            Self::LspRequired => "lsp_required",
+            Self::RuntimeRequired => "runtime_required",
+            Self::UnsupportedRelation => "unsupported_relation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParserFactFileIdentity {
+    pub repo_relative_path: String,
+    pub language: String,
+    pub frontend: String,
+    pub source_hash: String,
+    pub byte_len: usize,
+    pub line_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParserFactProvenance {
+    pub extractor: String,
+    pub extractor_version: String,
+    pub resolver_version: Option<String>,
+    pub project_config_source: Option<String>,
+    pub derived: bool,
+    pub provenance_edges: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParserSourceSpanFact {
+    pub owner_id: String,
+    pub owner_kind: String,
+    pub source_span: SourceSpan,
+    pub source_role: EvidenceRole,
+    pub capability: LanguageCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ParserEntityFact {
+    pub entity: Entity,
+    pub fact_family: ParserFactFamily,
+    pub exactness: Exactness,
+    pub evidence_role: EvidenceRole,
+    pub source_role: EvidenceRole,
+    pub source_span: Option<SourceSpan>,
+    pub capability: LanguageCapability,
+    pub provenance: ParserFactProvenance,
+    pub unknown_boundary_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ParserRelationFact {
+    pub edge: Edge,
+    pub fact_family: ParserFactFamily,
+    pub exactness: Exactness,
+    pub evidence_role: EvidenceRole,
+    pub source_role: EvidenceRole,
+    pub source_span: SourceSpan,
+    pub capability: LanguageCapability,
+    pub provenance: ParserFactProvenance,
+    pub resolver_source: Option<String>,
+    pub unknown_boundary_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParserUnresolvedReferenceFact {
+    pub reference_id: String,
+    pub name: String,
+    pub relation: RelationKind,
+    pub source_span: SourceSpan,
+    pub exactness: Exactness,
+    pub source_role: EvidenceRole,
+    pub capability: LanguageCapability,
+    pub reason: String,
+    pub not_graph_proof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParserUnknownBoundaryFact {
+    pub kind: ParserUnknownBoundaryKind,
+    pub reason: String,
+    pub source_span: Option<SourceSpan>,
+    pub source_role: EvidenceRole,
+    pub capability: LanguageCapability,
+    pub fact_family: ParserFactFamily,
+    pub not_graph_proof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParserExtractionWarning {
+    pub warning_kind: String,
+    pub message: String,
+    pub source_span: Option<SourceSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParserResolverMetadata {
+    pub resolver: String,
+    pub resolver_version: String,
+    pub project_config_source: Option<String>,
+    pub status: String,
+    pub provenance: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ParserFactBundle {
+    pub bundle_version: &'static str,
+    pub file: FileRecord,
+    pub file_identity: ParserFactFileIdentity,
+    pub source_role: EvidenceRole,
+    pub parser_version: String,
+    pub extractor_version: String,
+    pub entity_facts: Vec<ParserEntityFact>,
+    pub relation_facts: Vec<ParserRelationFact>,
+    pub source_span_facts: Vec<ParserSourceSpanFact>,
+    pub import_include_require_use_facts: Vec<ParserRelationFact>,
+    pub export_reexport_facts: Vec<ParserRelationFact>,
+    pub direct_call_syntax_facts: Vec<ParserRelationFact>,
+    pub local_reference_facts: Vec<ParserRelationFact>,
+    pub local_dataflow_facts: Vec<ParserRelationFact>,
+    pub unresolved_reference_facts: Vec<ParserUnresolvedReferenceFact>,
+    pub unknown_boundary_facts: Vec<ParserUnknownBoundaryFact>,
+    pub extraction_warnings: Vec<ParserExtractionWarning>,
+    pub capability_flags_used: Vec<LanguageCapability>,
+    pub resolver_metadata: Option<ParserResolverMetadata>,
+    pub parse_diagnostics: Vec<ParseDiagnostic>,
+}
+
+impl ParserFactBundle {
+    pub fn to_basic_extraction(&self) -> BasicExtraction {
+        let mut file = self.file.clone();
+        annotate_parser_fact_bundle_file_metadata(&mut file.metadata, self);
+        let entities = self
+            .entity_facts
+            .iter()
+            .map(|fact| {
+                let mut entity = fact.entity.clone();
+                annotate_parser_fact_bundle_entity_metadata(&mut entity.metadata, self, fact);
+                entity
+            })
+            .collect::<Vec<_>>();
+        let edges = self
+            .relation_facts
+            .iter()
+            .map(|fact| {
+                let mut edge = fact.edge.clone();
+                annotate_parser_fact_bundle_edge_metadata(&mut edge.metadata, self, fact);
+                edge
+            })
+            .collect::<Vec<_>>();
+        BasicExtraction {
+            file,
+            entities,
+            edges,
+        }
     }
 }
 
@@ -1320,12 +3520,1394 @@ pub fn extract_entities_and_relations(parsed: &ParsedFile, source: &str) -> Basi
     }
 }
 
+pub fn extract_parser_fact_bundle(parsed: &ParsedFile, source: &str) -> ParserFactBundle {
+    let extraction = extract_entities_and_relations(parsed, source);
+    parser_fact_bundle_from_extraction(parsed, source, extraction)
+}
+
+pub fn parser_fact_bundle_from_extraction(
+    parsed: &ParsedFile,
+    source: &str,
+    extraction: BasicExtraction,
+) -> ParserFactBundle {
+    let registry = default_frontend_registry();
+    let frontend = registry
+        .info_for_language(parsed.language)
+        .expect("parsed language must have a registered frontend");
+    let source_role = extraction
+        .entities
+        .iter()
+        .find(|entity| entity.kind == EntityKind::File)
+        .map(|entity| evidence_role_from_metadata(&entity.metadata, "source_role"))
+        .unwrap_or(EvidenceRole::Unknown);
+    let parser_version = "tree-sitter".to_string();
+    let extractor_version = PARSER_FACT_BUNDLE_EXTRACTOR_VERSION.to_string();
+    let null_resolver = NullProjectResolver::for_language(parsed.language);
+    let null_resolver_capabilities = null_resolver.resolver_capabilities();
+    let resolver_metadata = ParserResolverMetadata {
+        resolver: null_resolver_capabilities.resolver.clone(),
+        resolver_version: null_resolver_capabilities.resolver_version.clone(),
+        project_config_source: None,
+        status: ProjectResolverStatus::Unsupported.as_str().to_string(),
+        provenance: Some(
+            "null resolver interface boundary; no resolver/compiler/LSP provenance recorded"
+                .to_string(),
+        ),
+    };
+    let file_identity = ParserFactFileIdentity {
+        repo_relative_path: parsed.repo_relative_path.clone(),
+        language: parsed.language.as_str().to_string(),
+        frontend: frontend.language_id.to_string(),
+        source_hash: content_hash(source),
+        byte_len: parsed.byte_len,
+        line_count: parsed.line_count,
+    };
+
+    let entity_by_id = extraction
+        .entities
+        .iter()
+        .map(|entity| (entity.id.as_str(), entity))
+        .collect::<BTreeMap<_, _>>();
+    let mut source_span_facts = Vec::new();
+    let mut entity_facts = Vec::new();
+    let mut relation_facts = Vec::new();
+    let mut unresolved_reference_facts = Vec::new();
+    let mut unknown_boundary_facts = Vec::new();
+    let mut unknown_boundary_keys = BTreeSet::new();
+    let mut extraction_warnings = Vec::new();
+
+    for entity in &extraction.entities {
+        let exactness = entity_fact_exactness(entity);
+        let role = evidence_role_from_metadata(&entity.metadata, "source_role");
+        let capability = parser_capability(frontend, capability_flag_for_entity(entity.kind));
+        if let Some(span) = &entity.source_span {
+            source_span_facts.push(ParserSourceSpanFact {
+                owner_id: entity.id.clone(),
+                owner_kind: "entity".to_string(),
+                source_span: span.clone(),
+                source_role: role,
+                capability: parser_capability(frontend, LanguageCapabilityFlag::SpanExact),
+            });
+        }
+        entity_facts.push(ParserEntityFact {
+            entity: entity.clone(),
+            fact_family: ParserFactFamily::EntityDeclaration,
+            exactness,
+            evidence_role: role,
+            source_role: role,
+            source_span: entity.source_span.clone(),
+            capability,
+            provenance: ParserFactProvenance {
+                extractor: entity.created_from.clone(),
+                extractor_version: extractor_version.clone(),
+                resolver_version: None,
+                project_config_source: None,
+                derived: false,
+                provenance_edges: Vec::new(),
+            },
+            unknown_boundary_reason: entity_unknown_boundary_reason(entity),
+        });
+    }
+
+    for edge in &extraction.edges {
+        let fact_family = fact_family_for_relation(edge.relation);
+        let capability = parser_capability(frontend, capability_flag_for_relation(edge.relation));
+        let exactness = effective_relation_exactness(edge);
+        if edge.derived
+            && edge.provenance_edges.is_empty()
+            && edge.exactness == Exactness::DerivedFromVerifiedEdges
+        {
+            extraction_warnings.push(ParserExtractionWarning {
+                warning_kind: "derived_relation_missing_provenance".to_string(),
+                message: format!(
+                    "derived relation {} lacks provenance_edges and is downgraded in the parser fact bundle",
+                    edge.id
+                ),
+                source_span: Some(edge.source_span.clone()),
+            });
+        }
+        let role = evidence_role_from_metadata(&edge.metadata, "source_role");
+        source_span_facts.push(ParserSourceSpanFact {
+            owner_id: edge.id.clone(),
+            owner_kind: "edge".to_string(),
+            source_span: edge.source_span.clone(),
+            source_role: role,
+            capability: parser_capability(frontend, LanguageCapabilityFlag::SpanExact),
+        });
+        if let Some(unresolved) =
+            unresolved_reference_fact_for_edge(edge, &entity_by_id, capability)
+        {
+            unresolved_reference_facts.push(unresolved);
+        }
+        if let Some(reason) = relation_unknown_boundary_reason(edge, capability) {
+            push_unknown_boundary_fact(
+                &mut unknown_boundary_facts,
+                &mut unknown_boundary_keys,
+                ParserUnknownBoundaryFact {
+                    kind: unknown_boundary_kind_for_relation(edge.relation, capability.status),
+                    reason,
+                    source_span: Some(edge.source_span.clone()),
+                    source_role: role,
+                    capability,
+                    fact_family: ParserFactFamily::UnknownBoundary,
+                    not_graph_proof: true,
+                },
+            );
+        }
+        relation_facts.push(ParserRelationFact {
+            edge: edge.clone(),
+            fact_family,
+            exactness,
+            evidence_role: role,
+            source_role: role,
+            source_span: edge.source_span.clone(),
+            capability,
+            provenance: ParserFactProvenance {
+                extractor: edge.extractor.clone(),
+                extractor_version: extractor_version.clone(),
+                resolver_version: edge_metadata_string(edge, "resolver_version"),
+                project_config_source: edge_metadata_string(edge, "project_config_source"),
+                derived: edge.derived,
+                provenance_edges: edge.provenance_edges.clone(),
+            },
+            resolver_source: edge_metadata_string(edge, "resolver_source"),
+            unknown_boundary_reason: relation_unknown_boundary_reason(edge, capability),
+        });
+    }
+
+    push_source_text_unknown_boundaries(
+        parsed,
+        source,
+        frontend,
+        source_role,
+        &mut unknown_boundary_facts,
+        &mut unknown_boundary_keys,
+    );
+    push_missing_exact_call_boundary(
+        frontend,
+        &relation_facts,
+        source_role,
+        &mut unknown_boundary_facts,
+        &mut unknown_boundary_keys,
+    );
+
+    for diagnostic in &parsed.diagnostics {
+        extraction_warnings.push(ParserExtractionWarning {
+            warning_kind: "parse_diagnostic".to_string(),
+            message: diagnostic.message.clone(),
+            source_span: Some(diagnostic.node.source_span.clone()),
+        });
+    }
+
+    let import_include_require_use_facts = relation_facts
+        .iter()
+        .filter(|fact| fact.fact_family == ParserFactFamily::ImportIncludeRequireUse)
+        .cloned()
+        .collect::<Vec<_>>();
+    let export_reexport_facts = relation_facts
+        .iter()
+        .filter(|fact| fact.fact_family == ParserFactFamily::ExportReexport)
+        .cloned()
+        .collect::<Vec<_>>();
+    let direct_call_syntax_facts = relation_facts
+        .iter()
+        .filter(|fact| fact.fact_family == ParserFactFamily::DirectCallSyntax)
+        .cloned()
+        .collect::<Vec<_>>();
+    let local_reference_facts = relation_facts
+        .iter()
+        .filter(|fact| fact.fact_family == ParserFactFamily::LocalReference)
+        .cloned()
+        .collect::<Vec<_>>();
+    let local_dataflow_facts = relation_facts
+        .iter()
+        .filter(|fact| fact.fact_family == ParserFactFamily::LocalDataflow)
+        .cloned()
+        .collect::<Vec<_>>();
+    let capability_flags_used = parser_capability_flags_used(
+        &entity_facts,
+        &relation_facts,
+        &source_span_facts,
+        &unresolved_reference_facts,
+        &unknown_boundary_facts,
+    );
+
+    ParserFactBundle {
+        bundle_version: PARSER_FACT_BUNDLE_VERSION,
+        file: extraction.file,
+        file_identity,
+        source_role,
+        parser_version,
+        extractor_version,
+        entity_facts,
+        relation_facts,
+        source_span_facts,
+        import_include_require_use_facts,
+        export_reexport_facts,
+        direct_call_syntax_facts,
+        local_reference_facts,
+        local_dataflow_facts,
+        unresolved_reference_facts,
+        unknown_boundary_facts,
+        extraction_warnings,
+        capability_flags_used,
+        resolver_metadata: Some(resolver_metadata),
+        parse_diagnostics: parsed.diagnostics.clone(),
+    }
+}
+
 pub fn extract_entities_and_core_relations(parsed: &ParsedFile, source: &str) -> BasicExtraction {
     extract_entities_and_relations(parsed, source)
 }
 
 pub fn extract_basic_entities(parsed: &ParsedFile, source: &str) -> BasicExtraction {
     extract_entities_and_relations(parsed, source)
+}
+
+fn parser_capability(
+    frontend: &LanguageFrontendInfo,
+    flag: LanguageCapabilityFlag,
+) -> LanguageCapability {
+    frontend
+        .capabilities
+        .iter()
+        .copied()
+        .find(|capability| capability.flag == flag)
+        .unwrap_or(LanguageCapability {
+            flag,
+            status: LanguageCapabilityStatus::NotImplemented,
+            scope: LanguageCapabilityScope::LanguageFrontend,
+        })
+}
+
+fn capability_flag_for_entity(kind: EntityKind) -> LanguageCapabilityFlag {
+    match kind {
+        EntityKind::Import | EntityKind::Export => LanguageCapabilityFlag::ImportExportExtracted,
+        EntityKind::CallSite => LanguageCapabilityFlag::CallExtracted,
+        EntityKind::TestFile
+        | EntityKind::TestSuite
+        | EntityKind::TestCase
+        | EntityKind::Fixture
+        | EntityKind::Mock
+        | EntityKind::Stub
+        | EntityKind::Assertion => LanguageCapabilityFlag::TestAssertMockExtracted,
+        EntityKind::Route | EntityKind::Endpoint | EntityKind::Middleware => {
+            LanguageCapabilityFlag::FrameworkHeuristic
+        }
+        EntityKind::Sanitizer | EntityKind::Validator | EntityKind::AuthPolicy => {
+            LanguageCapabilityFlag::SecurityPatternSupported
+        }
+        _ => LanguageCapabilityFlag::SyntaxExact,
+    }
+}
+
+fn capability_flag_for_relation(relation: RelationKind) -> LanguageCapabilityFlag {
+    match relation {
+        RelationKind::Imports
+        | RelationKind::Reexports
+        | RelationKind::AliasedBy
+        | RelationKind::AliasOf => LanguageCapabilityFlag::ImportExportExtracted,
+        RelationKind::Exports => LanguageCapabilityFlag::ImportExportExtracted,
+        RelationKind::Calls
+        | RelationKind::CalledBy
+        | RelationKind::Callee
+        | RelationKind::Argument0
+        | RelationKind::Argument1
+        | RelationKind::ArgumentN
+        | RelationKind::ReturnsTo
+        | RelationKind::Instantiates => LanguageCapabilityFlag::CallExtracted,
+        RelationKind::Reads
+        | RelationKind::Writes
+        | RelationKind::Mutates
+        | RelationKind::MayRead
+        | RelationKind::MayMutate => LanguageCapabilityFlag::ReadWriteExtracted,
+        RelationKind::FlowsTo
+        | RelationKind::ReachingDef
+        | RelationKind::AssignedFrom
+        | RelationKind::ControlDependsOn
+        | RelationKind::DataDependsOn => LanguageCapabilityFlag::LocalDataflowDerived,
+        RelationKind::Tests
+        | RelationKind::Asserts
+        | RelationKind::Mocks
+        | RelationKind::Stubs
+        | RelationKind::Covers
+        | RelationKind::FixturesFor => LanguageCapabilityFlag::TestAssertMockExtracted,
+        RelationKind::Authorizes
+        | RelationKind::ChecksRole
+        | RelationKind::ChecksPermission
+        | RelationKind::Sanitizes
+        | RelationKind::Validates
+        | RelationKind::TrustBoundary
+        | RelationKind::SourceOfTaint
+        | RelationKind::SinksTo => LanguageCapabilityFlag::SecurityPatternSupported,
+        RelationKind::Exposes
+        | RelationKind::ApiReaches
+        | RelationKind::AsyncReaches
+        | RelationKind::Handles
+        | RelationKind::ListensTo
+        | RelationKind::SubscribesTo => LanguageCapabilityFlag::FrameworkHeuristic,
+        _ => LanguageCapabilityFlag::SyntaxExact,
+    }
+}
+
+fn fact_family_for_relation(relation: RelationKind) -> ParserFactFamily {
+    match relation {
+        RelationKind::Imports
+        | RelationKind::AliasedBy
+        | RelationKind::AliasOf
+        | RelationKind::BelongsTo => ParserFactFamily::ImportIncludeRequireUse,
+        RelationKind::Exports | RelationKind::Reexports => ParserFactFamily::ExportReexport,
+        RelationKind::Calls
+        | RelationKind::CalledBy
+        | RelationKind::Callee
+        | RelationKind::Argument0
+        | RelationKind::Argument1
+        | RelationKind::ArgumentN
+        | RelationKind::ReturnsTo
+        | RelationKind::Instantiates => ParserFactFamily::DirectCallSyntax,
+        RelationKind::Reads
+        | RelationKind::Writes
+        | RelationKind::Mutates
+        | RelationKind::MayRead
+        | RelationKind::MayMutate => ParserFactFamily::LocalReference,
+        RelationKind::FlowsTo
+        | RelationKind::ReachingDef
+        | RelationKind::AssignedFrom
+        | RelationKind::ControlDependsOn
+        | RelationKind::DataDependsOn => ParserFactFamily::LocalDataflow,
+        RelationKind::Tests
+        | RelationKind::Asserts
+        | RelationKind::Mocks
+        | RelationKind::Stubs
+        | RelationKind::Covers
+        | RelationKind::FixturesFor => ParserFactFamily::TestAssertMock,
+        RelationKind::Authorizes
+        | RelationKind::ChecksRole
+        | RelationKind::ChecksPermission
+        | RelationKind::Sanitizes
+        | RelationKind::Validates
+        | RelationKind::TrustBoundary
+        | RelationKind::SourceOfTaint
+        | RelationKind::SinksTo => ParserFactFamily::SecurityPattern,
+        RelationKind::Exposes
+        | RelationKind::ApiReaches
+        | RelationKind::AsyncReaches
+        | RelationKind::Handles
+        | RelationKind::ListensTo
+        | RelationKind::SubscribesTo => ParserFactFamily::FrameworkHeuristic,
+        _ => ParserFactFamily::EntityDeclaration,
+    }
+}
+
+fn entity_fact_exactness(entity: &Entity) -> Exactness {
+    if entity.created_from.contains("static-heuristic")
+        || entity.metadata.contains_key("heuristic_reason")
+        || entity.metadata.contains_key("unsupported_behavior_label")
+        || entity
+            .metadata
+            .get("claim_state")
+            .and_then(|value| value.as_str())
+            == Some("partial")
+    {
+        Exactness::StaticHeuristic
+    } else {
+        Exactness::ParserVerified
+    }
+}
+
+fn effective_relation_exactness(edge: &Edge) -> Exactness {
+    if edge.derived
+        && edge.provenance_edges.is_empty()
+        && edge.exactness == Exactness::DerivedFromVerifiedEdges
+    {
+        Exactness::Inferred
+    } else {
+        edge.exactness
+    }
+}
+
+fn evidence_role_from_metadata(metadata: &Metadata, key: &str) -> EvidenceRole {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(EvidenceRole::from_source_role_label)
+        .unwrap_or(EvidenceRole::Unknown)
+}
+
+fn edge_metadata_string(edge: &Edge, key: &str) -> Option<String> {
+    edge.metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn entity_unknown_boundary_reason(entity: &Entity) -> Option<String> {
+    entity
+        .metadata
+        .get("heuristic_reason")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            entity
+                .metadata
+                .get("resolution")
+                .and_then(|value| value.as_str())
+        })
+        .map(ToString::to_string)
+}
+
+fn relation_unknown_boundary_reason(edge: &Edge, capability: LanguageCapability) -> Option<String> {
+    if edge.derived
+        && edge.provenance_edges.is_empty()
+        && edge.exactness == Exactness::DerivedFromVerifiedEdges
+    {
+        return Some("derived_relation_missing_provenance".to_string());
+    }
+    if edge.exactness == Exactness::StaticHeuristic || edge.edge_class == EdgeClass::BaseHeuristic {
+        return edge_metadata_string(edge, "resolution")
+            .or_else(|| edge_metadata_string(edge, "heuristic_reason"))
+            .or_else(|| Some("parser_static_heuristic_not_graph_proof".to_string()));
+    }
+    if matches!(
+        edge.relation,
+        RelationKind::Calls
+            | RelationKind::CalledBy
+            | RelationKind::Callee
+            | RelationKind::Argument0
+            | RelationKind::Argument1
+            | RelationKind::ArgumentN
+            | RelationKind::ReturnsTo
+            | RelationKind::Instantiates
+    ) && matches!(
+        capability.status,
+        LanguageCapabilityStatus::RequiresCompiler
+            | LanguageCapabilityStatus::RequiresLsp
+            | LanguageCapabilityStatus::RequiresRuntime
+            | LanguageCapabilityStatus::Unsupported
+            | LanguageCapabilityStatus::NotImplemented
+            | LanguageCapabilityStatus::Unknown
+    ) {
+        return Some("caller_callee_exactness_not_proven_by_parser_syntax".to_string());
+    }
+    None
+}
+
+fn unknown_boundary_kind_for_relation(
+    relation: RelationKind,
+    status: LanguageCapabilityStatus,
+) -> ParserUnknownBoundaryKind {
+    match status {
+        LanguageCapabilityStatus::RequiresCompiler => ParserUnknownBoundaryKind::CompilerRequired,
+        LanguageCapabilityStatus::RequiresLsp => ParserUnknownBoundaryKind::LspRequired,
+        LanguageCapabilityStatus::RequiresRuntime => ParserUnknownBoundaryKind::RuntimeRequired,
+        LanguageCapabilityStatus::RequiresMacroExpansion => {
+            ParserUnknownBoundaryKind::MacroInvocation
+        }
+        LanguageCapabilityStatus::RequiresPreprocessor => {
+            ParserUnknownBoundaryKind::PreprocessorBranch
+        }
+        _ if matches!(
+            relation,
+            RelationKind::Calls
+                | RelationKind::CalledBy
+                | RelationKind::Callee
+                | RelationKind::Argument0
+                | RelationKind::Argument1
+                | RelationKind::ArgumentN
+                | RelationKind::ReturnsTo
+                | RelationKind::Instantiates
+        ) =>
+        {
+            ParserUnknownBoundaryKind::ComputedCall
+        }
+        _ => ParserUnknownBoundaryKind::UnsupportedRelation,
+    }
+}
+
+fn unresolved_reference_fact_for_edge(
+    edge: &Edge,
+    entity_by_id: &BTreeMap<&str, &Entity>,
+    capability: LanguageCapability,
+) -> Option<ParserUnresolvedReferenceFact> {
+    if !(edge.exactness == Exactness::StaticHeuristic
+        || edge
+            .metadata
+            .get("resolution")
+            .and_then(|value| value.as_str())
+            == Some("unresolved_static_heuristic"))
+    {
+        return None;
+    }
+    if !matches!(
+        edge.relation,
+        RelationKind::Imports
+            | RelationKind::Calls
+            | RelationKind::Callee
+            | RelationKind::Reads
+            | RelationKind::Writes
+            | RelationKind::Mutates
+            | RelationKind::Instantiates
+    ) {
+        return None;
+    }
+    let target = entity_by_id.get(edge.tail_id.as_str())?;
+    Some(ParserUnresolvedReferenceFact {
+        reference_id: edge.tail_id.clone(),
+        name: target.name.clone(),
+        relation: edge.relation,
+        source_span: edge.source_span.clone(),
+        exactness: edge.exactness,
+        source_role: evidence_role_from_metadata(&edge.metadata, "source_role"),
+        capability,
+        reason: target
+            .metadata
+            .get("heuristic_reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unresolved_static_heuristic")
+            .to_string(),
+        not_graph_proof: true,
+    })
+}
+
+fn push_unknown_boundary_fact(
+    facts: &mut Vec<ParserUnknownBoundaryFact>,
+    keys: &mut BTreeSet<String>,
+    fact: ParserUnknownBoundaryFact,
+) {
+    let span = fact
+        .source_span
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "file".to_string());
+    let key = format!("{}::{span}::{}", fact.kind.as_str(), fact.reason);
+    if keys.insert(key) {
+        facts.push(fact);
+    }
+}
+
+fn push_source_text_unknown_boundaries(
+    parsed: &ParsedFile,
+    source: &str,
+    frontend: &LanguageFrontendInfo,
+    source_role: EvidenceRole,
+    facts: &mut Vec<ParserUnknownBoundaryFact>,
+    keys: &mut BTreeSet<String>,
+) {
+    let mut push_pattern = |pattern: &str,
+                            kind: ParserUnknownBoundaryKind,
+                            flag: LanguageCapabilityFlag,
+                            reason: &str| {
+        if let Some(span) = source_span_for_pattern(&parsed.repo_relative_path, source, pattern) {
+            push_unknown_boundary_fact(
+                facts,
+                keys,
+                ParserUnknownBoundaryFact {
+                    kind,
+                    reason: reason.to_string(),
+                    source_span: Some(span),
+                    source_role,
+                    capability: parser_capability(frontend, flag),
+                    fact_family: ParserFactFamily::UnknownBoundary,
+                    not_graph_proof: true,
+                },
+            );
+        }
+    };
+
+    if parsed.language.is_javascript_family() {
+        push_pattern(
+            "import(",
+            ParserUnknownBoundaryKind::DynamicImport,
+            LanguageCapabilityFlag::DynamicUnknown,
+            "dynamic_import_requires_runtime_or_resolver_model",
+        );
+        push_pattern(
+            "](",
+            ParserUnknownBoundaryKind::ComputedCall,
+            LanguageCapabilityFlag::DynamicUnknown,
+            "computed_call_requires_runtime_or_resolver_model",
+        );
+        push_pattern(
+            "?.[",
+            ParserUnknownBoundaryKind::ComputedProperty,
+            LanguageCapabilityFlag::DynamicUnknown,
+            "computed_property_requires_runtime_or_resolver_model",
+        );
+        push_pattern(
+            "Reflect.",
+            ParserUnknownBoundaryKind::Reflection,
+            LanguageCapabilityFlag::RuntimeUnknown,
+            "reflection_requires_runtime_model",
+        );
+        push_pattern(
+            "eval(",
+            ParserUnknownBoundaryKind::Reflection,
+            LanguageCapabilityFlag::RuntimeUnknown,
+            "eval_requires_runtime_model",
+        );
+        push_pattern(
+            ".prototype.",
+            ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+            LanguageCapabilityFlag::RuntimeUnknown,
+            "javascript_prototype_mutation_requires_runtime_model",
+        );
+        push_pattern(
+            ".prototype[",
+            ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+            LanguageCapabilityFlag::RuntimeUnknown,
+            "javascript_computed_prototype_mutation_requires_runtime_model",
+        );
+        push_pattern(
+            ".prototype,",
+            ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+            LanguageCapabilityFlag::RuntimeUnknown,
+            "javascript_prototype_monkeypatch_requires_runtime_model",
+        );
+        push_pattern(
+            "Object.setPrototypeOf(",
+            ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+            LanguageCapabilityFlag::RuntimeUnknown,
+            "javascript_prototype_reassignment_requires_runtime_model",
+        );
+    }
+    if matches!(parsed.language, SourceLanguage::Jsx | SourceLanguage::Tsx) {
+        push_pattern(
+            "{...",
+            ParserUnknownBoundaryKind::ComputedProperty,
+            LanguageCapabilityFlag::DynamicUnknown,
+            "jsx_spread_props_require_runtime_or_framework_model",
+        );
+        push_pattern(
+            "onClick={",
+            ParserUnknownBoundaryKind::RuntimeRequired,
+            LanguageCapabilityFlag::FrameworkHeuristic,
+            "jsx_event_handler_binding_is_framework_callback_not_runtime_proof",
+        );
+        push_pattern(
+            "onSubmit={",
+            ParserUnknownBoundaryKind::RuntimeRequired,
+            LanguageCapabilityFlag::FrameworkHeuristic,
+            "jsx_event_handler_binding_is_framework_callback_not_runtime_proof",
+        );
+    }
+    match parsed.language {
+        SourceLanguage::Rust => {
+            push_pattern(
+                "#[cfg",
+                ParserUnknownBoundaryKind::BuildTagCfgBoundary,
+                LanguageCapabilityFlag::BuildDatabaseRequired,
+                "rust_cfg_boundary_requires_cargo_feature_or_build_configuration",
+            );
+            push_pattern(
+                "macro_rules!",
+                ParserUnknownBoundaryKind::MacroDefinition,
+                LanguageCapabilityFlag::MacroUnknown,
+                "macro_definition_requires_macro_expansion",
+            );
+            push_pattern(
+                "!(",
+                ParserUnknownBoundaryKind::MacroInvocation,
+                LanguageCapabilityFlag::MacroUnknown,
+                "macro_call_requires_macro_expansion",
+            );
+            push_pattern(
+                "unsafe",
+                ParserUnknownBoundaryKind::CompilerRequired,
+                LanguageCapabilityFlag::CompilerRequired,
+                "rust_unsafe_requires_compiler_semantics",
+            );
+            push_pattern(
+                "dyn ",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "rust_trait_object_dispatch_requires_type_and_runtime_model",
+            );
+            push_pattern(
+                " for ",
+                ParserUnknownBoundaryKind::CompilerRequired,
+                LanguageCapabilityFlag::CompilerRequired,
+                "rust_trait_impl_dispatch_requires_type_solver",
+            );
+        }
+        SourceLanguage::Go => {
+            push_pattern(
+                "//go:build",
+                ParserUnknownBoundaryKind::BuildTagCfgBoundary,
+                LanguageCapabilityFlag::BuildDatabaseRequired,
+                "go_build_tag_requires_project_build_context",
+            );
+            push_pattern(
+                "// +build",
+                ParserUnknownBoundaryKind::BuildTagCfgBoundary,
+                LanguageCapabilityFlag::BuildDatabaseRequired,
+                "go_legacy_build_tag_requires_project_build_context",
+            );
+            push_pattern(
+                "import \"C\"",
+                ParserUnknownBoundaryKind::CompilerRequired,
+                LanguageCapabilityFlag::CompilerRequired,
+                "go_cgo_import_requires_cgo_build_context",
+            );
+            push_pattern(
+                "<-",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "go_channel_send_receive_requires_runtime_or_type_model",
+            );
+            push_pattern(
+                "chan ",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "go_channel_type_requires_runtime_or_type_model",
+            );
+            push_pattern(
+                "interface {",
+                ParserUnknownBoundaryKind::CompilerRequired,
+                LanguageCapabilityFlag::CompilerRequired,
+                "go_interface_target_requires_go_types_model",
+            );
+            push_pattern(
+                "interface{",
+                ParserUnknownBoundaryKind::CompilerRequired,
+                LanguageCapabilityFlag::CompilerRequired,
+                "go_interface_target_requires_go_types_model",
+            );
+        }
+        SourceLanguage::Python => {
+            push_pattern(
+                "importlib.import_module",
+                ParserUnknownBoundaryKind::DynamicImport,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "python_importlib_requires_runtime_import_model",
+            );
+            push_pattern(
+                "__import__(",
+                ParserUnknownBoundaryKind::DynamicImport,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "python_dunder_import_requires_runtime_import_model",
+            );
+            push_pattern(
+                "getattr(",
+                ParserUnknownBoundaryKind::ComputedProperty,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "python_getattr_requires_runtime_attribute_model",
+            );
+            push_pattern(
+                "setattr(",
+                ParserUnknownBoundaryKind::ComputedProperty,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "python_setattr_requires_runtime_attribute_model",
+            );
+            push_pattern(
+                "monkeypatch.setattr",
+                ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "python_monkeypatch_requires_test_runtime_model",
+            );
+            push_pattern(
+                "mock.patch",
+                ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "python_mock_patch_requires_runtime_patch_model",
+            );
+            push_pattern(
+                "patch.object",
+                ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "python_patch_object_requires_runtime_patch_model",
+            );
+        }
+        SourceLanguage::Java => {
+            push_pattern(
+                "Class.forName",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "java_reflection_requires_runtime_model",
+            );
+            push_pattern(
+                ".getMethod(",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "java_reflection_requires_runtime_model",
+            );
+            push_pattern(
+                "@Autowired",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "java_framework_di_requires_framework_runtime_model",
+            );
+            push_pattern(
+                "@Inject",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "java_framework_di_requires_framework_runtime_model",
+            );
+            push_pattern(
+                "annotationProcessor",
+                ParserUnknownBoundaryKind::UnsupportedRelation,
+                LanguageCapabilityFlag::CompilerRequired,
+                "java_annotation_processor_requires_build_and_compiler_model",
+            );
+        }
+        SourceLanguage::CSharp => {
+            push_pattern(
+                "Type.GetType",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "csharp_reflection_requires_runtime_model",
+            );
+            push_pattern(
+                ".GetMethod(",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "csharp_reflection_requires_runtime_model",
+            );
+            push_pattern(
+                "Activator.CreateInstance",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "csharp_reflection_requires_runtime_model",
+            );
+            push_pattern(
+                "AddSingleton<",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "csharp_dependency_injection_requires_runtime_container_model",
+            );
+            push_pattern(
+                "AddScoped<",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "csharp_dependency_injection_requires_runtime_container_model",
+            );
+            push_pattern(
+                "AddTransient<",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "csharp_dependency_injection_requires_runtime_container_model",
+            );
+            push_pattern(
+                "ISourceGenerator",
+                ParserUnknownBoundaryKind::UnsupportedRelation,
+                LanguageCapabilityFlag::CompilerRequired,
+                "csharp_source_generator_requires_compiler_generator_model",
+            );
+            push_pattern(
+                "IIncrementalGenerator",
+                ParserUnknownBoundaryKind::UnsupportedRelation,
+                LanguageCapabilityFlag::CompilerRequired,
+                "csharp_source_generator_requires_compiler_generator_model",
+            );
+            push_pattern(
+                "[Generator]",
+                ParserUnknownBoundaryKind::UnsupportedRelation,
+                LanguageCapabilityFlag::CompilerRequired,
+                "csharp_source_generator_requires_compiler_generator_model",
+            );
+        }
+        SourceLanguage::C | SourceLanguage::Cpp => {
+            push_pattern(
+                "#define",
+                ParserUnknownBoundaryKind::MacroDefinition,
+                LanguageCapabilityFlag::MacroUnknown,
+                "macro_definition_requires_macro_expansion",
+            );
+            push_pattern(
+                "(*",
+                ParserUnknownBoundaryKind::ComputedCall,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "function_pointer_target_requires_compiler_or_runtime_model",
+            );
+            push_pattern(
+                "#if",
+                ParserUnknownBoundaryKind::PreprocessorBranch,
+                LanguageCapabilityFlag::PreprocessorUnknown,
+                "preprocessor_branch_requires_preprocessor_state",
+            );
+            push_pattern(
+                "#ifdef",
+                ParserUnknownBoundaryKind::PreprocessorBranch,
+                LanguageCapabilityFlag::PreprocessorUnknown,
+                "preprocessor_branch_requires_preprocessor_state",
+            );
+            push_pattern(
+                "#ifndef",
+                ParserUnknownBoundaryKind::PreprocessorBranch,
+                LanguageCapabilityFlag::PreprocessorUnknown,
+                "preprocessor_branch_requires_preprocessor_state",
+            );
+            if parsed.language == SourceLanguage::Cpp {
+                push_pattern(
+                    "template <",
+                    ParserUnknownBoundaryKind::TemplateBoundary,
+                    LanguageCapabilityFlag::CompilerRequired,
+                    "cpp_template_instantiation_requires_compiler_model",
+                );
+                push_pattern(
+                    "template<",
+                    ParserUnknownBoundaryKind::TemplateBoundary,
+                    LanguageCapabilityFlag::CompilerRequired,
+                    "cpp_template_instantiation_requires_compiler_model",
+                );
+                push_pattern(
+                    "operator",
+                    ParserUnknownBoundaryKind::CompilerRequired,
+                    LanguageCapabilityFlag::CompilerRequired,
+                    "cpp_operator_overload_resolution_requires_compiler_model",
+                );
+                push_pattern(
+                    "virtual ",
+                    ParserUnknownBoundaryKind::RuntimeRequired,
+                    LanguageCapabilityFlag::RuntimeUnknown,
+                    "cpp_virtual_dispatch_requires_compiler_or_runtime_model",
+                );
+            }
+        }
+        SourceLanguage::Ruby => {
+            push_pattern(
+                "define_method",
+                ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "ruby_metaprogramming_requires_runtime_model",
+            );
+            push_pattern(
+                "method_missing",
+                ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "ruby_method_missing_requires_runtime_model",
+            );
+            push_pattern(
+                "class_eval",
+                ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "ruby_open_class_eval_requires_runtime_model",
+            );
+            push_pattern(
+                "send(",
+                ParserUnknownBoundaryKind::ComputedCall,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "ruby_send_requires_runtime_method_lookup",
+            );
+            push_pattern(
+                "public_send",
+                ParserUnknownBoundaryKind::ComputedCall,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "ruby_public_send_requires_runtime_method_lookup",
+            );
+            push_pattern(
+                "const_get",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "ruby_const_get_requires_runtime_constant_lookup",
+            );
+            push_pattern(
+                "autoload",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "ruby_autoload_requires_runtime_model",
+            );
+            push_pattern(
+                "class String",
+                ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "ruby_open_core_class_requires_runtime_model",
+            );
+            push_pattern(
+                "routes.draw",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "ruby_rails_route_convention_is_framework_heuristic_not_route_proof",
+            );
+            push_pattern(
+                "Rails.application.routes.draw",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "ruby_rails_route_convention_is_framework_heuristic_not_route_proof",
+            );
+        }
+        SourceLanguage::Php => {
+            push_pattern(
+                "call_user_func",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_dynamic_call_requires_runtime_model",
+            );
+            push_pattern(
+                "call_user_func_array",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_dynamic_call_requires_runtime_model",
+            );
+            push_pattern(
+                "__call",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_magic_call_requires_runtime_model",
+            );
+            push_pattern(
+                "__callStatic",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_magic_call_requires_runtime_model",
+            );
+            push_pattern(
+                "__get",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_magic_property_requires_runtime_model",
+            );
+            push_pattern(
+                "__set",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_magic_property_requires_runtime_model",
+            );
+            push_pattern(
+                "Reflection",
+                ParserUnknownBoundaryKind::Reflection,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_reflection_requires_runtime_model",
+            );
+            push_pattern(
+                "include $",
+                ParserUnknownBoundaryKind::DynamicImport,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "php_dynamic_include_requires_runtime_include_path",
+            );
+            push_pattern(
+                "include_once $",
+                ParserUnknownBoundaryKind::DynamicImport,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "php_dynamic_include_requires_runtime_include_path",
+            );
+            push_pattern(
+                "require $",
+                ParserUnknownBoundaryKind::DynamicImport,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "php_dynamic_require_requires_runtime_include_path",
+            );
+            push_pattern(
+                "require_once $",
+                ParserUnknownBoundaryKind::DynamicImport,
+                LanguageCapabilityFlag::DynamicUnknown,
+                "php_dynamic_require_requires_runtime_include_path",
+            );
+            push_pattern(
+                "spl_autoload_register",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_autoload_requires_runtime_composer_or_autoload_model",
+            );
+            push_pattern(
+                "vendor/autoload.php",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::RuntimeUnknown,
+                "php_composer_autoload_requires_runtime_project_model",
+            );
+            push_pattern(
+                "app()->make",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "php_framework_container_resolution_is_heuristic_not_graph_proof",
+            );
+            push_pattern(
+                "container->get",
+                ParserUnknownBoundaryKind::RuntimeRequired,
+                LanguageCapabilityFlag::FrameworkHeuristic,
+                "php_framework_container_resolution_is_heuristic_not_graph_proof",
+            );
+        }
+        _ => {}
+    }
+}
+
+fn push_missing_exact_call_boundary(
+    frontend: &LanguageFrontendInfo,
+    relation_facts: &[ParserRelationFact],
+    source_role: EvidenceRole,
+    facts: &mut Vec<ParserUnknownBoundaryFact>,
+    keys: &mut BTreeSet<String>,
+) {
+    if !relation_facts
+        .iter()
+        .any(|fact| fact.fact_family == ParserFactFamily::DirectCallSyntax)
+    {
+        return;
+    }
+    let capability = parser_capability(frontend, LanguageCapabilityFlag::CallerCalleeExact);
+    if capability.status == LanguageCapabilityStatus::SupportedExact {
+        return;
+    }
+    push_unknown_boundary_fact(
+        facts,
+        keys,
+        ParserUnknownBoundaryFact {
+            kind: match capability.status {
+                LanguageCapabilityStatus::RequiresCompiler => {
+                    ParserUnknownBoundaryKind::CompilerRequired
+                }
+                LanguageCapabilityStatus::RequiresLsp => ParserUnknownBoundaryKind::LspRequired,
+                LanguageCapabilityStatus::RequiresRuntime => {
+                    ParserUnknownBoundaryKind::RuntimeRequired
+                }
+                _ => ParserUnknownBoundaryKind::UnsupportedRelation,
+            },
+            reason: "parser_call_syntax_is_not_caller_callee_exactness".to_string(),
+            source_span: None,
+            source_role,
+            capability,
+            fact_family: ParserFactFamily::UnknownBoundary,
+            not_graph_proof: true,
+        },
+    );
+}
+
+fn source_span_for_pattern(path: &str, source: &str, pattern: &str) -> Option<SourceSpan> {
+    let start = source.find(pattern)?;
+    let end = start.saturating_add(pattern.len());
+    let prefix = &source[..start];
+    let start_line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+    let start_column = prefix
+        .rsplit('\n')
+        .next()
+        .map(|line| line.chars().count() as u32 + 1)
+        .unwrap_or(1);
+    let end_prefix = &source[..end.min(source.len())];
+    let end_line = end_prefix.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+    let end_column = end_prefix
+        .rsplit('\n')
+        .next()
+        .map(|line| line.chars().count() as u32 + 1)
+        .unwrap_or(start_column);
+    Some(SourceSpan::with_columns(
+        path,
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+    ))
+}
+
+fn parser_capability_flags_used(
+    entity_facts: &[ParserEntityFact],
+    relation_facts: &[ParserRelationFact],
+    source_span_facts: &[ParserSourceSpanFact],
+    unresolved_reference_facts: &[ParserUnresolvedReferenceFact],
+    unknown_boundary_facts: &[ParserUnknownBoundaryFact],
+) -> Vec<LanguageCapability> {
+    let mut capabilities = BTreeMap::new();
+    for capability in entity_facts
+        .iter()
+        .map(|fact| fact.capability)
+        .chain(relation_facts.iter().map(|fact| fact.capability))
+        .chain(source_span_facts.iter().map(|fact| fact.capability))
+        .chain(
+            unresolved_reference_facts
+                .iter()
+                .map(|fact| fact.capability),
+        )
+        .chain(unknown_boundary_facts.iter().map(|fact| fact.capability))
+    {
+        capabilities.entry(capability.flag).or_insert(capability);
+    }
+    capabilities.into_values().collect()
+}
+
+fn annotate_parser_fact_bundle_file_metadata(metadata: &mut Metadata, bundle: &ParserFactBundle) {
+    metadata.insert(
+        "parser_fact_bundle_version".to_string(),
+        PARSER_FACT_BUNDLE_VERSION.into(),
+    );
+    metadata.insert(
+        "parser_fact_bundle_extractor_version".to_string(),
+        bundle.extractor_version.clone().into(),
+    );
+    metadata.insert(
+        "parser_fact_bundle_source_role".to_string(),
+        bundle.source_role.as_str().into(),
+    );
+    metadata.insert(
+        "parser_fact_bundle_language".to_string(),
+        bundle.file_identity.language.clone().into(),
+    );
+    metadata.insert(
+        "parser_fact_bundle_frontend".to_string(),
+        bundle.file_identity.frontend.clone().into(),
+    );
+    metadata.insert(
+        "parser_fact_bundle_source_hash".to_string(),
+        bundle.file_identity.source_hash.clone().into(),
+    );
+    metadata.insert(
+        "parser_fact_bundle_unknown_boundary_count".to_string(),
+        bundle.unknown_boundary_facts.len().into(),
+    );
+    metadata.insert(
+        "parser_fact_bundle_unknown_boundary_kinds".to_string(),
+        json!(bundle
+            .unknown_boundary_facts
+            .iter()
+            .map(|fact| fact.kind.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()),
+    );
+    metadata.insert(
+        "parser_fact_bundle_capability_flags".to_string(),
+        json!(bundle
+            .capability_flags_used
+            .iter()
+            .map(|capability| capability_flag_label(capability.flag))
+            .collect::<Vec<_>>()),
+    );
+    annotate_parser_resolver_metadata(metadata, bundle);
+}
+
+fn annotate_parser_fact_bundle_entity_metadata(
+    metadata: &mut Metadata,
+    bundle: &ParserFactBundle,
+    fact: &ParserEntityFact,
+) {
+    annotate_parser_fact_bundle_common_metadata(
+        metadata,
+        bundle,
+        fact.fact_family,
+        fact.capability,
+        fact.exactness,
+        fact.source_role,
+        fact.unknown_boundary_reason.as_deref(),
+    );
+}
+
+fn annotate_parser_fact_bundle_edge_metadata(
+    metadata: &mut Metadata,
+    bundle: &ParserFactBundle,
+    fact: &ParserRelationFact,
+) {
+    annotate_parser_fact_bundle_common_metadata(
+        metadata,
+        bundle,
+        fact.fact_family,
+        fact.capability,
+        fact.exactness,
+        fact.source_role,
+        fact.unknown_boundary_reason.as_deref(),
+    );
+    if fact.provenance.derived {
+        metadata.insert(
+            "parser_fact_bundle_provenance_edge_count".to_string(),
+            fact.provenance.provenance_edges.len().into(),
+        );
+        if fact.provenance.provenance_edges.is_empty() {
+            metadata.insert(
+                "parser_fact_bundle_provenance_status".to_string(),
+                "missing_required_provenance".into(),
+            );
+        }
+    }
+}
+
+fn annotate_parser_fact_bundle_common_metadata(
+    metadata: &mut Metadata,
+    bundle: &ParserFactBundle,
+    fact_family: ParserFactFamily,
+    capability: LanguageCapability,
+    exactness: Exactness,
+    source_role: EvidenceRole,
+    unknown_boundary_reason: Option<&str>,
+) {
+    metadata.insert(
+        "parser_fact_bundle_version".to_string(),
+        bundle.bundle_version.into(),
+    );
+    metadata.insert(
+        "parser_fact_family".to_string(),
+        fact_family.as_str().into(),
+    );
+    metadata.insert(
+        "parser_fact_language".to_string(),
+        bundle.file_identity.language.clone().into(),
+    );
+    metadata.insert(
+        "parser_fact_frontend".to_string(),
+        bundle.file_identity.frontend.clone().into(),
+    );
+    metadata.insert(
+        "parser_capability_flag".to_string(),
+        capability_flag_label(capability.flag).into(),
+    );
+    metadata.insert(
+        "parser_capability_status".to_string(),
+        capability_status_label(capability.status).into(),
+    );
+    metadata.insert(
+        "parser_capability_scope".to_string(),
+        capability_scope_label(capability.scope).into(),
+    );
+    metadata.insert(
+        "parser_fact_exactness".to_string(),
+        exactness.to_string().into(),
+    );
+    metadata.insert(
+        "parser_fact_source_role".to_string(),
+        source_role.as_str().into(),
+    );
+    annotate_parser_resolver_metadata(metadata, bundle);
+    if let Some(reason) = unknown_boundary_reason {
+        metadata.insert(
+            "parser_unknown_boundary_reason".to_string(),
+            reason.to_string().into(),
+        );
+    }
+}
+
+fn annotate_parser_resolver_metadata(metadata: &mut Metadata, bundle: &ParserFactBundle) {
+    if let Some(resolver) = &bundle.resolver_metadata {
+        metadata.insert(
+            "parser_resolver".to_string(),
+            resolver.resolver.clone().into(),
+        );
+        metadata.insert(
+            "parser_resolver_version".to_string(),
+            resolver.resolver_version.clone().into(),
+        );
+        metadata.insert(
+            "parser_resolver_status".to_string(),
+            resolver.status.clone().into(),
+        );
+        if let Some(project_config_source) = &resolver.project_config_source {
+            metadata.insert(
+                "parser_resolver_project_config_source".to_string(),
+                project_config_source.clone().into(),
+            );
+        }
+        if let Some(provenance) = &resolver.provenance {
+            metadata.insert(
+                "parser_resolver_provenance".to_string(),
+                provenance.clone().into(),
+            );
+        }
+    }
+}
+
+fn capability_flag_label(flag: LanguageCapabilityFlag) -> String {
+    serde_json::to_value(flag)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| format!("{flag:?}"))
+}
+
+fn capability_status_label(status: LanguageCapabilityStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| format!("{status:?}"))
+}
+
+fn capability_scope_label(scope: LanguageCapabilityScope) -> String {
+    serde_json::to_value(scope)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| format!("{scope:?}"))
 }
 
 const MVP4_TS_MICRO_NODE_ROW_SCHEMA_VERSION: u32 = 1;
@@ -5738,12 +9320,52 @@ impl<'a> GenericLanguageExtractor<'a> {
         scope_name: &str,
     ) -> Option<(EntityKind, String, String)> {
         let mut kind = generic_decl_kind(self.parsed.language, node)?;
-        let name = generic_decl_name(node, self.source)?;
+        if matches!(
+            self.parsed.language,
+            SourceLanguage::C | SourceLanguage::Cpp
+        ) && kind == EntityKind::Function
+            && node.kind() == "declaration"
+        {
+            let declaration_text = node_text(node, self.source).unwrap_or_default();
+            if declaration_text.contains("(*")
+                || self.entity_kinds.get(scope_id).is_some_and(|scope_kind| {
+                    matches!(
+                        scope_kind,
+                        EntityKind::Function
+                            | EntityKind::Method
+                            | EntityKind::Constructor
+                            | EntityKind::TestCase
+                    )
+                })
+            {
+                return None;
+            }
+        }
+        let name = if self.parsed.language == SourceLanguage::CSharp
+            && matches!(
+                node.kind(),
+                "namespace_declaration" | "file_scoped_namespace_declaration"
+            ) {
+            csharp_namespace_name(node, self.source)?
+        } else if self.parsed.language == SourceLanguage::Cpp {
+            cpp_decl_name(node, self.source)?
+        } else {
+            generic_decl_name(node, self.source)?
+        };
         if self.parsed.language == SourceLanguage::Rust
             && kind == EntityKind::Function
             && rust_function_decl_within_impl_item(node)
         {
             kind = EntityKind::Method;
+        } else if self.parsed.language == SourceLanguage::Cpp
+            && kind == EntityKind::Function
+            && self
+                .entity_kinds
+                .get(scope_id)
+                .is_some_and(|scope_kind| *scope_kind == EntityKind::Class)
+            && name == scope_name.rsplit('.').next().unwrap_or(scope_name)
+        {
+            kind = EntityKind::Constructor;
         } else if kind == EntityKind::Function
             && self.entity_kinds.get(scope_id).is_some_and(|scope_kind| {
                 matches!(
@@ -5856,6 +9478,13 @@ impl<'a> GenericLanguageExtractor<'a> {
             self.scoped_declaration_identity(node, scope_id, scope_name)
         {
             let id = self.push_scoped_entity(scope_id, kind, &name, &qualified_name, node);
+            if self.parsed.language == SourceLanguage::CSharp {
+                self.annotate_csharp_declaration(&id, node);
+            } else if self.parsed.language == SourceLanguage::C {
+                self.annotate_c_declaration(&id, node);
+            } else if self.parsed.language == SourceLanguage::Cpp {
+                self.annotate_cpp_declaration(&id, node);
+            }
             if is_test_case_declaration(
                 self.parsed.language,
                 &self.parsed.repo_relative_path,
@@ -5898,12 +9527,50 @@ impl<'a> GenericLanguageExtractor<'a> {
             return;
         }
 
-        if is_generic_import_node(self.parsed.language, node) {
+        if self.parsed.language == SourceLanguage::Java && node.kind() == "package_declaration" {
+            self.extract_java_package(scope_id, scope_name, node);
+        } else if self.parsed.language == SourceLanguage::Go && node.kind() == "package_clause" {
+            self.extract_go_package(scope_id, scope_name, node);
+        } else if self.parsed.language == SourceLanguage::Java && is_java_annotation_node(node) {
+            self.extract_java_annotation(scope_id, scope_name, node);
+        } else if self.parsed.language == SourceLanguage::Java && node.kind() == "field_declaration"
+        {
+            self.extract_java_field_declaration(scope_id, scope_name, node);
+        } else if self.parsed.language == SourceLanguage::Java
+            && node.kind() == "object_creation_expression"
+        {
+            self.extract_java_object_creation(node, scope_id, scope_name);
+        } else if self.parsed.language == SourceLanguage::CSharp && is_csharp_attribute_node(node) {
+            self.extract_csharp_attribute(scope_id, scope_name, node);
+        } else if self.parsed.language == SourceLanguage::CSharp
+            && node.kind() == "property_declaration"
+        {
+            self.extract_csharp_property_declaration(scope_id, scope_name, node);
+        } else if self.parsed.language == SourceLanguage::CSharp
+            && matches!(
+                node.kind(),
+                "object_creation_expression" | "implicit_object_creation_expression"
+            )
+        {
+            self.extract_csharp_object_creation(node, scope_id, scope_name);
+        } else if self.parsed.language == SourceLanguage::Ruby
+            && is_ruby_import_call_node(node, self.source)
+        {
+            self.extract_import(scope_id, scope_name, node);
+        } else if self.parsed.language == SourceLanguage::Php
+            && is_php_include_or_require_node(node, self.source)
+        {
+            self.extract_import(scope_id, scope_name, node);
+        } else if is_generic_import_node(self.parsed.language, node) {
             self.extract_import(scope_id, scope_name, node);
         } else if is_generic_export_node(self.parsed.language, node, self.source) {
             self.extract_export(scope_id, scope_name, node);
         } else if is_generic_assertion_syntax_node(self.parsed.language, node, self.source) {
             self.extract_generic_assertion_syntax(node, scope_id, scope_name);
+        } else if self.parsed.language == SourceLanguage::Ruby
+            && is_ruby_constant_reference_node(node)
+        {
+            self.extract_ruby_constant_reference(scope_id, scope_name, node);
         } else if self.parsed.language == SourceLanguage::Go && node.kind() == "go_statement" {
             self.extract_go_statement(node, scope_id, scope_name);
         } else if is_generic_call_node(self.parsed.language, node) {
@@ -5926,6 +9593,436 @@ impl<'a> GenericLanguageExtractor<'a> {
         }
 
         self.visit_children(node, scope_id, scope_name);
+    }
+
+    fn extract_java_package(&mut self, scope_id: &str, scope_name: &str, node: Node<'_>) {
+        let Some(name) = java_package_name(node, self.source) else {
+            return;
+        };
+        let qualified_name = qualify(scope_name, &format!("package:{name}"));
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        let id = self.push_entity(EntityKind::Package, &name, &qualified_name, span.clone());
+        self.annotate_entity_source_role(
+            &id,
+            EntityKind::Package,
+            &name,
+            &qualified_name,
+            Some(node),
+        );
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("java_syntax_kind".to_string(), "package_declaration".into());
+                entity.metadata.insert(
+                    "target_resolution_claim_state".to_string(),
+                    "requires_compiler".into(),
+                );
+            }
+        }
+        self.push_edge(scope_id, RelationKind::Contains, &id, &span);
+        self.push_edge(scope_id, RelationKind::Declares, &id, &span);
+    }
+
+    fn extract_go_package(&mut self, scope_id: &str, scope_name: &str, node: Node<'_>) {
+        let Some(name) = go_package_name(node, self.source) else {
+            return;
+        };
+        let qualified_name = qualify(scope_name, &format!("package:{name}"));
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        let id = self.push_entity(EntityKind::Package, &name, &qualified_name, span.clone());
+        self.annotate_entity_source_role(
+            &id,
+            EntityKind::Package,
+            &name,
+            &qualified_name,
+            Some(node),
+        );
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("go_syntax_kind".to_string(), "package_clause".into());
+                entity
+                    .metadata
+                    .insert("syntax_claim_state".to_string(), "exact".into());
+                entity.metadata.insert(
+                    "target_resolution_claim_state".to_string(),
+                    "diagnostic_only".into(),
+                );
+                entity.metadata.insert(
+                    "resolution".to_string(),
+                    "parser_observed_go_package_clause".into(),
+                );
+            }
+        }
+        self.push_edge(scope_id, RelationKind::Contains, &id, &span);
+        self.push_edge(scope_id, RelationKind::Declares, &id, &span);
+    }
+
+    fn extract_java_annotation(&mut self, scope_id: &str, scope_name: &str, node: Node<'_>) {
+        let Some(name) = java_annotation_name(node, self.source) else {
+            return;
+        };
+        let qualified_name = qualify(
+            scope_name,
+            &format!("annotation:{name}@{}", node.start_byte()),
+        );
+        let id = self.push_scoped_entity(scope_id, EntityKind::Type, &name, &qualified_name, node);
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("java_syntax_kind".to_string(), "annotation".into());
+                entity.metadata.insert(
+                    "target_resolution_claim_state".to_string(),
+                    "requires_compiler".into(),
+                );
+            }
+        }
+    }
+
+    fn extract_ruby_constant_reference(
+        &mut self,
+        scope_id: &str,
+        scope_name: &str,
+        node: Node<'_>,
+    ) {
+        let Some(name) = node_text(node, self.source)
+            .map(clean_decl_name)
+            .filter(|name| looks_like_type_identifier(name))
+        else {
+            return;
+        };
+        let id = self.push_reference_entity(
+            EntityKind::Type,
+            &name,
+            scope_name,
+            node,
+            "ruby-constant-reference-requires-runtime-lookup",
+            0.55,
+        );
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("ruby_syntax_kind".to_string(), "constant_reference".into());
+                entity.metadata.insert(
+                    "target_resolution_claim_state".to_string(),
+                    "requires_runtime".into(),
+                );
+            }
+        }
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        self.push_edge_with(
+            scope_id,
+            RelationKind::Contains,
+            &id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.55,
+        );
+    }
+
+    fn extract_java_field_declaration(&mut self, scope_id: &str, scope_name: &str, node: Node<'_>) {
+        for name_node in java_field_name_nodes(node) {
+            let Some(name) = node_text(name_node, self.source)
+                .map(clean_decl_name)
+                .filter(|name| looks_like_identifier(name))
+            else {
+                continue;
+            };
+            let qualified_name = qualify(scope_name, &format!("field:{name}"));
+            let id = self.push_scoped_entity(
+                scope_id,
+                EntityKind::Field,
+                &name,
+                &qualified_name,
+                name_node,
+            );
+            if let Some(index) = self.entity_indices.get(&id).copied() {
+                if let Some(entity) = self.entities.get_mut(index) {
+                    entity
+                        .metadata
+                        .insert("java_syntax_kind".to_string(), "field_declaration".into());
+                }
+            }
+        }
+    }
+
+    fn extract_java_object_creation(&mut self, node: Node<'_>, scope_id: &str, scope_name: &str) {
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        let Some(type_node) = node
+            .child_by_field_name("type")
+            .or_else(|| first_named_child(node))
+        else {
+            return;
+        };
+        let type_label = expression_label(type_node, self.source);
+        let callsite_name = format!("new:{type_label}");
+        let callsite_id = self.push_entity(
+            EntityKind::CallSite,
+            &callsite_name,
+            &qualify(
+                scope_name,
+                &format!("{callsite_name}@{}", node.start_byte()),
+            ),
+            span.clone(),
+        );
+        self.scope_parents
+            .insert(callsite_id.clone(), scope_id.to_string());
+        self.push_edge(scope_id, RelationKind::Contains, &callsite_id, &span);
+        self.push_edge(&callsite_id, RelationKind::DefinedIn, scope_id, &span);
+        let callee_id = self.push_reference_entity(
+            EntityKind::Constructor,
+            &type_label,
+            scope_name,
+            type_node,
+            "java-object-creation-target-requires-compiler",
+            0.55,
+        );
+        self.push_edge_with(
+            scope_id,
+            RelationKind::Calls,
+            &callee_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.55,
+        );
+        self.push_edge_with(
+            &callsite_id,
+            RelationKind::Callee,
+            &callee_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.55,
+        );
+        if let Some(arguments) = generic_call_arguments_node(self.parsed.language, node) {
+            self.extract_call_arguments(arguments, &callsite_id, scope_id, scope_name);
+        }
+    }
+
+    fn annotate_csharp_declaration(&mut self, id: &str, node: Node<'_>) {
+        if !is_csharp_declaration_node(node) {
+            return;
+        }
+        if let Some(index) = self.entity_indices.get(id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("csharp_syntax_kind".to_string(), node.kind().into());
+                if is_csharp_partial_declaration(node, self.source) {
+                    entity
+                        .metadata
+                        .insert("csharp_partial".to_string(), "true".into());
+                    entity.metadata.insert(
+                        "semantic_boundary".to_string(),
+                        "partial declaration merge requires compiler/project context".into(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn annotate_c_declaration(&mut self, id: &str, node: Node<'_>) {
+        if !is_c_declaration_node(node) {
+            return;
+        }
+        if let Some(index) = self.entity_indices.get(id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("c_syntax_kind".to_string(), node.kind().into());
+                if node.kind() == "type_definition" {
+                    entity
+                        .metadata
+                        .insert("c_typedef".to_string(), "true".into());
+                }
+                if matches!(
+                    node.kind(),
+                    "function_declaration" | "function_definition" | "struct_specifier"
+                ) {
+                    entity
+                        .metadata
+                        .insert("syntax_claim_state".to_string(), "exact".into());
+                    entity.metadata.insert(
+                        "target_resolution_claim_state".to_string(),
+                        "requires_compiler".into(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn annotate_cpp_declaration(&mut self, id: &str, node: Node<'_>) {
+        if !is_cpp_declaration_node(node) {
+            return;
+        }
+        if let Some(index) = self.entity_indices.get(id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("cpp_syntax_kind".to_string(), node.kind().into());
+                let text = node_text(node, self.source).unwrap_or_default();
+                let prefix = text_before_node(node, self.source, 3);
+                if text.contains("template <")
+                    || text.contains("template<")
+                    || prefix.contains("template <")
+                    || prefix.contains("template<")
+                {
+                    entity
+                        .metadata
+                        .insert("cpp_template_boundary".to_string(), "true".into());
+                    entity.metadata.insert(
+                        "target_resolution_claim_state".to_string(),
+                        "requires_compiler".into(),
+                    );
+                }
+                if text.contains("operator") {
+                    entity
+                        .metadata
+                        .insert("cpp_operator_overload".to_string(), "true".into());
+                    entity.metadata.insert(
+                        "target_resolution_claim_state".to_string(),
+                        "requires_compiler".into(),
+                    );
+                }
+                if entity.name.starts_with("destructor_") || text.contains('~') {
+                    entity
+                        .metadata
+                        .insert("cpp_destructor".to_string(), "true".into());
+                    entity.metadata.insert(
+                        "target_resolution_claim_state".to_string(),
+                        "requires_compiler".into(),
+                    );
+                }
+                if matches!(
+                    node.kind(),
+                    "function_declaration"
+                        | "function_definition"
+                        | "class_specifier"
+                        | "struct_specifier"
+                        | "declaration"
+                        | "field_declaration"
+                        | "template_declaration"
+                ) {
+                    entity
+                        .metadata
+                        .insert("syntax_claim_state".to_string(), "exact".into());
+                    entity
+                        .metadata
+                        .entry("target_resolution_claim_state".to_string())
+                        .or_insert_with(|| "requires_compiler".into());
+                }
+            }
+        }
+    }
+
+    fn extract_csharp_attribute(&mut self, scope_id: &str, scope_name: &str, node: Node<'_>) {
+        let Some(name) = csharp_attribute_name(node, self.source) else {
+            return;
+        };
+        let qualified_name = qualify(
+            scope_name,
+            &format!("attribute:{name}@{}", node.start_byte()),
+        );
+        let id = self.push_scoped_entity(scope_id, EntityKind::Type, &name, &qualified_name, node);
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity
+                    .metadata
+                    .insert("csharp_syntax_kind".to_string(), "attribute".into());
+                entity.metadata.insert(
+                    "target_resolution_claim_state".to_string(),
+                    "requires_compiler".into(),
+                );
+            }
+        }
+    }
+
+    fn extract_csharp_property_declaration(
+        &mut self,
+        scope_id: &str,
+        scope_name: &str,
+        node: Node<'_>,
+    ) {
+        let Some(name_node) = csharp_property_name_node(node) else {
+            return;
+        };
+        let Some(name) = node_text(name_node, self.source)
+            .map(clean_decl_name)
+            .filter(|name| looks_like_identifier(name))
+        else {
+            return;
+        };
+        let qualified_name = qualify(scope_name, &format!("property:{name}"));
+        let id = self.push_scoped_entity(
+            scope_id,
+            EntityKind::Property,
+            &name,
+            &qualified_name,
+            name_node,
+        );
+        if let Some(index) = self.entity_indices.get(&id).copied() {
+            if let Some(entity) = self.entities.get_mut(index) {
+                entity.metadata.insert(
+                    "csharp_syntax_kind".to_string(),
+                    "property_declaration".into(),
+                );
+            }
+        }
+    }
+
+    fn extract_csharp_object_creation(&mut self, node: Node<'_>, scope_id: &str, scope_name: &str) {
+        let span = source_span_for_node(&self.parsed.repo_relative_path, node);
+        let Some(type_node) = node
+            .child_by_field_name("type")
+            .or_else(|| first_named_child(node))
+        else {
+            return;
+        };
+        let type_label = expression_label(type_node, self.source);
+        let callsite_name = format!("new:{type_label}");
+        let callsite_id = self.push_entity(
+            EntityKind::CallSite,
+            &callsite_name,
+            &qualify(
+                scope_name,
+                &format!("{callsite_name}@{}", node.start_byte()),
+            ),
+            span.clone(),
+        );
+        self.scope_parents
+            .insert(callsite_id.clone(), scope_id.to_string());
+        self.push_edge(scope_id, RelationKind::Contains, &callsite_id, &span);
+        self.push_edge(&callsite_id, RelationKind::DefinedIn, scope_id, &span);
+        let callee_id = self.push_reference_entity(
+            EntityKind::Constructor,
+            &type_label,
+            scope_name,
+            type_node,
+            "csharp-object-creation-target-requires-compiler",
+            0.55,
+        );
+        self.push_edge_with(
+            scope_id,
+            RelationKind::Calls,
+            &callee_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.55,
+        );
+        self.push_edge_with(
+            &callsite_id,
+            RelationKind::Callee,
+            &callee_id,
+            &span,
+            Exactness::StaticHeuristic,
+            0.55,
+        );
+        if let Some(arguments) = generic_call_arguments_node(self.parsed.language, node) {
+            self.extract_call_arguments(arguments, &callsite_id, scope_id, scope_name);
+        }
     }
 
     fn extract_go_statement(&mut self, node: Node<'_>, scope_id: &str, scope_name: &str) {
@@ -6224,11 +10321,22 @@ impl<'a> GenericLanguageExtractor<'a> {
     fn extract_call(&mut self, node: Node<'_>, scope_id: &str, scope_name: &str) {
         let span = source_span_for_node(&self.parsed.repo_relative_path, node);
         let callee_node = generic_call_callee_node(self.parsed.language, node);
-        let callee_label = callee_node
-            .and_then(|callee| {
-                node_text(callee, self.source).map(|text| compact_extracted_label(&text, callee))
-            })
-            .unwrap_or_else(|| "unknown_callee".to_string());
+        let callee_label = if self.parsed.language == SourceLanguage::Java {
+            java_call_label(node, self.source).unwrap_or_else(|| "unknown_callee".to_string())
+        } else if self.parsed.language == SourceLanguage::CSharp {
+            csharp_call_label(node, self.source).unwrap_or_else(|| "unknown_callee".to_string())
+        } else if self.parsed.language == SourceLanguage::Ruby {
+            ruby_call_label(node, self.source).unwrap_or_else(|| "unknown_callee".to_string())
+        } else if self.parsed.language == SourceLanguage::Php {
+            php_call_label(node, self.source).unwrap_or_else(|| "unknown_callee".to_string())
+        } else {
+            callee_node
+                .and_then(|callee| {
+                    node_text(callee, self.source)
+                        .map(|text| compact_extracted_label(&text, callee))
+                })
+                .unwrap_or_else(|| "unknown_callee".to_string())
+        };
         let callsite_name = format!("call:{callee_label}");
         let callsite_id = self.push_entity(
             EntityKind::CallSite,
@@ -6262,7 +10370,9 @@ impl<'a> GenericLanguageExtractor<'a> {
             exactness,
             confidence,
         );
-        self.extract_obvious_mutation_call(scope_id, &callee_label, &span);
+        if !parser_only_call_without_local_flow(self.parsed.language) {
+            self.extract_obvious_mutation_call(scope_id, &callee_label, &span);
+        }
         self.extract_test_relation_for_call(
             node,
             scope_id,
@@ -6276,7 +10386,9 @@ impl<'a> GenericLanguageExtractor<'a> {
 
         if let Some(arguments) = generic_call_arguments_node(self.parsed.language, node) {
             self.extract_call_arguments(arguments, &callsite_id, scope_id, scope_name);
-            self.extract_argument_to_parameter_flows(arguments, scope_id, &callee_id);
+            if !parser_only_call_without_local_flow(self.parsed.language) {
+                self.extract_argument_to_parameter_flows(arguments, scope_id, &callee_id);
+            }
         }
     }
 
@@ -6303,19 +10415,21 @@ impl<'a> GenericLanguageExtractor<'a> {
                 _ => RelationKind::ArgumentN,
             };
             self.push_edge(callsite_id, relation, &arg_id, &span);
-            if let Some(name) = deepest_identifier(argument, self.source) {
-                if let Some(symbol) = self.resolve_symbol(scope_id, &name) {
-                    self.push_edge_with(
-                        &symbol.id,
-                        RelationKind::FlowsTo,
-                        &arg_id,
-                        &span,
-                        symbol.exactness,
-                        symbol.confidence,
-                    );
+            if !parser_only_call_without_local_flow(self.parsed.language) {
+                if let Some(name) = deepest_identifier(argument, self.source) {
+                    if let Some(symbol) = self.resolve_symbol(scope_id, &name) {
+                        self.push_edge_with(
+                            &symbol.id,
+                            RelationKind::FlowsTo,
+                            &arg_id,
+                            &span,
+                            symbol.exactness,
+                            symbol.confidence,
+                        );
+                    }
                 }
+                self.extract_reads_from_expression(argument, scope_id, None);
             }
-            self.extract_reads_from_expression(argument, scope_id, None);
         }
     }
 
@@ -6711,9 +10825,42 @@ impl<'a> GenericLanguageExtractor<'a> {
         {
             rust_method_call_label(call_node, callee_node, self.source)
                 .unwrap_or_else(|| expression_label(callee_node, self.source))
+        } else if self.parsed.language == SourceLanguage::Java {
+            java_call_label(call_node, self.source)
+                .unwrap_or_else(|| expression_label(callee_node, self.source))
+        } else if self.parsed.language == SourceLanguage::CSharp {
+            csharp_call_label(call_node, self.source)
+                .unwrap_or_else(|| expression_label(callee_node, self.source))
         } else {
             expression_label(callee_node, self.source)
         };
+        if matches!(
+            self.parsed.language,
+            SourceLanguage::Java | SourceLanguage::CSharp | SourceLanguage::C | SourceLanguage::Cpp
+        ) {
+            let reason = if self.parsed.language == SourceLanguage::Java {
+                "java-callee-target-requires-compiler"
+            } else if self.parsed.language == SourceLanguage::CSharp {
+                "csharp-callee-target-requires-compiler"
+            } else if self.parsed.language == SourceLanguage::Cpp {
+                "cpp-callee-target-requires-compiler"
+            } else {
+                "c-callee-target-requires-compiler"
+            };
+            let id = self.push_reference_entity(
+                if self.parsed.language == SourceLanguage::C {
+                    EntityKind::Function
+                } else {
+                    EntityKind::Method
+                },
+                &label,
+                scope_name,
+                callee_node,
+                reason,
+                0.55,
+            );
+            return (id, Exactness::StaticHeuristic, 0.55);
+        }
         if self.parsed.language == SourceLanguage::Rust
             && call_node.kind() == "method_call_expression"
         {
@@ -7228,6 +11375,9 @@ impl<'a> GenericLanguageExtractor<'a> {
         let span = source_span_for_node(&self.parsed.repo_relative_path, node);
         let id = self.push_entity(kind, name, qualified_name, span.clone());
         self.annotate_entity_source_role(&id, kind, name, qualified_name, Some(node));
+        if self.parsed.language == SourceLanguage::CSharp {
+            self.annotate_csharp_declaration(&id, node);
+        }
         let (exactness, confidence) = if node_has_error_or_missing_descendant(node) {
             if let Some(index) = self.entity_indices.get(&id).copied() {
                 if let Some(entity) = self.entities.get_mut(index) {
@@ -10532,17 +14682,72 @@ fn recoverable_declaration_on_line(
         SourceLanguage::C | SourceLanguage::Cpp => {
             recover_c_like_function_declaration(line, trimmed)
         }
-        SourceLanguage::Java | SourceLanguage::CSharp => {
+        SourceLanguage::Java => {
             recover_keyword_declaration(line, trimmed, "class ", EntityKind::Class).or_else(|| {
                 recover_keyword_declaration(line, trimmed, "interface ", EntityKind::Interface)
             })
         }
+        SourceLanguage::CSharp => recover_csharp_declaration(line, trimmed),
         SourceLanguage::Php => {
             recover_keyword_declaration(line, trimmed, "function ", EntityKind::Function)
                 .or_else(|| recover_keyword_declaration(line, trimmed, "class ", EntityKind::Class))
                 .or_else(|| {
                     recover_keyword_declaration(line, trimmed, "interface ", EntityKind::Interface)
                 })
+                .or_else(|| recover_keyword_declaration(line, trimmed, "trait ", EntityKind::Trait))
+        }
+    }
+}
+
+fn recover_csharp_declaration(line: &str, trimmed: &str) -> Option<(EntityKind, String, usize)> {
+    let after_namespace = strip_csharp_file_scoped_namespace_prefix(trimmed);
+    let stripped = strip_csharp_modifiers(after_namespace);
+    recover_keyword_declaration(line, stripped, "class ", EntityKind::Class)
+        .or_else(|| {
+            recover_keyword_declaration(line, stripped, "interface ", EntityKind::Interface)
+        })
+        .or_else(|| recover_keyword_declaration(line, stripped, "record ", EntityKind::Class))
+        .or_else(|| recover_keyword_declaration(line, stripped, "struct ", EntityKind::Class))
+}
+
+fn strip_csharp_file_scoped_namespace_prefix(value: &str) -> &str {
+    let trimmed = value.trim_start();
+    let Some(rest) = trimmed.strip_prefix("namespace ") else {
+        return value;
+    };
+    let Some(semicolon) = rest.find(';') else {
+        return value;
+    };
+    if rest[..semicolon].contains('{') {
+        return value;
+    }
+    rest[semicolon + 1..].trim_start()
+}
+
+fn strip_csharp_modifiers(mut value: &str) -> &str {
+    loop {
+        let trimmed = value.trim_start();
+        let mut stripped = false;
+        for modifier in [
+            "public ",
+            "private ",
+            "protected ",
+            "internal ",
+            "static ",
+            "abstract ",
+            "sealed ",
+            "partial ",
+            "readonly ",
+            "ref ",
+        ] {
+            if let Some(next) = trimmed.strip_prefix(modifier) {
+                value = next;
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            return trimmed;
         }
     }
 }
@@ -10694,6 +14899,10 @@ fn is_common_test_file_path(normalized_path: &str) -> bool {
         || normalized_path.ends_with(".spec.jsx")
         || normalized_path.ends_with("_test.go")
         || normalized_path.ends_with("_test.py")
+        || normalized_path.ends_with("_test.c")
+        || normalized_path.ends_with("_test.h")
+        || normalized_path.ends_with("_test.cpp")
+        || normalized_path.ends_with("_test.hpp")
         || normalized_path.ends_with("_test.rb")
         || normalized_path.ends_with("_spec.rb")
         || normalized_path.ends_with("_test.php")
@@ -10986,6 +15195,9 @@ fn is_test_case_declaration(
     match language {
         SourceLanguage::Python => path_is_test && lower.starts_with("test_"),
         SourceLanguage::Go => path_is_test && go_test_function_name(name),
+        SourceLanguage::C | SourceLanguage::Cpp => {
+            path_is_test && (lower.starts_with("test_") || lower.starts_with("test"))
+        }
         SourceLanguage::Java | SourceLanguage::CSharp => {
             path_is_test
                 && (lower.starts_with("test")
@@ -11612,9 +15824,42 @@ fn is_generic_call_node(language: SourceLanguage, node: Node<'_>) -> bool {
         SourceLanguage::Python => node.kind() == "call",
         SourceLanguage::Go => node.kind() == "call_expression",
         SourceLanguage::Rust => matches!(node.kind(), "call_expression" | "method_call_expression"),
+        SourceLanguage::Java => {
+            matches!(
+                node.kind(),
+                "method_invocation" | "object_creation_expression"
+            )
+        }
+        SourceLanguage::CSharp => matches!(
+            node.kind(),
+            "invocation_expression"
+                | "object_creation_expression"
+                | "implicit_object_creation_expression"
+        ),
         SourceLanguage::C | SourceLanguage::Cpp => node.kind() == "call_expression",
+        SourceLanguage::Ruby => matches!(node.kind(), "call" | "command" | "command_call"),
+        SourceLanguage::Php => matches!(
+            node.kind(),
+            "function_call_expression"
+                | "member_call_expression"
+                | "nullsafe_member_call_expression"
+                | "scoped_call_expression"
+                | "object_creation_expression"
+        ),
         _ => false,
     }
+}
+
+fn parser_only_call_without_local_flow(language: SourceLanguage) -> bool {
+    matches!(
+        language,
+        SourceLanguage::Java
+            | SourceLanguage::CSharp
+            | SourceLanguage::C
+            | SourceLanguage::Cpp
+            | SourceLanguage::Ruby
+            | SourceLanguage::Php
+    )
 }
 
 fn generic_call_callee_node(language: SourceLanguage, node: Node<'_>) -> Option<Node<'_>> {
@@ -11632,6 +15877,40 @@ fn generic_call_callee_node(language: SourceLanguage, node: Node<'_>) -> Option<
         SourceLanguage::Rust => node
             .child_by_field_name("function")
             .or_else(|| first_named_child(node)),
+        SourceLanguage::Java if node.kind() == "object_creation_expression" => node
+            .child_by_field_name("type")
+            .or_else(|| first_named_child(node)),
+        SourceLanguage::Java => node
+            .child_by_field_name("name")
+            .or_else(|| child_by_kind(node, "identifier"))
+            .or_else(|| first_named_child(node)),
+        SourceLanguage::CSharp
+            if matches!(
+                node.kind(),
+                "object_creation_expression" | "implicit_object_creation_expression"
+            ) =>
+        {
+            node.child_by_field_name("type")
+                .or_else(|| first_named_child(node))
+        }
+        SourceLanguage::CSharp => node
+            .child_by_field_name("function")
+            .or_else(|| first_named_child(node)),
+        SourceLanguage::Ruby => node
+            .child_by_field_name("method")
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| child_by_kind(node, "identifier"))
+            .or_else(|| first_named_child(node)),
+        SourceLanguage::Php if node.kind() == "object_creation_expression" => node
+            .child_by_field_name("class")
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| first_named_child(node)),
+        SourceLanguage::Php => node
+            .child_by_field_name("function")
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| node.child_by_field_name("member"))
+            .or_else(|| child_by_kind(node, "name"))
+            .or_else(|| first_named_child(node)),
         _ => None,
     }
 }
@@ -11644,8 +15923,368 @@ fn generic_call_arguments_node(language: SourceLanguage, node: Node<'_>) -> Opti
         SourceLanguage::Rust => node
             .child_by_field_name("arguments")
             .or_else(|| child_by_kind(node, "arguments")),
+        SourceLanguage::Java => node
+            .child_by_field_name("arguments")
+            .or_else(|| child_by_kind(node, "argument_list")),
+        SourceLanguage::CSharp => node
+            .child_by_field_name("arguments")
+            .or_else(|| child_by_kind(node, "argument_list")),
+        SourceLanguage::Ruby => node
+            .child_by_field_name("arguments")
+            .or_else(|| child_by_kind(node, "argument_list")),
+        SourceLanguage::Php => node
+            .child_by_field_name("arguments")
+            .or_else(|| child_by_kind(node, "arguments")),
         _ => None,
     }
+}
+
+fn java_call_label(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() == "object_creation_expression" {
+        return node
+            .child_by_field_name("type")
+            .map(|type_node| expression_label(type_node, source));
+    }
+    let name_node = node
+        .child_by_field_name("name")
+        .or_else(|| child_by_kind(node, "identifier"))?;
+    let name = expression_label(name_node, source);
+    if let Some(receiver) = node
+        .child_by_field_name("object")
+        .or_else(|| node.child_by_field_name("scope"))
+    {
+        let receiver = expression_label(receiver, source);
+        if !receiver.is_empty() {
+            return Some(format!("{receiver}.{name}"));
+        }
+    }
+    Some(name)
+}
+
+fn csharp_call_label(node: Node<'_>, source: &str) -> Option<String> {
+    if matches!(
+        node.kind(),
+        "object_creation_expression" | "implicit_object_creation_expression"
+    ) {
+        return node
+            .child_by_field_name("type")
+            .or_else(|| first_named_child(node))
+            .map(|type_node| expression_label(type_node, source));
+    }
+    node.child_by_field_name("function")
+        .or_else(|| first_named_child(node))
+        .map(|callee| expression_label(callee, source))
+}
+
+fn ruby_call_label(node: Node<'_>, source: &str) -> Option<String> {
+    let method_node = node
+        .child_by_field_name("method")
+        .or_else(|| node.child_by_field_name("name"))
+        .or_else(|| child_by_kind(node, "identifier"))
+        .or_else(|| first_named_child(node))?;
+    let method = expression_label(method_node, source);
+    if method.is_empty() {
+        return None;
+    }
+    if let Some(receiver) = node
+        .child_by_field_name("receiver")
+        .or_else(|| node.child_by_field_name("object"))
+    {
+        let receiver = expression_label(receiver, source);
+        if !receiver.is_empty() && receiver != method {
+            return Some(format!("{receiver}.{method}"));
+        }
+    }
+    Some(method)
+}
+
+fn php_call_label(node: Node<'_>, source: &str) -> Option<String> {
+    let text = node_text(node, source)?;
+    let header = text.split('(').next().unwrap_or(text.as_str()).trim();
+    let label = if node.kind() == "object_creation_expression" {
+        header
+            .strip_prefix("new ")
+            .or_else(|| header.strip_prefix("new\t"))
+            .unwrap_or(header)
+            .trim()
+            .to_string()
+    } else {
+        header.to_string()
+    };
+    let label = label.trim_matches('\\').trim().to_string();
+    if label.is_empty() {
+        None
+    } else {
+        Some(label)
+    }
+}
+
+fn csharp_namespace_name(node: Node<'_>, source: &str) -> Option<String> {
+    node.child_by_field_name("name")
+        .and_then(|name| node_text(name, source))
+        .or_else(|| {
+            node_text(node, source).and_then(|text| {
+                let stripped = text
+                    .trim()
+                    .strip_prefix("namespace")
+                    .map(str::trim)
+                    .unwrap_or(text.trim());
+                let name = stripped.split(['{', ';']).next().unwrap_or(stripped).trim();
+                Some(name.to_string())
+            })
+        })
+        .map(|name| name.trim().to_string())
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+        })
+}
+
+fn java_package_name(node: Node<'_>, source: &str) -> Option<String> {
+    node.child_by_field_name("name")
+        .and_then(|name| node_text(name, source))
+        .or_else(|| {
+            node_text(node, source).and_then(|text| {
+                text.trim()
+                    .strip_prefix("package")
+                    .map(str::trim)
+                    .map(|value| value.trim_end_matches(';').trim().to_string())
+            })
+        })
+        .map(|name| name.trim().trim_end_matches(';').to_string())
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+        })
+}
+
+fn go_package_name(node: Node<'_>, source: &str) -> Option<String> {
+    node.child_by_field_name("name")
+        .or_else(|| child_by_kind(node, "package_identifier"))
+        .or_else(|| child_by_kind(node, "identifier"))
+        .and_then(|name| node_text(name, source))
+        .or_else(|| {
+            node_text(node, source).and_then(|text| {
+                text.trim()
+                    .strip_prefix("package")
+                    .map(str::trim)
+                    .map(|value| value.split_whitespace().next().unwrap_or("").to_string())
+            })
+        })
+        .map(|name| name.trim().to_string())
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+}
+
+fn java_annotation_name(node: Node<'_>, source: &str) -> Option<String> {
+    let text = node_text(node, source)?;
+    let stripped = text.trim().strip_prefix('@')?.trim();
+    let name = stripped
+        .split(|ch: char| ch == '(' || ch.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+fn is_java_annotation_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "marker_annotation" | "annotation" | "single_element_annotation" | "normal_annotation"
+    )
+}
+
+fn is_csharp_attribute_node(node: Node<'_>) -> bool {
+    node.kind() == "attribute"
+}
+
+fn is_csharp_declaration_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "namespace_declaration"
+            | "file_scoped_namespace_declaration"
+            | "class_declaration"
+            | "interface_declaration"
+            | "struct_declaration"
+            | "record_declaration"
+            | "record_struct_declaration"
+            | "enum_declaration"
+            | "method_declaration"
+            | "constructor_declaration"
+    )
+}
+
+fn is_c_declaration_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "function_declaration"
+            | "function_definition"
+            | "struct_specifier"
+            | "type_definition"
+            | "declaration"
+    )
+}
+
+fn is_cpp_declaration_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "namespace_definition"
+            | "class_specifier"
+            | "struct_specifier"
+            | "function_declaration"
+            | "function_definition"
+            | "declaration"
+            | "field_declaration"
+            | "template_declaration"
+    )
+}
+
+fn cpp_decl_name(node: Node<'_>, source: &str) -> Option<String> {
+    if matches!(
+        node.kind(),
+        "namespace_definition" | "class_specifier" | "struct_specifier"
+    ) {
+        return generic_decl_name(node, source);
+    }
+
+    let text = node_text(node, source)?;
+    let header = text
+        .split(['{', ';'])
+        .next()
+        .unwrap_or(text.as_str())
+        .trim();
+    if header.contains("operator") {
+        return Some(cpp_operator_decl_name(header));
+    }
+    if let Some((_, after_tilde)) = header.rsplit_once('~') {
+        if let Some(name) = leading_identifier(after_tilde.trim_start()) {
+            return Some(format!("destructor_{name}"));
+        }
+    }
+    if let Some(before_parameters) = header.split_once('(').map(|(before, _)| before.trim_end()) {
+        if let Some(name) = before_parameters
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == ':'))
+            .rev()
+            .find(|part| looks_like_identifier(part.trim_matches(':')))
+            .map(|part| part.trim_matches(':').to_string())
+        {
+            return Some(name);
+        }
+    }
+    generic_decl_name(node, source)
+}
+
+fn cpp_operator_decl_name(header: &str) -> String {
+    let suffix = header
+        .split_once("operator")
+        .map(|(_, suffix)| suffix)
+        .unwrap_or_default()
+        .trim_start();
+    let token = suffix
+        .chars()
+        .take_while(|ch| !ch.is_whitespace() && *ch != '(' && *ch != '{' && *ch != ';')
+        .collect::<String>();
+    let normalized = token
+        .chars()
+        .map(|ch| match ch {
+            '+' => "plus",
+            '-' => "minus",
+            '*' => "star",
+            '/' => "slash",
+            '%' => "percent",
+            '=' => "equals",
+            '<' => "lt",
+            '>' => "gt",
+            '!' => "bang",
+            '[' => "index",
+            ']' => "",
+            '&' => "amp",
+            '|' => "pipe",
+            '^' => "caret",
+            '~' => "tilde",
+            ',' => "comma",
+            _ => "",
+        })
+        .collect::<String>();
+    if normalized.is_empty() {
+        "operator_overload".to_string()
+    } else {
+        format!("operator_{normalized}")
+    }
+}
+
+fn csharp_attribute_name(node: Node<'_>, source: &str) -> Option<String> {
+    let text = node_text(node, source)?;
+    let stripped = text
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    let name = stripped
+        .split(|ch: char| ch == '(' || ch == ',' || ch.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+fn csharp_property_name_node(node: Node<'_>) -> Option<Node<'_>> {
+    node.child_by_field_name("name")
+        .or_else(|| child_by_kind(node, "identifier"))
+        .or_else(|| child_by_kind(node, "property_identifier"))
+}
+
+fn is_csharp_partial_declaration(node: Node<'_>, source: &str) -> bool {
+    if !matches!(
+        node.kind(),
+        "class_declaration"
+            | "interface_declaration"
+            | "struct_declaration"
+            | "record_declaration"
+            | "record_struct_declaration"
+    ) {
+        return false;
+    }
+    let own_text = node_text(node, source).unwrap_or_default();
+    let prefix = text_before_node(node, source, 2);
+    csharp_declaration_header_contains_partial(&own_text)
+        || csharp_declaration_header_contains_partial(&format!("{prefix} {own_text}"))
+}
+
+fn csharp_declaration_header_contains_partial(text: &str) -> bool {
+    let header = text.split(['{', '(']).next().unwrap_or(text).trim();
+    header.split_whitespace().any(|part| part == "partial")
+}
+
+fn java_field_name_nodes<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    let mut names = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "variable_declarator" {
+            continue;
+        }
+        if let Some(name) = child
+            .child_by_field_name("name")
+            .or_else(|| child_by_kind(child, "identifier"))
+        {
+            names.push(name);
+        }
+    }
+    names
 }
 
 fn go_statement_call_node(node: Node<'_>) -> Option<Node<'_>> {
@@ -11666,9 +16305,6 @@ fn is_generic_assignment_node(language: SourceLanguage, node: Node<'_>) -> bool 
             "short_var_declaration" | "var_spec" | "assignment_statement"
         ),
         SourceLanguage::Rust => matches!(node.kind(), "let_declaration" | "assignment_expression"),
-        SourceLanguage::C | SourceLanguage::Cpp => {
-            matches!(node.kind(), "init_declarator" | "assignment_expression")
-        }
         _ => false,
     }
 }
@@ -11678,7 +16314,7 @@ fn generic_assignment_target_node(language: SourceLanguage, node: Node<'_>) -> O
         SourceLanguage::Rust if node.kind() == "let_declaration" => {
             node.child_by_field_name("pattern")
         }
-        SourceLanguage::C | SourceLanguage::Cpp if node.kind() == "init_declarator" => {
+        SourceLanguage::Cpp if node.kind() == "init_declarator" => {
             node.child_by_field_name("declarator")
         }
         _ => node
@@ -11694,7 +16330,7 @@ fn generic_assignment_value_node(language: SourceLanguage, node: Node<'_>) -> Op
         SourceLanguage::Rust if node.kind() == "let_declaration" => {
             node.child_by_field_name("value")
         }
-        SourceLanguage::C | SourceLanguage::Cpp if node.kind() == "init_declarator" => {
+        SourceLanguage::Cpp if node.kind() == "init_declarator" => {
             node.child_by_field_name("value")
         }
         _ => node
@@ -11708,7 +16344,7 @@ fn generic_assignment_declares_local(language: SourceLanguage, node: Node<'_>) -
         SourceLanguage::Python => node.kind() == "assignment",
         SourceLanguage::Go => matches!(node.kind(), "short_var_declaration" | "var_spec"),
         SourceLanguage::Rust => node.kind() == "let_declaration",
-        SourceLanguage::C | SourceLanguage::Cpp => node.kind() == "init_declarator",
+        SourceLanguage::Cpp => node.kind() == "init_declarator",
         _ => false,
     }
 }
@@ -11750,17 +16386,14 @@ fn is_generic_return_node(language: SourceLanguage, node: Node<'_>) -> bool {
         (SourceLanguage::Python, "return_statement")
             | (SourceLanguage::Go, "return_statement")
             | (SourceLanguage::Rust, "return_expression")
-            | (SourceLanguage::C, "return_statement")
-            | (SourceLanguage::Cpp, "return_statement")
     )
 }
 
 fn generic_return_value_node(language: SourceLanguage, node: Node<'_>) -> Option<Node<'_>> {
     match language {
-        SourceLanguage::Python | SourceLanguage::Go | SourceLanguage::C | SourceLanguage::Cpp => {
-            node.child_by_field_name("argument")
-                .or_else(|| first_named_child(node))
-        }
+        SourceLanguage::Python | SourceLanguage::Go => node
+            .child_by_field_name("argument")
+            .or_else(|| first_named_child(node)),
         SourceLanguage::Rust => node
             .child_by_field_name("value")
             .or_else(|| first_named_child(node)),
@@ -11797,22 +16430,43 @@ fn generic_decl_kind(language: SourceLanguage, node: Node<'_>) -> Option<EntityK
             Some(EntityKind::Class)
         }
         "interface_declaration" | "interface_type" => Some(EntityKind::Interface),
-        "trait_item" => Some(EntityKind::Trait),
+        "trait_item" | "trait_declaration" => Some(EntityKind::Trait),
         "enum_item" | "enum_declaration" | "enum_specifier" => Some(EntityKind::Enum),
-        "struct_item" | "struct_type" | "struct_specifier" => Some(EntityKind::Class),
+        "struct_item" | "struct_type" | "struct_specifier" | "struct_declaration" => {
+            Some(EntityKind::Class)
+        }
         "function_definition" | "function_declaration" | "function_item" => {
+            Some(EntityKind::Function)
+        }
+        "declaration"
+            if matches!(language, SourceLanguage::C | SourceLanguage::Cpp)
+                && has_descendant_kind(node, "function_declarator") =>
+        {
+            Some(EntityKind::Function)
+        }
+        "field_declaration"
+            if language == SourceLanguage::Cpp
+                && has_descendant_kind(node, "function_declarator") =>
+        {
             Some(EntityKind::Function)
         }
         "method_definition" | "method_declaration" | "method_item" | "method" => {
             Some(EntityKind::Method)
         }
+        "singleton_method" if language == SourceLanguage::Ruby => Some(EntityKind::Method),
         "constructor_declaration" => Some(EntityKind::Constructor),
+        "record_declaration" | "record_struct_declaration" => Some(EntityKind::Class),
+        "annotation_type_declaration" => Some(EntityKind::Interface),
         "type_spec" if has_descendant_kind(node, "struct_type") => Some(EntityKind::Class),
         "type_spec" if has_descendant_kind(node, "interface_type") => Some(EntityKind::Interface),
         "module" if language == SourceLanguage::Ruby => Some(EntityKind::Module),
-        "namespace_definition" | "namespace_declaration" => Some(EntityKind::Module),
+        "namespace_definition" | "namespace_declaration" | "file_scoped_namespace_declaration" => {
+            Some(EntityKind::Module)
+        }
         "mod_item" => Some(EntityKind::Module),
-        "type_declaration" | "type_alias" | "type_item" => Some(EntityKind::Type),
+        "type_declaration" | "type_alias" | "type_item" | "type_definition" => {
+            Some(EntityKind::Type)
+        }
         _ => None,
     }
 }
@@ -12132,9 +16786,101 @@ fn is_generic_import_node(language: SourceLanguage, node: Node<'_>) -> bool {
             | "use_declaration"
             | "preproc_include"
             | "include_expression"
+            | "include_once_expression"
+            | "require_expression"
+            | "require_once_expression"
             | "using_directive"
-            | "using_statement"
+            | "using_alias_directive"
+            | "using_static_directive"
     ) || (language == SourceLanguage::Php && kind == "namespace_use_declaration")
+}
+
+fn is_ruby_import_call_node(node: Node<'_>, source: &str) -> bool {
+    if !matches!(node.kind(), "call" | "command" | "command_call") {
+        return false;
+    }
+    node_text(node, source)
+        .and_then(|text| ruby_import_method(&text).map(str::to_string))
+        .is_some()
+}
+
+fn ruby_import_method(text: &str) -> Option<&'static str> {
+    let trimmed = trim_statement(text);
+    for method in ["require_relative", "require", "load"] {
+        if let Some(rest) = trimmed.strip_prefix(method) {
+            if rest.is_empty()
+                || rest.starts_with(' ')
+                || rest.starts_with('\t')
+                || rest.starts_with('(')
+            {
+                return Some(method);
+            }
+        }
+    }
+    None
+}
+
+fn is_php_include_or_require_node(node: Node<'_>, source: &str) -> bool {
+    if !matches!(
+        node.kind(),
+        "include_expression"
+            | "include_once_expression"
+            | "require_expression"
+            | "require_once_expression"
+    ) {
+        return false;
+    }
+    node_text(node, source)
+        .and_then(|text| php_include_require_kind(&text).map(str::to_string))
+        .is_some()
+}
+
+fn php_include_require_kind(text: &str) -> Option<&'static str> {
+    let trimmed = trim_statement(text).trim_start_matches("<?php").trim();
+    for (prefix, kind) in [
+        ("include_once", "php_include_once"),
+        ("require_once", "php_require_once"),
+        ("include", "php_include"),
+        ("require", "php_require"),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            if rest.is_empty()
+                || rest.starts_with(' ')
+                || rest.starts_with('\t')
+                || rest.starts_with('(')
+            {
+                return Some(kind);
+            }
+        }
+    }
+    None
+}
+
+fn is_ruby_constant_reference_node(node: Node<'_>) -> bool {
+    node.kind() == "constant" && !is_ruby_constant_declaration_name(node)
+}
+
+fn is_ruby_constant_declaration_name(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    if matches!(parent.kind(), "class" | "module") {
+        if let Some(name) = parent.child_by_field_name("name") {
+            return name.id() == node.id() || node_contains(name, node.id());
+        }
+    }
+    false
+}
+
+fn node_contains(node: Node<'_>, wanted_id: usize) -> bool {
+    if node.id() == wanted_id {
+        return true;
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .any(|child| node_contains(child, wanted_id));
+    found
 }
 
 fn generic_import_name(language: SourceLanguage, node: Node<'_>, source: &str) -> Option<String> {
@@ -12749,57 +17495,92 @@ fn parse_java_import_bindings(text: &str) -> Vec<ImportBinding> {
     let Some(after_import) = trimmed.strip_prefix("import ") else {
         return Vec::new();
     };
-    let path = after_import.trim_start_matches("static ").trim();
-    let local = path
-        .rsplit('.')
-        .next()
-        .unwrap_or(path)
-        .trim_end_matches('*')
-        .trim_matches('.');
+    let stripped = after_import.trim();
+    let (path, is_static) = stripped
+        .strip_prefix("static ")
+        .map(|path| (path.trim(), true))
+        .unwrap_or((stripped, false));
+    let is_wildcard = path.ends_with(".*") || path.ends_with('*');
+    let local = if is_wildcard {
+        "*"
+    } else {
+        path.rsplit('.').next().unwrap_or(path).trim_matches('.')
+    };
     if local.is_empty() {
         return Vec::new();
     }
+    let import_kind = match (is_static, is_wildcard) {
+        (true, true) => "java_static_wildcard_import",
+        (true, false) => "java_static_import",
+        (false, true) => "java_wildcard_import",
+        (false, false) => "java_import",
+    };
     vec![ImportBinding::target_unsupported(
         local.to_string(),
         Some(path.to_string()),
         Some(path.to_string()),
-        "java_import",
+        import_kind,
         "java import target resolution requires classpath context",
     )]
 }
 
 fn parse_csharp_using_bindings(text: &str) -> Vec<ImportBinding> {
     let trimmed = trim_statement(text);
-    let Some(after_using) = trimmed.strip_prefix("using ") else {
+    let after_global = trimmed
+        .strip_prefix("global using ")
+        .map(|body| (body.trim(), true))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("using ")
+                .map(|body| (body.trim(), false))
+        });
+    let Some((after_using, is_global)) = after_global else {
         return Vec::new();
     };
-    let (imported, local) = if let Some((alias, target)) = after_using.split_once('=') {
-        (target.trim(), alias.trim())
+    if after_using.starts_with('(') {
+        return Vec::new();
+    }
+    let (body, is_static) = after_using
+        .strip_prefix("static ")
+        .map(|body| (body.trim(), true))
+        .unwrap_or((after_using, false));
+    let (imported, local, is_alias) = if let Some((alias, target)) = body.split_once('=') {
+        (target.trim(), alias.trim(), true)
     } else {
-        let imported = after_using.trim();
+        let imported = body.trim();
         let local = imported.rsplit('.').next().unwrap_or(imported);
-        (imported, local)
+        (imported, local, false)
     };
     if local.is_empty() {
         return Vec::new();
     }
+    let import_kind = match (is_global, is_static, is_alias) {
+        (true, true, _) => "csharp_global_static_using",
+        (true, false, true) => "csharp_global_using_alias",
+        (true, false, false) => "csharp_global_using",
+        (false, true, _) => "csharp_static_using",
+        (false, false, true) => "csharp_using_alias",
+        (false, false, false) => "csharp_using",
+    };
     vec![ImportBinding::target_unsupported(
         local.to_string(),
         Some(imported.to_string()),
         Some(imported.to_string()),
-        "csharp_using",
+        import_kind,
         "csharp using target resolution requires project reference context",
     )]
 }
 
 fn parse_ruby_import_bindings(text: &str) -> Vec<ImportBinding> {
     let trimmed = trim_statement(text);
-    let import_kind = if trimmed.starts_with("require_relative ") {
-        "ruby_require_relative"
-    } else if trimmed.starts_with("require ") {
-        "ruby_require"
-    } else {
+    let Some(method) = ruby_import_method(trimmed) else {
         return Vec::new();
+    };
+    let import_kind = match method {
+        "require_relative" => "ruby_require_relative",
+        "require" => "ruby_require",
+        "load" => "ruby_load",
+        _ => return Vec::new(),
     };
     first_quoted_literal(trimmed)
         .map(|module| {
@@ -12808,7 +17589,7 @@ fn parse_ruby_import_bindings(text: &str) -> Vec<ImportBinding> {
                 Some(module.clone()),
                 Some(module),
                 import_kind,
-                "ruby require target resolution requires load path context",
+                "ruby require/load target resolution requires load path and runtime context",
             )]
         })
         .unwrap_or_default()
@@ -12820,7 +17601,12 @@ fn parse_php_import_bindings(text: &str) -> Vec<ImportBinding> {
         return after_use
             .split(',')
             .filter_map(|item| {
-                let item = item.trim();
+                let item = item
+                    .trim()
+                    .strip_prefix("function ")
+                    .or_else(|| item.trim().strip_prefix("const "))
+                    .unwrap_or(item.trim())
+                    .trim();
                 let (imported, local) = split_alias(item).unwrap_or_else(|| {
                     let local = item.rsplit('\\').next().unwrap_or(item);
                     (item, local)
@@ -12838,14 +17624,14 @@ fn parse_php_import_bindings(text: &str) -> Vec<ImportBinding> {
             })
             .collect();
     }
-    if trimmed.starts_with("include") || trimmed.starts_with("require") {
+    if let Some(import_kind) = php_include_require_kind(trimmed) {
         return first_quoted_literal(trimmed)
             .map(|module| {
                 vec![ImportBinding::target_unsupported(
                     module.clone(),
                     Some(module.clone()),
                     Some(module),
-                    "php_include",
+                    import_kind,
                     "php include target resolution requires runtime include path context",
                 )]
             })
@@ -13033,8 +17819,15 @@ mod tests {
         emit_mvp4_typescript_property_access_candidates,
         emit_mvp4_typescript_resolved_value_use_candidates,
         emit_mvp4_typescript_value_use_candidates, extract_basic_entities,
-        mvp4_typescript_first_slice_cap_policy, normalize_repo_relative_path, LanguageFrontend,
-        LanguageParser, Mvp4TypeScriptMicroNodeCapPolicy, SourceLanguage, TreeSitterParser,
+        extract_entities_and_relations, extract_parser_fact_bundle,
+        mvp4_typescript_first_slice_cap_policy, normalize_repo_relative_path,
+        parser_fact_bundle_from_extraction, LanguageCapabilityFlag, LanguageCapabilityScope,
+        LanguageCapabilityStatus, LanguageFrontend, LanguageParser,
+        Mvp4TypeScriptMicroNodeCapPolicy, NullProjectResolver, ParserUnknownBoundaryKind,
+        ProjectResolver, ProjectResolverContext, ProjectResolverError, ProjectResolverProvenance,
+        ProjectResolverQueryKind, ProjectResolverResult, ProjectResolverStatus,
+        ProjectResolverTarget, SourceLanguage, TreeSitterParser, LANGUAGE_CAPABILITY_FLAGS,
+        NULL_PROJECT_RESOLVER_VERSION, PARSER_FACT_BUNDLE_VERSION,
     };
 
     const JS_FIXTURE: &str = include_str!("../fixtures/basic.js");
@@ -15018,17 +19811,35 @@ export function broken(value: number, service: any) {
     }
 
     #[test]
-    fn mvp4_property_access_inline_oracle_is_real_and_supported() {
-        let path = "src/service.ts";
-        let source = "\
-export function firstSlice(order: any) {
-  const subtotal = order.total;
-  const value = subtotal.member;
-  return value;
-}
-";
+    fn mvp4_property_access_fixture_oracle_is_real_and_supported() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/mvp4_micro_flow_oracles/manifest.json"
+        ))
+        .expect("fixture manifest parses");
+        let fixture = manifest["fixtures"]
+            .as_array()
+            .expect("fixtures array")
+            .iter()
+            .find(|fixture| {
+                fixture["fixture_id"].as_str() == Some("ts_first_slice_function_local_micro_nodes")
+            })
+            .expect("first slice fixture");
+        let file = &fixture["initial_source"]["files"][0];
+        let path = file["path"].as_str().expect("fixture path");
+        let source = file["contents"].as_str().expect("fixture source");
         assert!(source.contains("subtotal.member"));
         assert!(!source.contains("object.member"));
+
+        let expected_property = fixture["expected_micro_nodes"]
+            .as_array()
+            .expect("expected micro nodes")
+            .iter()
+            .find(|node| node["node_kind"].as_str() == Some("PropertyAccess"))
+            .expect("PropertyAccess oracle");
+        assert_eq!(
+            expected_property["semantic_name_or_literal"].as_str(),
+            Some("subtotal.member")
+        );
 
         let report = mvp4_property_access_report(path, source);
         let property = report
@@ -16533,7 +21344,87 @@ export async function proof(loader: any, value: number) {
         assert!(python
             .known_limitations
             .iter()
-            .any(|limitation| limitation.contains("dataflow")));
+            .any(|limitation| limitation.contains("setup.cfg")));
+        assert_eq!(
+            python.capability_status(LanguageCapabilityFlag::ProjectConfigResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            python.capability_status(LanguageCapabilityFlag::PackageOrModuleResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            python.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::Unsupported)
+        );
+
+        let go = registry
+            .info_for_language(SourceLanguage::Go)
+            .expect("go frontend");
+        assert_eq!(go.support_tier.number(), 3);
+        assert!(go.tree_sitter_grammar_available);
+        assert!(!go.compiler_resolver_available);
+        assert!(go
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("go.mod")));
+        assert_eq!(
+            go.capability_status(LanguageCapabilityFlag::ProjectConfigResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            go.capability_status(LanguageCapabilityFlag::PackageOrModuleResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            go.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            go.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(go.supported_entity_kinds.contains(&EntityKind::Package));
+        assert!(go.supported_relation_kinds.contains(&RelationKind::Spawns));
+
+        let rust = registry
+            .info_for_language(SourceLanguage::Rust)
+            .expect("rust frontend");
+        assert_eq!(rust.support_tier.number(), 3);
+        assert!(rust.tree_sitter_grammar_available);
+        assert!(!rust.compiler_resolver_available);
+        assert!(rust
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("Cargo.toml")));
+        assert_eq!(
+            rust.capability_status(LanguageCapabilityFlag::ProjectConfigResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            rust.capability_status(LanguageCapabilityFlag::PackageOrModuleResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            rust.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            rust.capability_status(LanguageCapabilityFlag::MacroUnknown),
+            Some(LanguageCapabilityStatus::RequiresMacroExpansion)
+        );
+        assert_eq!(
+            rust.capability_status(LanguageCapabilityFlag::BuildDatabaseRequired),
+            Some(LanguageCapabilityStatus::RequiresBuildDatabase)
+        );
+        assert_eq!(
+            rust.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(rust.supported_entity_kinds.contains(&EntityKind::Type));
+        assert!(rust
+            .supported_relation_kinds
+            .contains(&RelationKind::Asserts));
 
         let java = registry
             .info_for_language(SourceLanguage::Java)
@@ -16543,6 +21434,2572 @@ export async function proof(loader: any, value: number) {
             .known_limitations
             .iter()
             .any(|limitation| limitation.contains("syntax/entity")));
+    }
+
+    #[test]
+    fn registry_exposes_capability_flags_without_tier_proof_shortcuts() {
+        let registry = super::default_frontend_registry();
+        for frontend in registry.frontends().iter().map(|frontend| frontend.info()) {
+            let flags = frontend
+                .capabilities
+                .iter()
+                .map(|capability| capability.flag)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                flags.len(),
+                LANGUAGE_CAPABILITY_FLAGS.len(),
+                "capability flags must be complete for {}",
+                frontend.language_id
+            );
+            for expected in LANGUAGE_CAPABILITY_FLAGS {
+                assert!(
+                    flags.contains(expected),
+                    "missing capability flag {:?} for {}",
+                    expected,
+                    frontend.language_id
+                );
+            }
+            assert_ne!(
+                frontend.capability_status(LanguageCapabilityFlag::Unsupported),
+                Some(LanguageCapabilityStatus::SupportedExact),
+                "unsupported cannot serialize as exact support for {}",
+                frontend.language_id
+            );
+            assert_eq!(
+                frontend.project_resolver_interface_version,
+                super::PROJECT_RESOLVER_INTERFACE_VERSION
+            );
+            assert_eq!(frontend.project_resolver, "null_project_resolver");
+            assert_eq!(
+                frontend.project_resolver_status,
+                ProjectResolverStatus::Unsupported
+            );
+        }
+
+        let typescript = registry
+            .info_for_language(SourceLanguage::TypeScript)
+            .expect("typescript frontend");
+        assert_eq!(
+            typescript.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::SupportedExact)
+        );
+        assert_eq!(
+            typescript
+                .capabilities
+                .iter()
+                .find(|capability| {
+                    capability.flag == LanguageCapabilityFlag::LocalFlowPacketSupported
+                })
+                .expect("typescript packet capability")
+                .scope,
+            LanguageCapabilityScope::TypeScriptProductionTsOnly
+        );
+        assert_eq!(
+            typescript.capability_status(LanguageCapabilityFlag::LocalDataflowDerived),
+            Some(LanguageCapabilityStatus::SupportedDerivedWithProvenance)
+        );
+        for flag in [
+            LanguageCapabilityFlag::LocalBindingResolved,
+            LanguageCapabilityFlag::ReadWriteExtracted,
+            LanguageCapabilityFlag::LocalDataflowDerived,
+            LanguageCapabilityFlag::LocalFlowPacketSupported,
+        ] {
+            assert_eq!(
+                typescript
+                    .capabilities
+                    .iter()
+                    .find(|capability| capability.flag == flag)
+                    .expect("typescript scoped capability")
+                    .scope,
+                LanguageCapabilityScope::TypeScriptProductionTsOnly,
+                "{flag:?} must stay scoped to authorized TypeScript .ts production support"
+            );
+        }
+        assert!(
+            typescript
+                .known_limitations
+                .iter()
+                .any(|limitation| { limitation.contains("actually runs and records provenance") }),
+            "compiler facts must require runtime resolver provenance"
+        );
+
+        let tsx = registry
+            .info_for_language(SourceLanguage::Tsx)
+            .expect("tsx frontend");
+        assert_eq!(
+            tsx.capability_status(LanguageCapabilityFlag::CompilerVerified),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            tsx.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            tsx.capability_status(LanguageCapabilityFlag::LocalBindingResolved),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            tsx.capability_status(LanguageCapabilityFlag::ReadWriteExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            tsx.capability_status(LanguageCapabilityFlag::LocalDataflowDerived),
+            Some(LanguageCapabilityStatus::SupportedHeuristic)
+        );
+        assert_eq!(
+            tsx.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(tsx
+            .capabilities
+            .iter()
+            .filter(|capability| matches!(
+                capability.flag,
+                LanguageCapabilityFlag::LocalBindingResolved
+                    | LanguageCapabilityFlag::ReadWriteExtracted
+                    | LanguageCapabilityFlag::LocalDataflowDerived
+                    | LanguageCapabilityFlag::LocalFlowPacketSupported
+            ))
+            .all(|capability| capability.scope == LanguageCapabilityScope::LanguageFrontend));
+        assert!(
+            tsx.known_limitations
+                .iter()
+                .any(|limitation| limitation.contains("not_implemented for TSX")),
+            "TSX must state that MVP4 packet support is not implemented"
+        );
+
+        let javascript = registry
+            .info_for_language(SourceLanguage::JavaScript)
+            .expect("javascript frontend");
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::PackageOrModuleResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::RequireResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::ProjectConfigResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::CompilerVerified),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::LspVerified),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresRuntime)
+        );
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            javascript.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(javascript
+            .capabilities
+            .iter()
+            .filter(|capability| matches!(
+                capability.flag,
+                LanguageCapabilityFlag::PackageOrModuleResolved
+                    | LanguageCapabilityFlag::RequireResolved
+                    | LanguageCapabilityFlag::ProjectConfigResolved
+                    | LanguageCapabilityFlag::LocalFlowPacketSupported
+            ))
+            .all(|capability| capability.scope == LanguageCapabilityScope::LanguageFrontend));
+        assert!(javascript
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("diagnostic evidence")));
+        assert!(javascript
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("not_implemented for JavaScript")));
+
+        let jsx = registry
+            .info_for_language(SourceLanguage::Jsx)
+            .expect("jsx frontend");
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::PackageOrModuleResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::RequireResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::ProjectConfigResolved),
+            Some(LanguageCapabilityStatus::DiagnosticOnly)
+        );
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::CompilerVerified),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::LspVerified),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresRuntime)
+        );
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            jsx.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(jsx
+            .capabilities
+            .iter()
+            .filter(|capability| matches!(
+                capability.flag,
+                LanguageCapabilityFlag::PackageOrModuleResolved
+                    | LanguageCapabilityFlag::RequireResolved
+                    | LanguageCapabilityFlag::ProjectConfigResolved
+                    | LanguageCapabilityFlag::LocalFlowPacketSupported
+            ))
+            .all(|capability| capability.scope == LanguageCapabilityScope::LanguageFrontend));
+        assert!(jsx
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("dynamic props")));
+        assert!(jsx
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("not_implemented for JSX")));
+
+        for language in [
+            SourceLanguage::JavaScript,
+            SourceLanguage::Jsx,
+            SourceLanguage::Tsx,
+            SourceLanguage::Python,
+            SourceLanguage::Go,
+            SourceLanguage::Rust,
+            SourceLanguage::Java,
+            SourceLanguage::CSharp,
+            SourceLanguage::C,
+            SourceLanguage::Cpp,
+            SourceLanguage::Ruby,
+            SourceLanguage::Php,
+        ] {
+            let frontend = registry.info_for_language(language).expect("frontend");
+            assert_ne!(
+                frontend.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+                Some(LanguageCapabilityStatus::SupportedExact),
+                "{:?} must not inherit TypeScript packet proof",
+                language
+            );
+            assert_ne!(
+                frontend.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+                Some(LanguageCapabilityStatus::SupportedExact),
+                "{:?} parser-only calls must not become exact caller/callee proof",
+                language
+            );
+        }
+    }
+
+    #[test]
+    fn java_registry_reports_parser_call_capability_without_resolver_proof() {
+        let registry = super::default_frontend_registry();
+        let java = registry
+            .info_for_language(SourceLanguage::Java)
+            .expect("java frontend");
+
+        assert_eq!(java.support_tier.number(), 1);
+        assert_eq!(
+            java.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            java.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            java.capability_status(LanguageCapabilityFlag::LocalDataflowDerived),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert_eq!(
+            java.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(java.supported_entity_kinds.contains(&EntityKind::Package));
+        assert!(java.supported_entity_kinds.contains(&EntityKind::Field));
+        assert!(java.supported_entity_kinds.contains(&EntityKind::CallSite));
+        assert!(java.supported_relation_kinds.contains(&RelationKind::Calls));
+        assert!(java
+            .extractors
+            .iter()
+            .any(|extractor| extractor.name == "tree-sitter-java-call-syntax"));
+    }
+
+    #[test]
+    fn csharp_registry_reports_parser_call_capability_without_resolver_proof() {
+        let registry = super::default_frontend_registry();
+        let csharp = registry
+            .info_for_language(SourceLanguage::CSharp)
+            .expect("csharp frontend");
+
+        assert_eq!(csharp.support_tier.number(), 1);
+        assert_eq!(
+            csharp.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            csharp.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            csharp.capability_status(LanguageCapabilityFlag::LocalDataflowDerived),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert_eq!(
+            csharp.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(csharp
+            .supported_entity_kinds
+            .contains(&EntityKind::Property));
+        assert!(csharp.supported_entity_kinds.contains(&EntityKind::Type));
+        assert!(csharp
+            .supported_entity_kinds
+            .contains(&EntityKind::CallSite));
+        assert!(csharp
+            .supported_relation_kinds
+            .contains(&RelationKind::Calls));
+        assert!(csharp
+            .extractors
+            .iter()
+            .any(|extractor| extractor.name == "tree-sitter-csharp-call-syntax"));
+    }
+
+    #[test]
+    fn c_registry_reports_parser_call_capability_without_resolver_proof() {
+        let registry = super::default_frontend_registry();
+        let c = registry
+            .info_for_language(SourceLanguage::C)
+            .expect("c frontend");
+
+        assert_eq!(c.support_tier.number(), 1);
+        assert_eq!(
+            c.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            c.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            c.capability_status(LanguageCapabilityFlag::IncludeResolved),
+            Some(LanguageCapabilityStatus::RequiresPreprocessor)
+        );
+        assert_eq!(
+            c.capability_status(LanguageCapabilityFlag::MacroUnknown),
+            Some(LanguageCapabilityStatus::RequiresMacroExpansion)
+        );
+        assert_eq!(
+            c.capability_status(LanguageCapabilityFlag::PreprocessorUnknown),
+            Some(LanguageCapabilityStatus::RequiresPreprocessor)
+        );
+        assert_eq!(
+            c.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(c.supported_entity_kinds.contains(&EntityKind::Type));
+        assert!(c.supported_entity_kinds.contains(&EntityKind::CallSite));
+        assert!(c.supported_relation_kinds.contains(&RelationKind::Calls));
+        assert!(c
+            .supported_relation_kinds
+            .contains(&RelationKind::Argument0));
+        assert!(c
+            .extractors
+            .iter()
+            .any(|extractor| extractor.name == "tree-sitter-c-call-syntax"));
+    }
+
+    #[test]
+    fn cpp_registry_reports_parser_call_capability_without_resolver_proof() {
+        let registry = super::default_frontend_registry();
+        let cpp = registry
+            .info_for_language(SourceLanguage::Cpp)
+            .expect("cpp frontend");
+
+        assert_eq!(cpp.support_tier.number(), 1);
+        assert_eq!(
+            cpp.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            cpp.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresCompiler)
+        );
+        assert_eq!(
+            cpp.capability_status(LanguageCapabilityFlag::IncludeResolved),
+            Some(LanguageCapabilityStatus::RequiresPreprocessor)
+        );
+        assert_eq!(
+            cpp.capability_status(LanguageCapabilityFlag::MacroUnknown),
+            Some(LanguageCapabilityStatus::RequiresMacroExpansion)
+        );
+        assert_eq!(
+            cpp.capability_status(LanguageCapabilityFlag::PreprocessorUnknown),
+            Some(LanguageCapabilityStatus::RequiresPreprocessor)
+        );
+        assert_eq!(
+            cpp.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(cpp.supported_entity_kinds.contains(&EntityKind::Method));
+        assert!(cpp
+            .supported_entity_kinds
+            .contains(&EntityKind::Constructor));
+        assert!(cpp.supported_entity_kinds.contains(&EntityKind::CallSite));
+        assert!(cpp.supported_relation_kinds.contains(&RelationKind::Calls));
+        assert!(cpp
+            .supported_relation_kinds
+            .contains(&RelationKind::Argument0));
+        assert!(cpp
+            .extractors
+            .iter()
+            .any(|extractor| extractor.name == "tree-sitter-cpp-call-syntax"));
+    }
+
+    #[test]
+    fn ruby_registry_reports_parser_call_capability_without_runtime_proof() {
+        let registry = super::default_frontend_registry();
+        let ruby = registry
+            .info_for_language(SourceLanguage::Ruby)
+            .expect("ruby frontend");
+
+        assert_eq!(ruby.support_tier.number(), 1);
+        assert_eq!(
+            ruby.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            ruby.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresRuntime)
+        );
+        assert_eq!(
+            ruby.capability_status(LanguageCapabilityFlag::RequireResolved),
+            Some(LanguageCapabilityStatus::RequiresRuntime)
+        );
+        assert_eq!(
+            ruby.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(ruby.supported_entity_kinds.contains(&EntityKind::Type));
+        assert!(ruby.supported_entity_kinds.contains(&EntityKind::CallSite));
+        assert!(ruby.supported_relation_kinds.contains(&RelationKind::Calls));
+        assert!(ruby
+            .supported_relation_kinds
+            .contains(&RelationKind::Argument0));
+        assert!(ruby
+            .extractors
+            .iter()
+            .any(|extractor| extractor.name == "tree-sitter-ruby-call-syntax"));
+    }
+
+    #[test]
+    fn php_registry_reports_parser_call_capability_without_runtime_proof() {
+        let registry = super::default_frontend_registry();
+        let php = registry
+            .info_for_language(SourceLanguage::Php)
+            .expect("php frontend");
+
+        assert_eq!(php.support_tier.number(), 1);
+        assert_eq!(
+            php.capability_status(LanguageCapabilityFlag::CallExtracted),
+            Some(LanguageCapabilityStatus::SupportedParserOnly)
+        );
+        assert_eq!(
+            php.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
+            Some(LanguageCapabilityStatus::RequiresRuntime)
+        );
+        assert_eq!(
+            php.capability_status(LanguageCapabilityFlag::IncludeResolved),
+            Some(LanguageCapabilityStatus::RequiresRuntime)
+        );
+        assert_eq!(
+            php.capability_status(LanguageCapabilityFlag::RequireResolved),
+            Some(LanguageCapabilityStatus::RequiresRuntime)
+        );
+        assert_eq!(
+            php.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+            Some(LanguageCapabilityStatus::NotImplemented)
+        );
+        assert!(php.supported_entity_kinds.contains(&EntityKind::Interface));
+        assert!(php.supported_entity_kinds.contains(&EntityKind::Trait));
+        assert!(php.supported_entity_kinds.contains(&EntityKind::CallSite));
+        assert!(php.supported_relation_kinds.contains(&RelationKind::Calls));
+        assert!(php
+            .supported_relation_kinds
+            .contains(&RelationKind::Argument0));
+        assert!(php
+            .extractors
+            .iter()
+            .any(|extractor| extractor.name == "tree-sitter-php-call-syntax"));
+    }
+
+    #[test]
+    fn java_frontend_extracts_parser_facts_and_keeps_calls_non_exact() {
+        let source = r#"
+package demo.app;
+
+import java.util.List;
+import java.util.*;
+import static java.lang.Math.max;
+
+@Service
+public class App {
+    private final List<String> names;
+
+    public App(List<String> names) {
+        this.names = names;
+    }
+
+    @Deprecated
+    public String run(String input) {
+        Helper helper = new Helper(input);
+        helper.work(input);
+        return String.valueOf(max(input.length(), 1));
+    }
+}
+
+record UserRecord(String name) {}
+interface Worker { void work(String input); }
+enum Mode { ON }
+class Helper { Helper(String input) {} void work(String input) {} }
+"#;
+        let path = "src/main/java/demo/app/App.java";
+        let extraction = extraction(path, source);
+
+        let package = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Package && entity.name == "demo.app")
+            .expect("package declaration");
+        assert_eq!(
+            metadata_str(package, "target_resolution_claim_state"),
+            Some("requires_compiler")
+        );
+
+        let list = import_entity(&extraction, "List", "java_import");
+        assert_eq!(
+            metadata_str(list, "module_specifier"),
+            Some("java.util.List")
+        );
+        let wildcard = import_entity(&extraction, "*", "java_wildcard_import");
+        assert_eq!(
+            metadata_str(wildcard, "module_specifier"),
+            Some("java.util.*")
+        );
+        let max = import_entity(&extraction, "max", "java_static_import");
+        assert_eq!(
+            metadata_str(max, "module_specifier"),
+            Some("java.lang.Math.max")
+        );
+
+        for (kind, name) in [
+            (EntityKind::Class, "App"),
+            (EntityKind::Class, "UserRecord"),
+            (EntityKind::Interface, "Worker"),
+            (EntityKind::Enum, "Mode"),
+            (EntityKind::Constructor, "App"),
+            (EntityKind::Method, "run"),
+            (EntityKind::Field, "names"),
+            (EntityKind::Type, "Service"),
+            (EntityKind::Type, "Deprecated"),
+        ] {
+            assert!(
+                extraction
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == kind && entity.name == name),
+                "missing Java {kind:?} {name}"
+            );
+        }
+
+        let call_names = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::CallSite)
+            .map(|entity| entity.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "new:Helper",
+            "call:helper.work",
+            "call:String.valueOf",
+            "call:max",
+        ] {
+            assert!(
+                call_names.contains(expected),
+                "missing Java call syntax {expected}: {call_names:?}"
+            );
+        }
+
+        let java_call_edges = extraction
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge.relation, RelationKind::Calls | RelationKind::Callee))
+            .collect::<Vec<_>>();
+        assert!(
+            !java_call_edges.is_empty(),
+            "expected Java call syntax edges"
+        );
+        assert!(java_call_edges
+            .iter()
+            .all(|edge| edge.exactness == Exactness::StaticHeuristic));
+        assert!(extraction.edges.iter().all(|edge| {
+            !matches!(
+                edge.relation,
+                RelationKind::Reads | RelationKind::Writes | RelationKind::FlowsTo
+            )
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn csharp_frontend_extracts_parser_facts_and_keeps_calls_non_exact() {
+        let source = r#"
+using System;
+using System.Collections.Generic;
+using static System.Math;
+using Text = System.String;
+
+namespace Demo.App
+{
+    [Service]
+    public partial class App
+    {
+        public IReadOnlyList<string> Names { get; }
+
+        public App(IReadOnlyList<string> names)
+        {
+            Names = names;
+        }
+
+        [Obsolete]
+        public string Run(string input)
+        {
+            var helper = new Helper(input);
+            helper.Work(input);
+            return Text.Concat(Max(input.Length, 1), helper.ToString());
+        }
+    }
+
+    public record UserRecord(string Name);
+    public interface IWorker { void Work(string input); }
+    public struct ValueBox { public int Value { get; set; } }
+    class Helper { public Helper(string input) {} public void Work(string input) {} }
+}
+"#;
+        let path = "src/App.cs";
+        let extraction = extraction(path, source);
+
+        let system = import_entity(&extraction, "System", "csharp_using");
+        assert_eq!(metadata_str(system, "module_specifier"), Some("System"));
+        let math = import_entity(&extraction, "Math", "csharp_static_using");
+        assert_eq!(metadata_str(math, "module_specifier"), Some("System.Math"));
+        let text_alias = import_entity(&extraction, "Text", "csharp_using_alias");
+        assert_eq!(
+            metadata_str(text_alias, "module_specifier"),
+            Some("System.String")
+        );
+
+        for (kind, name) in [
+            (EntityKind::Module, "Demo.App"),
+            (EntityKind::Class, "App"),
+            (EntityKind::Class, "UserRecord"),
+            (EntityKind::Class, "ValueBox"),
+            (EntityKind::Interface, "IWorker"),
+            (EntityKind::Constructor, "App"),
+            (EntityKind::Method, "Run"),
+            (EntityKind::Property, "Names"),
+            (EntityKind::Property, "Value"),
+            (EntityKind::Type, "Service"),
+            (EntityKind::Type, "Obsolete"),
+        ] {
+            assert!(
+                extraction
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == kind && entity.name == name),
+                "missing C# {kind:?} {name}"
+            );
+        }
+
+        let app = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "App")
+            .expect("App class");
+        assert_eq!(metadata_str(app, "csharp_partial"), Some("true"));
+
+        let call_names = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::CallSite)
+            .map(|entity| entity.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "new:Helper",
+            "call:helper.Work",
+            "call:Text.Concat",
+            "call:Max",
+            "call:helper.ToString",
+        ] {
+            assert!(
+                call_names.contains(expected),
+                "missing C# call syntax {expected}: {call_names:?}"
+            );
+        }
+
+        let csharp_call_edges = extraction
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge.relation, RelationKind::Calls | RelationKind::Callee))
+            .collect::<Vec<_>>();
+        assert!(
+            !csharp_call_edges.is_empty(),
+            "expected C# call syntax edges"
+        );
+        assert!(csharp_call_edges
+            .iter()
+            .all(|edge| edge.exactness == Exactness::StaticHeuristic));
+        assert!(extraction.edges.iter().all(|edge| {
+            !matches!(
+                edge.relation,
+                RelationKind::Reads | RelationKind::Writes | RelationKind::FlowsTo
+            )
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn c_frontend_extracts_parser_facts_and_keeps_calls_non_exact() {
+        let source = r#"
+#include <stdio.h>
+#include "local.h"
+
+typedef unsigned value_t;
+struct Worker { int value; };
+int helper(int value);
+int helper(int value) { return value; }
+int run(int input) {
+    return helper(input);
+}
+"#;
+        let path = "src/app.c";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let stdio = import_entity(&extraction, "stdio.h", "c_include");
+        assert_eq!(metadata_str(stdio, "module_specifier"), Some("stdio.h"));
+        assert_eq!(
+            metadata_str(stdio, "target_resolution_claim_state"),
+            Some("unsupported")
+        );
+        assert_eq!(
+            metadata_str(stdio, "resolution"),
+            Some("unresolved_preprocessor_include")
+        );
+        let local = import_entity(&extraction, "local.h", "c_include");
+        assert_eq!(metadata_str(local, "module_specifier"), Some("local.h"));
+
+        for (kind, name) in [
+            (EntityKind::Type, "value_t"),
+            (EntityKind::Class, "Worker"),
+            (EntityKind::Function, "helper"),
+            (EntityKind::Function, "run"),
+        ] {
+            assert!(
+                extraction
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == kind && entity.name == name),
+                "missing C {kind:?} {name}"
+            );
+        }
+        let typedef = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Type && entity.name == "value_t")
+            .expect("typedef entity");
+        assert_eq!(metadata_str(typedef, "c_typedef"), Some("true"));
+
+        let run = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Function && entity.name == "run")
+            .expect("run function");
+        let call_edges = extraction
+            .edges
+            .iter()
+            .filter(|edge| edge.head_id == run.id && matches!(edge.relation, RelationKind::Calls))
+            .collect::<Vec<_>>();
+        assert!(!call_edges.is_empty(), "expected C call syntax edge");
+        assert!(call_edges
+            .iter()
+            .all(|edge| edge.exactness == Exactness::StaticHeuristic));
+        assert!(extraction.edges.iter().all(|edge| {
+            !matches!(
+                edge.relation,
+                RelationKind::Reads | RelationKind::Writes | RelationKind::FlowsTo
+            )
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().any(|fact| {
+            matches!(
+                fact.edge.relation,
+                RelationKind::Calls | RelationKind::Callee
+            ) && fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness == Exactness::StaticHeuristic
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.not_graph_proof
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn cpp_frontend_extracts_parser_facts_and_keeps_calls_non_exact() {
+        let source = r#"
+#include <vector>
+#include "local.hpp"
+
+namespace demo {
+template <typename T>
+struct Box {
+    T value;
+    Box(T input) : value(input) {}
+    ~Box() {}
+    T run(T input) { return input; }
+    bool operator()(T input) { return input == value; }
+};
+
+int helper(int value);
+int helper(int value) { return value; }
+int run(int input) {
+    Box<int> box(input);
+    box.run(input);
+    return helper(input);
+}
+}
+"#;
+        let path = "src/app.cpp";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let vector = import_entity(&extraction, "vector", "cpp_include");
+        assert_eq!(metadata_str(vector, "module_specifier"), Some("vector"));
+        assert_eq!(
+            metadata_str(vector, "target_resolution_claim_state"),
+            Some("unsupported")
+        );
+        assert_eq!(
+            metadata_str(vector, "resolution"),
+            Some("unresolved_preprocessor_include")
+        );
+        let local = import_entity(&extraction, "local.hpp", "cpp_include");
+        assert_eq!(metadata_str(local, "module_specifier"), Some("local.hpp"));
+
+        let observed_entities = extraction
+            .entities
+            .iter()
+            .map(|entity| format!("{:?}:{}", entity.kind, entity.name))
+            .collect::<Vec<_>>();
+        for (kind, name) in [
+            (EntityKind::Module, "demo"),
+            (EntityKind::Class, "Box"),
+            (EntityKind::Constructor, "Box"),
+            (EntityKind::Method, "destructor_Box"),
+            (EntityKind::Method, "run"),
+            (EntityKind::Method, "operator_overload"),
+            (EntityKind::Function, "helper"),
+            (EntityKind::Function, "run"),
+        ] {
+            assert!(
+                extraction
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == kind && entity.name == name),
+                "missing C++ {kind:?} {name}; observed {observed_entities:?}"
+            );
+        }
+        assert!(
+            !extraction.entities.iter().any(|entity| {
+                entity.kind == EntityKind::Function && matches!(entity.name.as_str(), "box")
+            }),
+            "local C++ object declarations must not be emitted as function facts"
+        );
+        let box_type = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "Box")
+            .expect("Box class");
+        assert_eq!(
+            metadata_str(box_type, "cpp_template_boundary"),
+            Some("true")
+        );
+        let operator = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Method && entity.name == "operator_overload")
+            .expect("operator overload method");
+        assert_eq!(
+            metadata_str(operator, "cpp_operator_overload"),
+            Some("true")
+        );
+
+        let call_names = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::CallSite)
+            .map(|entity| entity.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in ["call:box.run", "call:helper"] {
+            assert!(
+                call_names.contains(expected),
+                "missing C++ call syntax {expected}: {call_names:?}"
+            );
+        }
+
+        let cpp_call_edges = extraction
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge.relation, RelationKind::Calls | RelationKind::Callee))
+            .collect::<Vec<_>>();
+        assert!(!cpp_call_edges.is_empty(), "expected C++ call syntax edges");
+        assert!(cpp_call_edges
+            .iter()
+            .all(|edge| edge.exactness == Exactness::StaticHeuristic));
+        assert!(extraction.edges.iter().all(|edge| {
+            !matches!(
+                edge.relation,
+                RelationKind::Reads | RelationKind::Writes | RelationKind::FlowsTo
+            )
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().any(|fact| {
+            matches!(
+                fact.edge.relation,
+                RelationKind::Calls | RelationKind::Callee
+            ) && fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness == Exactness::StaticHeuristic
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::TemplateBoundary
+                && fact.capability.flag == LanguageCapabilityFlag::CompilerRequired
+                && fact.not_graph_proof
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn ruby_frontend_extracts_parser_facts_and_keeps_calls_non_exact() {
+        let source = r#"
+require 'json'
+require_relative "support/helper"
+load 'tasks/setup.rb'
+
+module Demo
+  class App < BaseApp
+    SERVICE = ServiceRegistry
+
+    def initialize(client)
+      @client = client
+    end
+
+    def run(input)
+      helper = Support::Helper.new(input)
+      helper.work(input)
+      JSON.parse(input)
+    end
+
+    def self.build(input)
+      new(input)
+    end
+  end
+end
+"#;
+        let path = "lib/demo/app.rb";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let json_import = import_entity(&extraction, "json", "ruby_require");
+        assert_eq!(metadata_str(json_import, "module_specifier"), Some("json"));
+        assert_eq!(
+            metadata_str(json_import, "target_resolution_claim_state"),
+            Some("unsupported")
+        );
+        let helper_import = import_entity(&extraction, "support/helper", "ruby_require_relative");
+        assert_eq!(
+            metadata_str(helper_import, "module_specifier"),
+            Some("support/helper")
+        );
+        let load_import = import_entity(&extraction, "tasks/setup.rb", "ruby_load");
+        assert_eq!(
+            metadata_str(load_import, "module_specifier"),
+            Some("tasks/setup.rb")
+        );
+
+        for (kind, name) in [
+            (EntityKind::Module, "Demo"),
+            (EntityKind::Class, "App"),
+            (EntityKind::Method, "initialize"),
+            (EntityKind::Method, "run"),
+            (EntityKind::Method, "build"),
+            (EntityKind::Type, "BaseApp"),
+            (EntityKind::Type, "ServiceRegistry"),
+            (EntityKind::Type, "Support"),
+            (EntityKind::Type, "JSON"),
+        ] {
+            assert!(
+                extraction
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == kind && entity.name == name),
+                "missing Ruby {kind:?} {name}"
+            );
+        }
+
+        let call_names = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::CallSite)
+            .map(|entity| entity.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "call:Support::Helper.new",
+            "call:helper.work",
+            "call:JSON.parse",
+        ] {
+            assert!(
+                call_names.contains(expected),
+                "missing Ruby call syntax {expected}: {call_names:?}"
+            );
+        }
+
+        let ruby_call_edges = extraction
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge.relation, RelationKind::Calls | RelationKind::Callee))
+            .collect::<Vec<_>>();
+        assert!(
+            !ruby_call_edges.is_empty(),
+            "expected Ruby call syntax edges"
+        );
+        assert!(ruby_call_edges
+            .iter()
+            .all(|edge| edge.exactness == Exactness::StaticHeuristic));
+        assert!(extraction.edges.iter().all(|edge| {
+            !matches!(
+                edge.relation,
+                RelationKind::Reads | RelationKind::Writes | RelationKind::FlowsTo
+            )
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().any(|fact| {
+            matches!(
+                fact.edge.relation,
+                RelationKind::Calls | RelationKind::Callee
+            ) && fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness == Exactness::StaticHeuristic
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.not_graph_proof
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn ruby_runtime_framework_and_test_boundaries_are_non_proof() {
+        let source = r#"
+class String
+  def shout
+    upcase
+  end
+end
+
+class App
+  def method_missing(name, *args)
+    send(name, *args)
+  end
+
+  def test_run
+    public_send(:run)
+    self.class.const_get(:Worker)
+    App.class_eval("def generated; end")
+    expect(subject.run).to eq("ok")
+    fake = "fake_call()"
+    # commentOnly()
+  end
+end
+
+Rails.application.routes.draw do
+  get "/apps", to: "apps#index"
+end
+"#;
+        let path = "spec/app_spec.rb";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestFile));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestCase && entity.name == "test_run"));
+        assert!(extraction.entities.iter().any(|entity| {
+            entity.kind == EntityKind::Assertion && entity.name.starts_with("assert@")
+        }));
+        assert!(
+            !extraction
+                .entities
+                .iter()
+                .any(|entity| entity.name.contains("fake_call")
+                    || entity.name.contains("commentOnly"))
+        );
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedCall
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::Reflection
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::FrameworkHeuristic
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+        }));
+    }
+
+    #[test]
+    fn javascript_project_commonjs_and_runtime_boundaries_are_non_proof() {
+        let source = r#"
+import defaultThing, { helper as aliasHelper } from "./helper.js";
+export { aliasHelper };
+const legacy = require("./legacy.cjs");
+module.exports.extra = aliasHelper;
+
+export function run(registry, name, input) {
+  aliasHelper(input);
+  return legacy.invoke(registry[name]());
+}
+
+function patch(User, key) {
+  User.prototype.save = function save() { return true; };
+  User.prototype[key] = function dynamic() { return false; };
+  Object.assign(User.prototype, { load() { return false; }});
+  return import(name);
+}
+"#;
+        let path = "src/app.js";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let alias = import_entity(&extraction, "aliasHelper", "named");
+        assert_eq!(metadata_str(alias, "module_specifier"), Some("./helper.js"));
+        assert_eq!(metadata_str(alias, "imported_name"), Some("helper"));
+        assert_eq!(
+            metadata_str(alias, "target_resolution_claim_state"),
+            Some("unresolved")
+        );
+        assert_eq!(metadata_str(alias, "syntax_claim_state"), Some("exact"));
+
+        let require = extraction
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind == EntityKind::Import
+                    && entity.name == "./legacy.cjs"
+                    && metadata_str(entity, "import_kind") == Some("dynamic_require_literal")
+            })
+            .expect("literal CommonJS require artifact");
+        assert_eq!(
+            metadata_str(require, "target_resolution_claim_state"),
+            Some("unsupported")
+        );
+        assert_eq!(
+            metadata_str(require, "unsupported_reason"),
+            Some("dynamic module target resolution requires a module resolver")
+        );
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Export
+                && metadata_str(entity, "export_kind") == Some("named")));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Function && entity.name == "run"));
+
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::DynamicImport
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedCall
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.reason.contains("prototype")
+                && fact.not_graph_proof
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn python_project_import_dynamic_and_runtime_boundaries_are_non_proof() {
+        let source = r#"
+import importlib
+from .service import run as run_service
+from pkg.plugins import *
+from typing import Optional
+from unittest import mock
+
+def decorator_factory(name: str):
+    def decorate(fn):
+        return fn
+    return decorate
+
+@decorator_factory("case")
+def helper(value: Optional[str]) -> str:
+    return value or "fallback"
+
+def test_dynamic_imports(monkeypatch, name: str):
+    module = importlib.import_module(name)
+    target = getattr(module, "entry")
+    setattr(module, "seen", True)
+    monkeypatch.setattr("pkg.service.run", lambda value: value)
+    mock.patch("pkg.service.run")
+    __import__(name)
+    assert run_service(helper(name)) is not None
+"#;
+        let path = "tests/test_dynamic_imports.py";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let run_service = import_entity(&extraction, "run_service", "python_from_import");
+        assert_eq!(
+            metadata_str(run_service, "module_specifier"),
+            Some(".service")
+        );
+        assert_eq!(metadata_str(run_service, "imported_name"), Some("run"));
+        assert_eq!(
+            metadata_str(run_service, "target_resolution_claim_state"),
+            Some("unsupported")
+        );
+        assert_eq!(
+            metadata_str(run_service, "syntax_claim_state"),
+            Some("exact")
+        );
+
+        let wildcard = import_entity(&extraction, "*", "python_from_wildcard");
+        assert_eq!(
+            metadata_str(wildcard, "module_specifier"),
+            Some("pkg.plugins")
+        );
+        assert!(metadata_str(wildcard, "unsupported_reason")
+            .is_some_and(|reason| reason.contains("wildcard import")));
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestFile));
+        assert!(extraction.entities.iter().any(|entity| {
+            entity.kind == EntityKind::TestCase && entity.name == "test_dynamic_imports"
+        }));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Function && entity.name == "helper"));
+
+        let call_names = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::CallSite)
+            .map(|entity| entity.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(call_names.contains("call:run_service"));
+        assert!(call_names.contains("call:helper"));
+
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::DynamicImport
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.reason.contains("importlib")
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::DynamicImport
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.reason.contains("dunder_import")
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedProperty
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.reason.contains("getattr")
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedProperty
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.reason.contains("setattr")
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::MonkeypatchOpenClassMetaprogramming
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::UnsupportedRelation
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn jsx_component_dynamic_props_and_event_boundaries_are_non_proof() {
+        let source = r#"
+import React from "react";
+import { helper as aliasHelper } from "./helper.js";
+
+export function Button(props) {
+  const Component = props.component;
+  return <Component {...props} onClick={() => aliasHelper(props.label)}>{props.label}</Component>;
+}
+
+export default function App(props) {
+  const Widget = props.registry[props.kind]();
+  import(props.moduleName);
+  return <Button {...props} widget={Widget} />;
+}
+"#;
+        let path = "src/View.jsx";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let alias = import_entity(&extraction, "aliasHelper", "named");
+        assert_eq!(metadata_str(alias, "module_specifier"), Some("./helper.js"));
+        assert_eq!(metadata_str(alias, "imported_name"), Some("helper"));
+        assert_eq!(
+            metadata_str(alias, "target_resolution_claim_state"),
+            Some("unresolved")
+        );
+        assert_eq!(metadata_str(alias, "syntax_claim_state"), Some("exact"));
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Function && entity.name == "Button"));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Function && entity.name == "App"));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Export
+                && metadata_str(entity, "export_kind") == Some("default")));
+
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedProperty
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.reason.contains("spread_props")
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::FrameworkHeuristic
+                && fact.reason.contains("event_handler")
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::DynamicImport
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedCall
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn php_frontend_extracts_parser_facts_and_keeps_calls_non_exact() {
+        let source = r#"
+<?php
+namespace Demo\App;
+
+use Demo\Support\Helper;
+use function Demo\Support\format_value as format_value;
+require_once 'vendor/autoload.php';
+include 'partials/view.php';
+
+interface Worker {
+    public function work($input);
+}
+
+trait Logs {
+    public function log($message) {
+        format_value($message);
+    }
+}
+
+class App implements Worker {
+    public function __construct($helper) {
+        $this->helper = $helper;
+    }
+
+    public static function build($input) {
+        return new self($input);
+    }
+
+    public function run($input) {
+        $this->helper->work($input);
+        Helper::make($input);
+        format_value($input);
+    }
+}
+
+function helper($value) {
+    return $value;
+}
+"#;
+        let path = "src/App.php";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let helper_import = import_entity(&extraction, "Helper", "php_use");
+        assert_eq!(
+            metadata_str(helper_import, "module_specifier"),
+            Some("Demo\\Support\\Helper")
+        );
+        assert_eq!(
+            metadata_str(helper_import, "target_resolution_claim_state"),
+            Some("unsupported")
+        );
+        let function_import = import_entity(&extraction, "format_value", "php_use");
+        assert_eq!(
+            metadata_str(function_import, "imported_name"),
+            Some("Demo\\Support\\format_value")
+        );
+        let autoload = import_entity(&extraction, "vendor/autoload.php", "php_require_once");
+        assert_eq!(
+            metadata_str(autoload, "module_specifier"),
+            Some("vendor/autoload.php")
+        );
+        let partial = import_entity(&extraction, "partials/view.php", "php_include");
+        assert_eq!(
+            metadata_str(partial, "module_specifier"),
+            Some("partials/view.php")
+        );
+
+        for (kind, name) in [
+            (EntityKind::Interface, "Worker"),
+            (EntityKind::Trait, "Logs"),
+            (EntityKind::Class, "App"),
+            (EntityKind::Method, "__construct"),
+            (EntityKind::Method, "build"),
+            (EntityKind::Method, "run"),
+            (EntityKind::Function, "helper"),
+        ] {
+            assert!(
+                extraction
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == kind && entity.name == name),
+                "missing PHP {kind:?} {name}"
+            );
+        }
+
+        let call_names = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::CallSite)
+            .map(|entity| entity.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "call:format_value",
+            "call:self",
+            "call:$this->helper->work",
+            "call:Helper::make",
+        ] {
+            assert!(
+                call_names.contains(expected),
+                "missing PHP call syntax {expected}: {call_names:?}"
+            );
+        }
+
+        let php_call_edges = extraction
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge.relation, RelationKind::Calls | RelationKind::Callee))
+            .collect::<Vec<_>>();
+        assert!(!php_call_edges.is_empty(), "expected PHP call syntax edges");
+        assert!(php_call_edges
+            .iter()
+            .all(|edge| edge.exactness == Exactness::StaticHeuristic));
+        assert!(extraction.edges.iter().all(|edge| {
+            !matches!(
+                edge.relation,
+                RelationKind::Reads | RelationKind::Writes | RelationKind::FlowsTo
+            )
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().any(|fact| {
+            matches!(
+                fact.edge.relation,
+                RelationKind::Calls | RelationKind::Callee
+            ) && fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness == Exactness::StaticHeuristic
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.not_graph_proof
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn php_runtime_framework_and_test_boundaries_are_non_proof() {
+        let source = r#"
+<?php
+use PHPUnit\Framework\TestCase;
+
+class AppTest extends TestCase {
+    public function __call($name, $args) {
+        return call_user_func_array($name, $args);
+    }
+
+    public function __get($name) {
+        return null;
+    }
+
+    public function testRun() {
+        require $GLOBALS['path'];
+        include_once $this->template;
+        spl_autoload_register(function($class) {});
+        $container->get(App::class);
+        app()->make(App::class);
+        $this->assertSame('ok', $this->run());
+        $fake = "fake_call()";
+        // commentOnly();
+    }
+}
+"#;
+        let path = "tests/AppTest.php";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestFile));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestCase && entity.name == "testRun"));
+        assert!(extraction.entities.iter().any(|entity| {
+            entity.kind == EntityKind::Assertion && entity.name.starts_with("assert@")
+        }));
+        assert!(
+            !extraction
+                .entities
+                .iter()
+                .any(|entity| entity.name.contains("fake_call")
+                    || entity.name.contains("commentOnly"))
+        );
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::DynamicImport
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::Reflection
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::FrameworkHeuristic
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+        }));
+    }
+
+    #[test]
+    fn java_runtime_framework_and_test_boundaries_are_non_proof() {
+        let source = r#"
+package demo;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class AppTest {
+    @Autowired
+    Service service;
+
+    @Test
+    void testReflection(String name) throws Exception {
+        Class<?> clazz = Class.forName(name);
+        clazz.getMethod("run");
+        assertEquals(1, service.run());
+        String fake = "fakeCall()";
+        // commentOnly();
+    }
+}
+"#;
+        let path = "src/test/java/demo/AppTest.java";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestFile));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestCase && entity.name == "testReflection"));
+        assert!(extraction.entities.iter().any(|entity| {
+            entity.kind == EntityKind::Assertion && entity.name.starts_with("assert@")
+        }));
+        assert!(!extraction
+            .entities
+            .iter()
+            .any(|entity| entity.name.contains("fakeCall") || entity.name.contains("commentOnly")));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::Reflection
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::FrameworkHeuristic
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+        }));
+    }
+
+    #[test]
+    fn csharp_runtime_framework_and_test_boundaries_are_non_proof() {
+        let source = r#"
+using System;
+using Microsoft.Extensions.DependencyInjection;
+using Xunit;
+
+namespace Demo.App;
+
+public class AppTests
+{
+    [Fact]
+    public void TestReflection(string typeName)
+    {
+        var type = Type.GetType(typeName);
+        type.GetMethod("Run");
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorker, Worker>();
+        Assert.Equal("ok", new App().Run());
+        string fake = "FakeCall()";
+        // CommentOnly();
+    }
+}
+
+[Generator]
+public sealed class DemoGenerator : ISourceGenerator { }
+"#;
+        let path = "tests/AppTests.cs";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestFile));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestCase && entity.name == "TestReflection"));
+        assert!(extraction.entities.iter().any(|entity| {
+            entity.kind == EntityKind::Assertion && entity.name.starts_with("assert@")
+        }));
+        assert!(!extraction
+            .entities
+            .iter()
+            .any(|entity| entity.name.contains("FakeCall") || entity.name.contains("CommentOnly")));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::Reflection
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::FrameworkHeuristic
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::UnsupportedRelation
+                && fact.capability.flag == LanguageCapabilityFlag::CompilerRequired
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+        }));
+    }
+
+    #[test]
+    fn c_macro_preprocessor_function_pointer_and_test_boundaries_are_non_proof() {
+        let source = r#"
+#include <assert.h>
+#define CALL(fn, value) fn(value)
+#ifdef ENABLE_FAST
+int fast_path(int value) { return value; }
+#endif
+
+int helper(int value) { return value; }
+int run(int input) {
+    int (*fp)(int) = helper;
+    return fp(input);
+}
+
+void test_run(void) {
+    assert(run(1) == 1);
+    const char *fake = "fake_call()";
+    // commentOnly();
+}
+"#;
+        let path = "tests/run_test.c";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestFile));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestCase && entity.name == "test_run"));
+        assert!(extraction.entities.iter().any(|entity| {
+            entity.kind == EntityKind::Assertion && entity.name.starts_with("assert@")
+        }));
+        assert!(
+            !extraction
+                .entities
+                .iter()
+                .any(|entity| entity.name.contains("fake_call")
+                    || entity.name.contains("commentOnly"))
+        );
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::MacroDefinition
+                && fact.capability.flag == LanguageCapabilityFlag::MacroUnknown
+                && fact.reason == "macro_definition_requires_macro_expansion"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::PreprocessorBranch
+                && fact.capability.flag == LanguageCapabilityFlag::PreprocessorUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedCall
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.reason == "function_pointer_target_requires_compiler_or_runtime_model"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.not_graph_proof
+        }));
+    }
+
+    #[test]
+    fn cpp_template_macro_preprocessor_function_pointer_and_test_boundaries_are_non_proof() {
+        let source = r#"
+#include <cassert>
+#define CALL(fn, value) fn(value)
+#ifdef ENABLE_FAST
+int fast_path(int value) { return value; }
+#endif
+
+template <typename T>
+struct Runner {
+    virtual int run(T value) { return value; }
+    bool operator()(T value) { return value == value; }
+};
+
+int helper(int value) { return value; }
+int run(int input) {
+    int (*fp)(int) = helper;
+    return fp(input);
+}
+
+void test_run() {
+    assert(run(1) == 1);
+    const char *fake = "fake_call()";
+    // commentOnly();
+}
+"#;
+        let path = "tests/run_test.cpp";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestFile));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::TestCase && entity.name == "test_run"));
+        assert!(extraction.entities.iter().any(|entity| {
+            entity.kind == EntityKind::Assertion && entity.name.starts_with("assert@")
+        }));
+        assert!(
+            !extraction
+                .entities
+                .iter()
+                .any(|entity| entity.name.contains("fake_call")
+                    || entity.name.contains("commentOnly"))
+        );
+        assert!(
+            !extraction.entities.iter().any(|entity| {
+                entity.kind == EntityKind::Function && matches!(entity.name.as_str(), "fp" | "int")
+            }),
+            "C++ function pointer declarations must remain unknown-boundary facts, not functions"
+        );
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::MacroDefinition
+                && fact.capability.flag == LanguageCapabilityFlag::MacroUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::PreprocessorBranch
+                && fact.capability.flag == LanguageCapabilityFlag::PreprocessorUnknown
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::ComputedCall
+                && fact.capability.flag == LanguageCapabilityFlag::DynamicUnknown
+                && fact.reason == "function_pointer_target_requires_compiler_or_runtime_model"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::TemplateBoundary
+                && fact.capability.flag == LanguageCapabilityFlag::CompilerRequired
+                && fact.reason == "cpp_template_instantiation_requires_compiler_model"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.reason == "cpp_virtual_dispatch_requires_compiler_or_runtime_model"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.not_graph_proof
+        }));
+    }
+
+    #[test]
+    fn c_generated_broken_and_same_name_files_keep_conservative_boundaries() {
+        let generated_source = "int generated_helper(int value) { return value; }\n";
+        let generated = extraction("build/generated/include/generated.h", generated_source);
+        let generated_function = generated
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Function && entity.name == "generated_helper")
+            .expect("generated function");
+        assert_eq!(
+            metadata_str(generated_function, "source_role"),
+            Some("unknown")
+        );
+
+        let broken_source = "int safe(int value) { return value; }\nint broken( {\n";
+        let broken = extraction("src/broken.c", broken_source);
+        assert!(broken
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Function && entity.name == "safe"));
+        assert_extraction_spans_inside_source("src/broken.c", broken_source, &broken);
+
+        let first = extraction(
+            "src/one/same.c",
+            "int same_name(int value) { return value; }\n",
+        );
+        let second = extraction(
+            "src/two/same.c",
+            "int same_name(int value) { return value + 1; }\n",
+        );
+        let first_function = first
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Function && entity.name == "same_name")
+            .expect("first same-name function");
+        let second_function = second
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Function && entity.name == "same_name")
+            .expect("second same-name function");
+        assert_ne!(first_function.id, second_function.id);
+        assert_ne!(
+            first_function
+                .source_span
+                .as_ref()
+                .map(|span| &span.repo_relative_path),
+            second_function
+                .source_span
+                .as_ref()
+                .map(|span| &span.repo_relative_path)
+        );
+    }
+
+    #[test]
+    fn java_generated_partial_and_same_name_files_keep_conservative_boundaries() {
+        let generated_source =
+            "package demo.generated;\npublic class GeneratedApp { void run() {} }\n";
+        let generated = extraction(
+            "build/generated/java/demo/generated/GeneratedApp.java",
+            generated_source,
+        );
+        let generated_class = generated
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "GeneratedApp")
+            .expect("generated class");
+        assert_eq!(
+            metadata_str(generated_class, "source_role"),
+            Some("unknown")
+        );
+
+        let broken_source = "package demo;\npublic class Broken { public void run( { helper(); }\n";
+        let broken = extraction("src/main/java/demo/Broken.java", broken_source);
+        assert!(broken
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Class && entity.name == "Broken"));
+        assert_extraction_spans_inside_source(
+            "src/main/java/demo/Broken.java",
+            broken_source,
+            &broken,
+        );
+
+        let first = extraction(
+            "src/main/java/demo/one/SameName.java",
+            "package demo.one; public class SameName { void run() {} }\n",
+        );
+        let second = extraction(
+            "src/main/java/demo/two/SameName.java",
+            "package demo.two; public class SameName { void run() {} }\n",
+        );
+        let first_class = first
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "SameName")
+            .expect("first same-name class");
+        let second_class = second
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "SameName")
+            .expect("second same-name class");
+        assert_ne!(first_class.id, second_class.id);
+        assert_ne!(
+            first_class
+                .source_span
+                .as_ref()
+                .map(|span| &span.repo_relative_path),
+            second_class
+                .source_span
+                .as_ref()
+                .map(|span| &span.repo_relative_path)
+        );
+    }
+
+    #[test]
+    fn csharp_generated_partial_and_same_name_files_keep_conservative_boundaries() {
+        let generated_source =
+            "namespace Demo.Generated { public partial class GeneratedApp { void Run() {} } }\n";
+        let generated = extraction("obj/generated/Demo/GeneratedApp.cs", generated_source);
+        let generated_class = generated
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "GeneratedApp")
+            .expect("generated class");
+        assert_eq!(
+            metadata_str(generated_class, "source_role"),
+            Some("unknown")
+        );
+        assert_eq!(
+            metadata_str(generated_class, "csharp_partial"),
+            Some("true")
+        );
+
+        let broken_source =
+            "namespace Demo; public class Broken { public void Run( { Helper(); }\n";
+        let broken = extraction("src/Broken.cs", broken_source);
+        assert!(broken
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Class && entity.name == "Broken"));
+        assert_extraction_spans_inside_source("src/Broken.cs", broken_source, &broken);
+
+        let first = extraction(
+            "src/One/SameName.cs",
+            "namespace Demo.One { public class SameName { void Run() {} } }\n",
+        );
+        let second = extraction(
+            "src/Two/SameName.cs",
+            "namespace Demo.Two { public class SameName { void Run() {} } }\n",
+        );
+        let first_class = first
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "SameName")
+            .expect("first same-name class");
+        let second_class = second
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Class && entity.name == "SameName")
+            .expect("second same-name class");
+        assert_ne!(first_class.id, second_class.id);
+        assert_ne!(
+            first_class
+                .source_span
+                .as_ref()
+                .map(|span| &span.repo_relative_path),
+            second_class
+                .source_span
+                .as_ref()
+                .map(|span| &span.repo_relative_path)
+        );
+    }
+
+    #[test]
+    fn parser_fact_bundle_carries_language_frontend_and_capability_metadata() {
+        let source = "export function greet(name: string) { return helper(name); }\nfunction helper(value: string) { return value; }\n";
+        let parsed = parsed("src/app.ts", source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+
+        assert_eq!(bundle.bundle_version, PARSER_FACT_BUNDLE_VERSION);
+        assert_eq!(bundle.file_identity.language, "typescript");
+        assert_eq!(bundle.file_identity.frontend, "typescript");
+        assert!(bundle
+            .capability_flags_used
+            .iter()
+            .any(|capability| capability.flag == LanguageCapabilityFlag::SyntaxExact));
+        assert!(bundle
+            .capability_flags_used
+            .iter()
+            .any(|capability| capability.flag == LanguageCapabilityFlag::SpanExact));
+
+        let extraction = bundle.to_basic_extraction();
+        assert_eq!(
+            extraction
+                .file
+                .metadata
+                .get("parser_fact_bundle_version")
+                .and_then(|value| value.as_str()),
+            Some(PARSER_FACT_BUNDLE_VERSION)
+        );
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.metadata.get("parser_capability_flag").is_some()));
+        assert!(extraction
+            .edges
+            .iter()
+            .any(|edge| edge.metadata.get("parser_fact_family").is_some()));
+    }
+
+    #[test]
+    fn null_project_resolver_never_produces_exact_results_or_linter_blockers() {
+        let resolver = NullProjectResolver::for_language(SourceLanguage::TypeScript);
+        let context = ProjectResolverContext::for_file("src/app.ts", SourceLanguage::TypeScript);
+        let results = vec![
+            resolver.discover_project_roots(std::path::Path::new(".")),
+            resolver.load_project_config(std::path::Path::new(".")),
+            resolver.classify_file_membership("src/app.ts", &context),
+            resolver.resolve_module_or_package("./dep", "src/app.ts", &context),
+            resolver.resolve_include_or_require("./dep", "src/app.ts", &context),
+            resolver.resolve_symbol("App", &context),
+            resolver.resolve_call_target("run()", &context),
+            resolver.resolve_local_binding("value", &context),
+            resolver.classify_external_dependency("react", &context),
+            resolver.classify_builtin_or_std("Promise", &context),
+            resolver.classify_dynamic_unknown("import(name)", &context),
+        ];
+
+        for result in results {
+            assert_ne!(result.status, ProjectResolverStatus::Exact);
+            assert!(result.exactness.is_none());
+            assert!(!result.is_exact());
+            assert!(!result.can_block_linter());
+            assert_eq!(result.resolver_version, NULL_PROJECT_RESOLVER_VERSION);
+        }
+
+        let capabilities = resolver.resolver_capabilities();
+        assert!(!capabilities.can_return_exact);
+        assert_eq!(
+            capabilities.dynamic_unknown,
+            ProjectResolverStatus::DynamicUnknown
+        );
+    }
+
+    #[test]
+    fn project_resolver_exact_result_requires_provenance_and_target_span() {
+        let target = ProjectResolverTarget::source_spanned(
+            "App",
+            "src/app.ts",
+            SourceSpan::with_columns("src/app.ts", 1, 1, 1, 4),
+        );
+        let missing_provenance = ProjectResolverProvenance::new(
+            "typescript_compiler_api",
+            "ts-resolver-v1",
+            "",
+            Some("tsconfig.json".to_string()),
+        );
+
+        let error = ProjectResolverResult::exact(
+            ProjectResolverQueryKind::Symbol,
+            target.clone(),
+            missing_provenance,
+            Some("tsconfig.json".to_string()),
+            1.0,
+            Exactness::CompilerVerified,
+        )
+        .expect_err("missing provenance must be rejected");
+        assert!(matches!(error, ProjectResolverError::MissingProvenance(_)));
+
+        let missing_span_target = ProjectResolverTarget {
+            name: Some("App".to_string()),
+            repo_relative_path: Some("src/app.ts".to_string()),
+            source_span: None,
+        };
+        let provenance = ProjectResolverProvenance::new(
+            "typescript_compiler_api",
+            "ts-resolver-v1",
+            "TypeScript Compiler API resolved symbol from program source file",
+            Some("tsconfig.json".to_string()),
+        );
+        let error = ProjectResolverResult::exact(
+            ProjectResolverQueryKind::Symbol,
+            missing_span_target,
+            provenance.clone(),
+            Some("tsconfig.json".to_string()),
+            1.0,
+            Exactness::CompilerVerified,
+        )
+        .expect_err("missing span must be rejected");
+        assert!(matches!(error, ProjectResolverError::MissingTargetSpan(_)));
+
+        let exact = ProjectResolverResult::exact(
+            ProjectResolverQueryKind::Symbol,
+            target,
+            provenance,
+            Some("tsconfig.json".to_string()),
+            1.0,
+            Exactness::CompilerVerified,
+        )
+        .expect("complete exact result");
+        assert_eq!(exact.status, ProjectResolverStatus::Exact);
+        assert_eq!(exact.exactness, Some(Exactness::CompilerVerified));
+        assert!(exact.can_block_linter());
+    }
+
+    #[test]
+    fn project_resolver_external_builtin_and_dynamic_statuses_are_distinct() {
+        let external = ProjectResolverResult::external_dependency(
+            "react",
+            "manifest-resolver-v1",
+            "package.json dependency root matched",
+        );
+        let builtin = ProjectResolverResult::builtin_or_std(
+            "Promise",
+            "stdlib-resolver-v1",
+            "JavaScript builtin root matched",
+        );
+        let dynamic = ProjectResolverResult::dynamic_unknown(
+            ProjectResolverQueryKind::DynamicUnknown,
+            "null_project_resolver_v1",
+            "computed import specifier",
+        );
+
+        assert_eq!(external.status, ProjectResolverStatus::External);
+        assert_eq!(builtin.status, ProjectResolverStatus::BuiltinOrStd);
+        assert_eq!(dynamic.status, ProjectResolverStatus::DynamicUnknown);
+        assert_ne!(external.status, builtin.status);
+        assert_ne!(external.status, dynamic.status);
+        assert_ne!(builtin.status, dynamic.status);
+        assert!(!external.can_block_linter());
+        assert!(!builtin.can_block_linter());
+        assert!(!dynamic.can_block_linter());
+    }
+
+    #[test]
+    fn parser_fact_bundle_records_null_resolver_version_in_fact_metadata() {
+        let source =
+            "export function greet() { return helper(); }\nfunction helper() { return 1; }\n";
+        let parsed = parsed("src/resolver-metadata.ts", source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+
+        let resolver = bundle
+            .resolver_metadata
+            .as_ref()
+            .expect("resolver metadata");
+        assert_eq!(resolver.resolver, "null_project_resolver");
+        assert_eq!(resolver.resolver_version, NULL_PROJECT_RESOLVER_VERSION);
+        assert_eq!(resolver.status, ProjectResolverStatus::Unsupported.as_str());
+
+        let extraction = bundle.to_basic_extraction();
+        assert_eq!(
+            extraction
+                .file
+                .metadata
+                .get("parser_resolver_version")
+                .and_then(serde_json::Value::as_str),
+            Some(NULL_PROJECT_RESOLVER_VERSION)
+        );
+        assert!(extraction.entities.iter().any(|entity| {
+            entity
+                .metadata
+                .get("parser_resolver_status")
+                .and_then(serde_json::Value::as_str)
+                == Some(ProjectResolverStatus::Unsupported.as_str())
+        }));
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.metadata
+                .get("parser_resolver_version")
+                .and_then(serde_json::Value::as_str)
+                == Some(NULL_PROJECT_RESOLVER_VERSION)
+        }));
+    }
+
+    #[test]
+    fn parser_fact_bundle_preserves_exact_parser_entity_source_span() {
+        let source = "function namedThing(input: string) { return input; }\n";
+        let parsed = parsed("src/entity.ts", source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+
+        let function_fact = bundle
+            .entity_facts
+            .iter()
+            .find(|fact| {
+                fact.entity.kind == EntityKind::Function && fact.entity.name == "namedThing"
+            })
+            .expect("function entity fact");
+        assert_eq!(function_fact.exactness, Exactness::ParserVerified);
+        assert!(function_fact.source_span.is_some());
+        assert_eq!(
+            function_fact.capability.flag,
+            LanguageCapabilityFlag::SyntaxExact
+        );
+        assert!(bundle
+            .source_span_facts
+            .iter()
+            .any(|fact| fact.owner_id == function_fact.entity.id));
+    }
+
+    #[test]
+    fn parser_fact_bundle_parser_call_syntax_is_not_caller_callee_exact() {
+        let source = "function run() { missingTarget(); }\n";
+        let parsed = parsed("src/calls.js", source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+
+        assert!(!bundle.direct_call_syntax_facts.is_empty());
+        assert!(bundle
+            .direct_call_syntax_facts
+            .iter()
+            .all(|fact| fact.capability.flag == LanguageCapabilityFlag::CallExtracted));
+        // JS caller/callee exactness is RequiresRuntime in the capability
+        // matrix, so the honest boundary kind is RuntimeRequired (not
+        // UnsupportedRelation): the syntax is extracted, the proof is not.
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.direct_call_syntax_facts.iter().all(|fact| {
+            fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+    }
+
+    #[test]
+    fn parser_fact_bundle_dynamic_import_boundary_is_first_class() {
+        let source = "async function load(name) { return import(name); }\n";
+        let parsed = parsed("src/dynamic.js", source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+
+        let dynamic = bundle
+            .unknown_boundary_facts
+            .iter()
+            .find(|fact| fact.kind == ParserUnknownBoundaryKind::DynamicImport)
+            .expect("dynamic import unknown boundary");
+        assert_eq!(
+            dynamic.capability.flag,
+            LanguageCapabilityFlag::DynamicUnknown
+        );
+        assert!(dynamic.source_span.is_some());
+        assert!(dynamic.not_graph_proof);
+    }
+
+    #[test]
+    fn parser_fact_bundle_runtime_required_call_boundary_is_queryable() {
+        let source = "function run() { unknownService.start(); }\n";
+        let parsed = parsed("src/unsupported.js", source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+
+        // The JS capability matrix marks CallerCalleeExact as RequiresRuntime;
+        // the unknown-boundary fact must carry that status and its mapped
+        // RuntimeRequired kind so the boundary stays queryable and honest.
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.capability.status == LanguageCapabilityStatus::RequiresRuntime
+        }));
+    }
+
+    #[test]
+    fn parser_fact_bundle_downgrades_derived_relation_missing_provenance() {
+        let source = "function a() { return 1; }\n";
+        let parsed = parsed("src/provenance.ts", source);
+        let mut extraction = extract_entities_and_relations(&parsed, source);
+        let edge = extraction.edges.first_mut().expect("edge");
+        let edge_id = edge.id.clone();
+        edge.derived = true;
+        edge.exactness = Exactness::DerivedFromVerifiedEdges;
+        edge.provenance_edges.clear();
+
+        let bundle = parser_fact_bundle_from_extraction(&parsed, source, extraction);
+        let relation = bundle
+            .relation_facts
+            .iter()
+            .find(|fact| fact.edge.id == edge_id)
+            .expect("relation fact");
+        assert_eq!(relation.exactness, Exactness::Inferred);
+        assert!(bundle
+            .extraction_warnings
+            .iter()
+            .any(|warning| warning.warning_kind == "derived_relation_missing_provenance"));
+
+        let enriched = bundle.to_basic_extraction();
+        let enriched_edge = enriched
+            .edges
+            .iter()
+            .find(|edge| edge.id == edge_id)
+            .expect("enriched edge");
+        assert_eq!(
+            enriched_edge
+                .metadata
+                .get("parser_fact_bundle_provenance_status")
+                .and_then(|value| value.as_str()),
+            Some("missing_required_provenance")
+        );
+    }
+
+    #[test]
+    fn parser_fact_bundle_preserves_legacy_graph_fact_identity() {
+        let source =
+            "export function greet() { return helper(); }\nfunction helper() { return 1; }\n";
+        let parsed = parsed("src/legacy.ts", source);
+        let legacy = extract_entities_and_relations(&parsed, source);
+        let bundled = extract_parser_fact_bundle(&parsed, source).to_basic_extraction();
+
+        let legacy_entities = legacy
+            .entities
+            .iter()
+            .map(|entity| {
+                (
+                    entity.id.clone(),
+                    entity.kind,
+                    entity.qualified_name.clone(),
+                    entity.source_span.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let bundled_entities = bundled
+            .entities
+            .iter()
+            .map(|entity| {
+                (
+                    entity.id.clone(),
+                    entity.kind,
+                    entity.qualified_name.clone(),
+                    entity.source_span.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(legacy_entities, bundled_entities);
+
+        let legacy_edges = legacy
+            .edges
+            .iter()
+            .map(|edge| {
+                (
+                    edge.id.clone(),
+                    edge.head_id.clone(),
+                    edge.relation,
+                    edge.tail_id.clone(),
+                    edge.source_span.clone(),
+                    edge.exactness,
+                )
+            })
+            .collect::<Vec<_>>();
+        let bundled_edges = bundled
+            .edges
+            .iter()
+            .map(|edge| {
+                (
+                    edge.id.clone(),
+                    edge.head_id.clone(),
+                    edge.relation,
+                    edge.tail_id.clone(),
+                    edge.source_span.clone(),
+                    edge.exactness,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(legacy_edges, bundled_edges);
+    }
+
+    #[test]
+    fn parser_fact_bundle_does_not_change_typescript_mvp4_packet_source_facts() {
+        let parsed = parsed("src/simple_function.ts", SIMPLE_FUNCTION);
+        let before = emit_mvp4_typescript_micro_flow_extraction_context(&parsed, SIMPLE_FUNCTION);
+
+        let bundle = extract_parser_fact_bundle(&parsed, SIMPLE_FUNCTION);
+        assert_eq!(bundle.file_identity.language, "typescript");
+
+        let after = emit_mvp4_typescript_micro_flow_extraction_context(&parsed, SIMPLE_FUNCTION);
+        assert_eq!(
+            before.inventory.candidates.len(),
+            after.inventory.candidates.len()
+        );
+        assert_eq!(
+            before.persistable_value_uses.len(),
+            after.persistable_value_uses.len()
+        );
+        assert_eq!(
+            before.micro_edges.candidates.len(),
+            after.micro_edges.candidates.len()
+        );
     }
 
     #[test]
@@ -16695,6 +24152,301 @@ export async function proof(loader: any, value: number) {
                 .iter()
                 .any(|entity| entity.kind == EntityKind::CallSite));
         }
+    }
+
+    #[test]
+    fn go_project_parser_facts_and_unknown_boundaries_are_non_proof() {
+        let source = r#"
+//go:build linux
+// +build linux
+package worker
+
+import "C"
+import (
+    "fmt"
+    external "github.com/acme/ext/pkg"
+    "example.com/acme/app/internal/tools"
+)
+
+type Runner interface {
+    Run(string) string
+}
+
+type Worker struct {
+    Ch chan string
+}
+
+func helper(value string) string {
+    return value
+}
+
+func (w Worker) Run(value string) string {
+    local := helper(value)
+    go helper(local)
+    w.Ch <- local
+    select {
+    case got := <-w.Ch:
+        return fmt.Sprint(got)
+    default:
+        return external.Make(local)
+    }
+}
+"#;
+        let path = "internal/worker/worker.go";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        let package = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Package && entity.name == "worker")
+            .expect("Go package entity");
+        assert_eq!(
+            metadata_str(package, "go_syntax_kind"),
+            Some("package_clause")
+        );
+        assert_eq!(
+            metadata_str(package, "target_resolution_claim_state"),
+            Some("diagnostic_only")
+        );
+
+        let external_import = import_entity(&extraction, "external", "go_import");
+        assert_eq!(
+            metadata_str(external_import, "module_specifier"),
+            Some("github.com/acme/ext/pkg")
+        );
+        assert_eq!(
+            metadata_str(external_import, "target_resolution_claim_state"),
+            Some("unsupported")
+        );
+        let tools_import = import_entity(&extraction, "tools", "go_import");
+        assert_eq!(
+            metadata_str(tools_import, "module_specifier"),
+            Some("example.com/acme/app/internal/tools")
+        );
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Interface && entity.name == "Runner"));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Class && entity.name == "Worker"));
+        let helper = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Function && entity.name == "helper")
+            .expect("helper function");
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.relation == RelationKind::Calls
+                && edge.tail_id == helper.id
+                && edge.exactness == Exactness::ParserVerified
+        }));
+        assert!(extraction
+            .edges
+            .iter()
+            .any(|edge| edge.relation == RelationKind::Spawns));
+
+        assert!(bundle.direct_call_syntax_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::BuildTagCfgBoundary
+                && fact.capability.flag == LanguageCapabilityFlag::BuildDatabaseRequired
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.reason == "go_cgo_import_requires_cgo_build_context"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.reason == "go_channel_send_receive_requires_runtime_or_type_model"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.reason == "go_interface_target_requires_go_types_model"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.not_graph_proof
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
+    }
+
+    #[test]
+    fn rust_project_parser_facts_and_unknown_boundaries_are_non_proof() {
+        let source = r#"
+#[cfg(feature = "serde")]
+pub mod gated {
+    pub fn gated_helper() {}
+}
+
+pub mod util {
+    pub fn helper(value: &str) -> String {
+        value.to_string()
+    }
+}
+
+use crate::util::helper;
+
+pub type ServiceId = u64;
+
+pub trait Runner {
+    fn run(&self) -> String;
+}
+
+pub struct Service;
+
+impl Service {
+    pub fn new() -> Self {
+        Service
+    }
+
+    pub fn direct(&self) -> String {
+        helper("ok")
+    }
+}
+
+impl Runner for Service {
+    fn run(&self) -> String {
+        unsafe {
+            core::ptr::read_volatile(&0);
+        }
+        self.direct()
+    }
+}
+
+macro_rules! local_macro {
+    () => {
+        helper("macro")
+    };
+}
+
+pub fn caller(r: &dyn Runner) -> String {
+    let service = Service::new();
+    service.direct();
+    local_macro!();
+    r.run()
+}
+"#;
+        let path = "src/lib.rs";
+        let parsed = parsed(path, source);
+        let bundle = extract_parser_fact_bundle(&parsed, source);
+        let extraction = bundle.to_basic_extraction();
+
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Module && entity.name == "util"));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Trait && entity.name == "Runner"));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Class && entity.name == "Service"));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Type && entity.name == "ServiceId"));
+        assert!(extraction
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Import && entity.name.contains("helper")));
+
+        let direct = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Method && entity.name == "direct")
+            .expect("direct method");
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.relation == RelationKind::Calls
+                && edge.tail_id == direct.id
+                && edge.exactness == Exactness::ParserVerified
+        }));
+
+        let caller = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Function && entity.name == "caller")
+            .expect("caller function");
+        let run_ids = extraction
+            .entities
+            .iter()
+            .filter(|entity| entity.name == "run")
+            .map(|entity| entity.id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !run_ids.is_empty(),
+            "fixture should include trait/impl run declarations"
+        );
+        assert!(
+            extraction.edges.iter().all(|edge| {
+                !(edge.relation == RelationKind::Calls
+                    && edge.head_id == caller.id
+                    && run_ids.contains(edge.tail_id.as_str())
+                    && edge.exactness == Exactness::ParserVerified)
+            }),
+            "dyn trait dispatch must not become parser-exact caller/callee proof"
+        );
+
+        assert!(bundle.direct_call_syntax_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallExtracted
+                && fact.exactness != Exactness::CompilerVerified
+                && fact.exactness != Exactness::LspVerified
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::BuildTagCfgBoundary
+                && fact.capability.flag == LanguageCapabilityFlag::BuildDatabaseRequired
+                && fact.reason == "rust_cfg_boundary_requires_cargo_feature_or_build_configuration"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::MacroDefinition
+                && fact.capability.flag == LanguageCapabilityFlag::MacroUnknown
+                && fact.reason == "macro_definition_requires_macro_expansion"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::MacroInvocation
+                && fact.capability.flag == LanguageCapabilityFlag::MacroUnknown
+                && fact.reason == "macro_call_requires_macro_expansion"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.capability.flag == LanguageCapabilityFlag::CompilerRequired
+                && fact.reason == "rust_unsafe_requires_compiler_semantics"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::RuntimeRequired
+                && fact.capability.flag == LanguageCapabilityFlag::RuntimeUnknown
+                && fact.reason == "rust_trait_object_dispatch_requires_type_and_runtime_model"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.capability.flag == LanguageCapabilityFlag::CompilerRequired
+                && fact.reason == "rust_trait_impl_dispatch_requires_type_solver"
+                && fact.not_graph_proof
+        }));
+        assert!(bundle.unknown_boundary_facts.iter().any(|fact| {
+            fact.capability.flag == LanguageCapabilityFlag::CallerCalleeExact
+                && fact.kind == ParserUnknownBoundaryKind::CompilerRequired
+                && fact.not_graph_proof
+        }));
+        assert_extraction_spans_inside_source(path, source, &extraction);
     }
 
     #[test]
@@ -17102,6 +24854,11 @@ mod tests {
             (
                 "src/test/java/AppTest.java",
                 "public class AppTest { void testService() {} }\n",
+                "test",
+            ),
+            (
+                "tests/AppTests.cs",
+                "public class AppTests { void TestService() {} }\n",
                 "test",
             ),
             (
@@ -17911,7 +25668,7 @@ export default function View(props: ViewProps) { return <widgets.Panel />; }\n";
                 "fixtures/tier1/App.cs",
                 "using Alias = System.Text.StringBuilder; public class App {}\n",
                 "Alias",
-                "csharp_using",
+                "csharp_using_alias",
             ),
             (
                 "fixtures/tier1/app.php",
@@ -19014,19 +26771,21 @@ export function run() {
     }
 
     #[test]
-    fn tier2_c_and_cpp_direct_calls_are_supported_when_syntax_is_plain() {
+    fn tier2_c_and_cpp_direct_calls_respect_language_capability_boundaries() {
         let cases = [
             (
                 "fixtures/tier2/direct.c",
                 "int helper(int value) { return value; }\nint run(int input) {\n  return helper(input);\n}\n",
+                Exactness::StaticHeuristic,
             ),
             (
                 "fixtures/tier2/direct.cpp",
                 "int helper(int value) { return value; }\nint run(int input) {\n  return helper(input);\n}\n",
+                Exactness::StaticHeuristic,
             ),
         ];
 
-        for (path, source) in cases {
+        for (path, source, expected_exactness) in cases {
             let extraction = extraction(path, source);
             let helper = extraction
                 .entities
@@ -19042,15 +26801,17 @@ export function run() {
                 .iter()
                 .find(|entity| entity.kind == EntityKind::Function && entity.name == "run")
                 .unwrap_or_else(|| panic!("{path}: missing run function"));
-            assert!(
-                extraction.edges.iter().any(|edge| {
+            let call = extraction
+                .edges
+                .iter()
+                .find(|edge| {
                     edge.relation == RelationKind::Calls
                         && edge.head_id == run.id
-                        && edge.tail_id == helper.id
-                        && edge.exactness == Exactness::ParserVerified
-                }),
-                "{path}: missing exact direct C-family call"
-            );
+                        && (edge.tail_id == helper.id
+                            || entity_name(&extraction, &edge.tail_id) == Some("helper"))
+                })
+                .unwrap_or_else(|| panic!("{path}: missing direct C-family call syntax"));
+            assert_eq!(call.exactness, expected_exactness, "{path}");
         }
     }
 

@@ -374,6 +374,37 @@ impl MicroEdgeLanguageCapability {
                 .extraction_version
                 .is_some_and(|expected| extraction_version.trim() == expected)
     }
+
+    /// Like `supports_claimable_exact`, but honors the capability's own
+    /// activation contract: exact-capable relations require `Exact` rows,
+    /// while derived-with-provenance relations (LOCAL_FLOWS_TO) require
+    /// `DerivedWithProvenance` rows. Claimability label and extraction
+    /// version must match either way; every other status is never claimable.
+    pub fn supports_claimable_proof_row(
+        self,
+        frontend: &str,
+        source_role: MicroSourceRole,
+        exactness: MicroExactness,
+        claimability: &str,
+        extraction_version: &str,
+    ) -> bool {
+        let exactness_matches_activation = match self.activation_status {
+            MicroEdgeSupportStatus::ExactCapable => exactness == MicroExactness::Exact,
+            MicroEdgeSupportStatus::DerivedWithProvenanceCapable => {
+                exactness == MicroExactness::DerivedWithProvenance
+            }
+            _ => return false,
+        };
+        exactness_matches_activation
+            && self.matches_frontend(frontend)
+            && source_role == MicroSourceRole::Production
+            && self
+                .claimability_label
+                .is_some_and(|expected| claimability.trim() == expected)
+            && self
+                .extraction_version
+                .is_some_and(|expected| extraction_version.trim() == expected)
+    }
 }
 
 const LOCAL_RETURNS_TO_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] =

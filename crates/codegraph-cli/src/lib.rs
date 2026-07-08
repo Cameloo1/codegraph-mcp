@@ -33,8 +33,8 @@ use codegraph_core::{
     combine_evidence_roles, mvp4_micro_edge_language_capability, normalize_repo_relative_path,
     stable_edge_id, ContextPacket, ContextSnippet, Edge, EdgeClass, EdgeContext, Entity,
     EntityKind, EvidenceRole, EvidenceRoleDecision, Exactness, FileRecord, Metadata, MicroEdgeKind,
-    MicroExactness, MicroSourceRole, PathEvidence, RelationKind, RepoIndexState,
-    RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
+    MicroEdgeSupportStatus, MicroExactness, MicroSourceRole, PathEvidence, RelationKind,
+    RepoIndexState, RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
     RetrievalVerificationStatus, SourceSpan, SupportedRelationStatus, ValidationBlockingLevel,
     ValidationClassification, ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
     ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
@@ -53,7 +53,8 @@ pub use codegraph_index::{
     default_db_path, graph_fact_hash, index_repo, index_repo_to_db_with_options,
     index_repo_with_options, inspect_db_lifecycle_preflight,
     inspect_db_lifecycle_surface_preflight, inspect_repo_db_passport, load_vector_chunk_index_json,
-    normalize_changed_path, open_normalized_fact_snapshot_session, parse_extract_pending_files,
+    mvp4_2_micro_edge_endpoint_kinds, normalize_changed_path,
+    open_normalized_fact_snapshot_session, parse_extract_pending_files,
     query_candidate_spool_index_for_repo, rebuild_candidate_spool_query_index_for_repo,
     refresh_index_profile_derived_fields, require_reusable_db_passport,
     rtds_dependency_closure_for_changed_paths_to_db, scope_policy_hash, should_ignore_path,
@@ -71,15 +72,18 @@ pub use codegraph_index::{
     ValidateEditChangedFilesPreflight, VectorChunkArtifactFormat, VectorChunkIndexArtifactOptions,
     VectorChunkIndexBuildOptions, DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT,
     DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
-    INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, REFERENCE_CLASS_BUILTIN_OR_STD,
+    INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, REFERENCE_CLASS_ALL,
+    REFERENCE_CLASS_BUILTIN_OR_STD, REFERENCE_CLASS_COMPILER_REQUIRED,
     REFERENCE_CLASS_DYNAMIC_OR_COMPUTED, REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
-    REFERENCE_CLASS_MACRO_OR_CODEGEN, REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+    REFERENCE_CLASS_LSP_REQUIRED, REFERENCE_CLASS_MACRO_OR_CODEGEN,
+    REFERENCE_CLASS_REPO_LOCAL_CANDIDATE, REFERENCE_CLASS_RUNTIME_REQUIRED,
+    REFERENCE_CLASS_UNKNOWN, REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION,
     SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES, SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
     UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
     content_hash, detect_language, extract_entities_and_relations, language_frontends,
-    LanguageParser, TreeSitterParser,
+    LanguageParser, TreeSitterParser, LANGUAGE_CAPABILITY_FLAGS, LANGUAGE_CAPABILITY_STATUS_VALUES,
 };
 use codegraph_query::{
     extract_prompt_seed_provenance, extract_prompt_seeds, plan_task_retrieval, ContextPackRequest,
@@ -327,7 +331,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "agent-use",
-        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
+        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
         description: "Use the production agent profile outside the source tree.",
     },
     CommandSpec {
@@ -342,7 +346,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--db <path>]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--db <path>]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
@@ -2572,7 +2576,16 @@ fn run_languages_command(args: &[String]) -> CliOutput {
         [flag] if flag == "--json" => success(json_line(json!({
             "status": "ok",
             "phase": PHASE,
-            "source_of_truth": "MVP.md Prompt 27",
+            "source_of_truth": "parser_frontend_registry",
+            "capability_model": {
+                "source_of_truth": "language_frontends.capabilities",
+                "old_tiers_backward_compatible": true,
+                "old_tier_alone_drives_proof": false,
+                "old_tier_alone_drives_linter_blocking": false,
+                "promotion_gate": "reports/audit/artifacts/pre_mvp4_4_full_language_frontends/promotion_gate_contract.json"
+            },
+            "capability_flags": LANGUAGE_CAPABILITY_FLAGS,
+            "capability_status_values": LANGUAGE_CAPABILITY_STATUS_VALUES,
             "frontends": language_frontends(),
         }))),
         _ => command_error(
@@ -3137,6 +3150,7 @@ fn render_languages_table() -> String {
     }
     rows.push(String::new());
     rows.push("Support tiers: 0=file discovery, 1=syntax/entities, 2=imports/exports/packages, 3=calls, 4=compiler/LSP verification, 5=dataflow/security/test impact.".to_string());
+    rows.push("Capability flags in `codegraph-mcp languages --json` are the source of truth for proof, linter, context, and packet support; old tiers are compatibility summaries.".to_string());
     rows.push("Unsupported capabilities are explicit in `codegraph-mcp languages --json`; new language frontends do not fake call/dataflow/security support.".to_string());
     format!("{}\n", rows.join("\n"))
 }
@@ -5359,6 +5373,18 @@ fn context_pack_patch_assist_packet_from_response(
             "signals": [],
         })),
         "task_roles": routing.get("task_roles").cloned().unwrap_or_else(|| json!([])),
+        "language_capability_plan": routing.get("language_capability_plan").cloned().unwrap_or_else(|| json!({
+            "status": "unavailable",
+            "proof_boundary": {
+                "capability_metadata_does_not_create_graph_proof": true,
+                "unsupported_relations_are_not_blockers": true
+            },
+            "local_flow_packet_boundary": {
+                "non_typescript_packet_overclaim_count": 0,
+                "packet_handles_do_not_create_proof": true,
+                "context_entry_command_activated": false
+            }
+        })),
         "first_use_state": first_use_state,
         "critical_files": critical_files,
         "critical_symbols": critical_symbols,
@@ -5372,6 +5398,8 @@ fn context_pack_patch_assist_packet_from_response(
         "unknowns": unknowns,
         "risks": risks,
         "validation_steps": validation_steps,
+        "language_validation_steps": routing_take_array(routing, "language_validation_steps", PATCH_ASSIST_PACKET_QUERY_LIMIT),
+        "validation_steps_language_aware": routing.get("validation_steps_language_aware").cloned().unwrap_or_else(|| json!(true)),
         "follow_up_queries": follow_up_queries,
         "expansion_handles": expansion_handles,
         "artifact_or_db_inspection_requirements": artifact_or_db_inspection_requirements,

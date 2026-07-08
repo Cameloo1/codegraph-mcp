@@ -29,8 +29,8 @@ use codegraph_core::{
     stable_entity_id_for_kind, validate_micro_fact_provenance, Edge, EdgeClass, EdgeContext,
     Entity, EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, MicroDerivationKind,
     MicroEdgeCandidate, MicroEdgeKind, MicroEdgeSupportStatus, MicroNodeKind, MicroSourceRole,
-    NormalizedClaimabilityMetadata, NormalizedEdgeFact, NormalizedEntityFact,
-    NormalizedFactEnvelope, NormalizedFactOmission, NormalizedFileFact,
+    NormalizedCapabilityMetadataFact, NormalizedClaimabilityMetadata, NormalizedEdgeFact,
+    NormalizedEntityFact, NormalizedFactEnvelope, NormalizedFactOmission, NormalizedFileFact,
     NormalizedLocalFlowPacketFact, NormalizedMicroEdgeFact, NormalizedPathEvidenceFact,
     NormalizedSidecarFreshnessFact, NormalizedSourceRoleFact, NormalizedSourceSpanFact,
     NormalizedTextEvidenceFact, NormalizedUnresolvedReferenceFact, PathEvidence, RelationKind,
@@ -42,7 +42,7 @@ use codegraph_core::{
 };
 use codegraph_parser::{
     content_hash, detect_language, detect_language_with_source,
-    emit_mvp4_typescript_micro_flow_extraction_context, extract_entities_and_relations,
+    emit_mvp4_typescript_micro_flow_extraction_context, extract_parser_fact_bundle,
     BasicExtraction, LanguageParser, Mvp4TypeScriptMicroFlowExtractionContext,
     Mvp4TypeScriptMicroNodeCandidate, Mvp4TypeScriptMicroNodeCapHit, SourceLanguage,
     TreeSitterParser,
@@ -52,8 +52,8 @@ use codegraph_query::{
 };
 use codegraph_store::{
     classify_sqlite_access_problem, inspect_db_preflight, AstMicroEdgeRow, AstMicroNodeRow,
-    DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore, LocalFlowPacketRow,
-    SqliteGraphStore, StoreError, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    CapabilityMetadataQueryOptions, DbPassport, DbPreflightReport, ExpectedDbPassport, GraphStore,
+    LocalFlowPacketRow, SqliteGraphStore, StoreError, DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 use codegraph_store::{reset_sqlite_profile, take_sqlite_profile};
 use codegraph_vector::{
@@ -1377,6 +1377,8 @@ pub struct NormalizedFactSnapshotFacts {
     pub files: Vec<NormalizedFileFact>,
     pub entities: Vec<NormalizedEntityFact>,
     pub edges: Vec<NormalizedEdgeFact>,
+    #[serde(default)]
+    pub capability_metadata: Vec<NormalizedCapabilityMetadataFact>,
     #[serde(default)]
     pub micro_edges: Vec<NormalizedMicroEdgeFact>,
     #[serde(default)]
@@ -6370,15 +6372,25 @@ fn collect_normalized_facts_for_path(
     }
 
     if options.include_unresolved_references {
+        // Forward-hallucination detection reads NEW unresolved references from
+        // this snapshot's delta. The lane is already capped per file
+        // (UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE), so give it a DEDICATED
+        // budget: the shared per-path fact budget is spent on entities and the
+        // (bulk) edge facts read earlier, which on fact-dense files starves the
+        // unresolved lane out of the snapshot and makes the forward check go
+        // SILENTLY blind (validate-edit `new_count=0`, `status=ok` on a file
+        // with a genuinely new hallucinated call) — 2026-06-18 stress test, Q8 1d.
+        let mut unresolved_budget =
+            SnapshotPathBudget::new(UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE.max(1));
         for record in store.list_unresolved_references_by_file(repo_relative_path)? {
             let reference_class = record
                 .metadata
                 .get("reference_class")
                 .and_then(Value::as_str)
-                .unwrap_or(REFERENCE_CLASS_DYNAMIC_OR_COMPUTED)
+                .unwrap_or(REFERENCE_CLASS_UNKNOWN)
                 .to_string();
             push_fact(
-                budget,
+                &mut unresolved_budget,
                 facts,
                 NormalizedUnresolvedReferenceFact::new(
                     record.reference_id,
@@ -6392,6 +6404,16 @@ fn collect_normalized_facts_for_path(
                 |facts, fact| facts.unresolved_references.push(fact),
             );
         }
+    }
+
+    for fact in store.query_capability_metadata(&CapabilityMetadataQueryOptions {
+        repo_relative_path: Some(repo_relative_path.to_string()),
+        limit: options.max_facts_per_path,
+        ..CapabilityMetadataQueryOptions::default()
+    })? {
+        push_fact(budget, facts, fact, |facts, fact| {
+            facts.capability_metadata.push(fact)
+        });
     }
 
     if options.include_text_evidence {
@@ -12047,8 +12069,893 @@ fn reduce_static_import_edges_from_bundles(bundles: &[LocalFactBundle]) -> Globa
             ));
         }
     }
+
+    // Pre-MVP4.4: cross-file CALLS for Python / Rust / Go under the same
+    // safe-direction contract as the TS/JS pass above — a repo-local module
+    // reference resolved to an indexed file and a declared name; external
+    // modules and fuzzy matches emit nothing. These edges are what arm the
+    // backward deleted-callee interrupt beyond TS/JS.
+    reduce_cross_file_call_edges(
+        &mut plan,
+        &entities_by_file,
+        &indexed_paths,
+        &sources,
+        &file_hashes,
+        &languages,
+    );
     plan.sort();
     plan
+}
+
+/// Dispatches per-importer cross-file CALLS extraction for the Python/Go/Rust
+/// languages that have a reducer. Shared by the full-index bundles path and the
+/// incremental/finalize workspace path so the same edges are (re)generated in
+/// both; edges are keyed by stable id, so overlapping emission is idempotent.
+/// `sources`/`languages` must cover every file the reducers consult (Go reads
+/// sibling sources; the others read only the importer), which the callers
+/// guarantee by loading all cross-file-capable files.
+fn reduce_cross_file_call_edges(
+    plan: &mut GlobalFactReductionPlan,
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    indexed_paths: &BTreeSet<String>,
+    sources: &BTreeMap<String, String>,
+    file_hashes: &BTreeMap<String, String>,
+    languages: &BTreeMap<String, Option<String>>,
+) {
+    for (importer_path, language) in languages {
+        let language = language.as_deref().unwrap_or("");
+        let Some(source) = sources.get(importer_path) else {
+            continue;
+        };
+        let file_hash = file_hashes
+            .get(importer_path)
+            .map(String::as_str)
+            .unwrap_or("");
+        match language {
+            "python" => reduce_python_cross_file_call_edges(
+                plan,
+                entities_by_file,
+                indexed_paths,
+                importer_path,
+                source,
+                file_hash,
+            ),
+            "rust" => reduce_rust_cross_file_call_edges(
+                plan,
+                entities_by_file,
+                indexed_paths,
+                importer_path,
+                source,
+                file_hash,
+            ),
+            "go" => reduce_go_cross_file_call_edges(
+                plan,
+                entities_by_file,
+                sources,
+                languages,
+                importer_path,
+                source,
+                file_hash,
+            ),
+            _ => {}
+        }
+    }
+}
+
+/// Emits CALLS edges for unqualified call sites of `local_name` resolved to a
+/// cross-file `target` entity. `import_span` present = shadowing is judged
+/// against the import statement (TS-pass semantics); absent (Go same-package
+/// siblings) = any same-file declaration of the name wins instead.
+#[allow(clippy::too_many_arguments)]
+fn push_named_cross_file_call_edges(
+    plan: &mut GlobalFactReductionPlan,
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    importer_path: &str,
+    source: &str,
+    file_hash: &str,
+    local_name: &str,
+    import_span: Option<&SourceSpan>,
+    target: &Entity,
+    resolver_reason: &str,
+) {
+    if !source.contains(local_name) {
+        return;
+    }
+    for call_span in call_spans_for_local_name(source, importer_path, local_name) {
+        // Unlike TS block scoping, a module-level redefinition rebinds the
+        // name file-wide in these languages, so any genuine same-file
+        // declaration suppresses the cross-file edge.
+        let shadowed =
+            cross_file_importer_declares_name(entities_by_file, importer_path, local_name)
+                || import_span.is_some_and(|import_span| {
+                    local_declaration_shadows_import(
+                        entities_by_file,
+                        importer_path,
+                        local_name,
+                        import_span,
+                        &call_span,
+                    )
+                });
+        if shadowed {
+            continue;
+        }
+        let Some(scope) = containing_executable(entities_by_file, importer_path, &call_span) else {
+            continue;
+        };
+        if scope.id == target.id {
+            continue;
+        }
+        plan.push_edge(resolved_import_edge(
+            &scope.id,
+            RelationKind::Calls,
+            &target.id,
+            &call_span,
+            file_hash,
+            resolver_reason,
+        ));
+    }
+}
+
+/// Emits CALLS edges for qualified call sites (`qualifier::name(` or
+/// `qualifier.name(`) against the target module file's declared callables.
+/// The callee set comes from the target file's entities, so only declared
+/// names can resolve — a qualified call to a nonexistent member emits nothing.
+#[allow(clippy::too_many_arguments)]
+fn push_qualified_cross_file_call_edges(
+    plan: &mut GlobalFactReductionPlan,
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    importer_path: &str,
+    source: &str,
+    file_hash: &str,
+    qualifier: &str,
+    separator: &str,
+    target_path: &str,
+    resolver_reason: &str,
+) {
+    if !source.contains(qualifier) {
+        return;
+    }
+    let Some(target_entities) = entities_by_file.get(target_path) else {
+        return;
+    };
+    for entity in target_entities {
+        if !matches!(
+            entity.kind,
+            EntityKind::Function | EntityKind::Method | EntityKind::Class
+        ) || entity.created_from == "tree-sitter-static-heuristic"
+            || entity.qualified_name.starts_with("static_reference:")
+        {
+            continue;
+        }
+        let qualified = format!("{qualifier}{separator}{}", entity.name);
+        if !source.contains(&qualified) {
+            continue;
+        }
+        for record in call_records_for_local_name(source, importer_path, &qualified) {
+            let Some(scope) = containing_executable(entities_by_file, importer_path, &record.span)
+            else {
+                continue;
+            };
+            if scope.id == entity.id {
+                continue;
+            }
+            plan.push_edge(resolved_import_edge(
+                &scope.id,
+                RelationKind::Calls,
+                &entity.id,
+                &record.span,
+                file_hash,
+                resolver_reason,
+            ));
+        }
+    }
+}
+
+/// Like `resolve_named_import_target`, but only genuine frontend
+/// declarations qualify — placeholder entities dropped at unresolved call
+/// sites must not become ParserVerified edge endpoints.
+fn resolve_declared_cross_file_target(
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    target_path: &str,
+    imported_name: &str,
+) -> Option<Entity> {
+    entities_by_file.get(target_path).and_then(|entities| {
+        entities
+            .iter()
+            .find(|entity| {
+                matches!(
+                    entity.kind,
+                    EntityKind::Function
+                        | EntityKind::Method
+                        | EntityKind::Class
+                        | EntityKind::LocalVariable
+                        | EntityKind::GlobalVariable
+                ) && entity.name == imported_name
+                    && entity.created_from != "tree-sitter-static-heuristic"
+                    && !entity.qualified_name.starts_with("static_reference:")
+            })
+            .cloned()
+    })
+}
+
+fn cross_file_importer_declares_name(
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    importer_path: &str,
+    name: &str,
+) -> bool {
+    entities_by_file.get(importer_path).is_some_and(|entities| {
+        entities.iter().any(|entity| {
+            entity.name == name
+                    && matches!(
+                        entity.kind,
+                        EntityKind::Function
+                            | EntityKind::Method
+                            | EntityKind::Class
+                            | EntityKind::LocalVariable
+                            | EntityKind::GlobalVariable
+                    )
+                    // Frontends drop placeholder entities at unresolved call
+                    // sites; those are references, not declarations.
+                    && entity.created_from != "tree-sitter-static-heuristic"
+                    && entity.created_from != "codegraph-index-static-import-resolver"
+                    && !entity.qualified_name.starts_with("static_reference:")
+        })
+    })
+}
+
+fn cross_file_import_line_span(
+    repo_relative_path: &str,
+    line_index: usize,
+    line: &str,
+) -> SourceSpan {
+    SourceSpan::with_columns(
+        repo_relative_path,
+        line_index as u32 + 1,
+        1,
+        line_index as u32 + 1,
+        line.chars().count() as u32 + 1,
+    )
+}
+
+fn cross_file_identifier(token: &str) -> Option<&str> {
+    let token = token.trim();
+    if token.is_empty()
+        || token.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        || !token
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some(token)
+}
+
+// ---------------------------------------------------------------------------
+// Python: `from pkg.mod import name [as alias]` resolves named callables;
+// `import pkg.mod [as m]` / `from . import mod` resolve modules whose members
+// are then matched at qualified call sites (`m.fn(...)`).
+// ---------------------------------------------------------------------------
+
+fn reduce_python_cross_file_call_edges(
+    plan: &mut GlobalFactReductionPlan,
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    indexed_paths: &BTreeSet<String>,
+    importer_path: &str,
+    source: &str,
+    file_hash: &str,
+) {
+    for (line_index, raw_line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(raw_line);
+        let trimmed = line.trim_start();
+        let span = cross_file_import_line_span(importer_path, line_index, line);
+
+        if let Some(rest) = trimmed.strip_prefix("from ") {
+            let Some((module_part, names_part)) = rest.split_once(" import ") else {
+                continue;
+            };
+            let module_raw = module_part.trim();
+            let level = module_raw.chars().take_while(|ch| *ch == '.').count();
+            let module = module_raw[level..].trim();
+            let names_part = names_part.trim().trim_end_matches('\\').trim();
+            // Conservative: parenthesized multi-line and star imports resolve
+            // nothing (they stay in the unresolved/dynamic lanes).
+            if names_part.starts_with('(') || names_part.contains('*') {
+                continue;
+            }
+            for name_spec in names_part.split(',') {
+                let (imported_raw, local_raw) = match name_spec.split_once(" as ") {
+                    Some((imported, alias)) => (imported, alias),
+                    None => (name_spec, name_spec),
+                };
+                let Some(imported_name) = cross_file_identifier(imported_raw) else {
+                    continue;
+                };
+                let Some(local_name) = cross_file_identifier(local_raw) else {
+                    continue;
+                };
+                if module.is_empty() {
+                    // `from . import mod`: the imported name is a sibling
+                    // module; its members resolve at qualified call sites.
+                    if level == 0 {
+                        continue;
+                    }
+                    let Some(target_path) = resolve_python_module_path(
+                        importer_path,
+                        imported_name,
+                        level,
+                        indexed_paths,
+                    ) else {
+                        continue;
+                    };
+                    push_qualified_cross_file_call_edges(
+                        plan,
+                        entities_by_file,
+                        importer_path,
+                        source,
+                        file_hash,
+                        local_name,
+                        ".",
+                        &target_path,
+                        "python_module_import_call_target",
+                    );
+                    continue;
+                }
+                let Some(target_path) =
+                    resolve_python_module_path(importer_path, module, level, indexed_paths)
+                else {
+                    continue;
+                };
+                let Some(target) = resolve_declared_cross_file_target(
+                    entities_by_file,
+                    &target_path,
+                    imported_name,
+                ) else {
+                    continue;
+                };
+                if let Some(file_entity) = file_entity_for_path(entities_by_file, importer_path) {
+                    plan.push_edge(resolved_import_edge(
+                        &file_entity.id,
+                        RelationKind::Imports,
+                        &target.id,
+                        &span,
+                        file_hash,
+                        "python_from_import_target",
+                    ));
+                }
+                push_named_cross_file_call_edges(
+                    plan,
+                    entities_by_file,
+                    importer_path,
+                    source,
+                    file_hash,
+                    local_name,
+                    Some(&span),
+                    &target,
+                    "python_from_import_call_target",
+                );
+            }
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("import ") {
+            for module_spec in rest.split(',') {
+                let (module_raw, alias_raw) = match module_spec.split_once(" as ") {
+                    Some((module, alias)) => (module.trim(), Some(alias)),
+                    None => (module_spec.trim(), None),
+                };
+                if module_raw.is_empty()
+                    || !module_raw
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+                {
+                    continue;
+                }
+                let qualifier = match alias_raw {
+                    Some(alias) => match cross_file_identifier(alias) {
+                        Some(alias) => alias.to_string(),
+                        None => continue,
+                    },
+                    None => module_raw.to_string(),
+                };
+                let Some(target_path) =
+                    resolve_python_module_path(importer_path, module_raw, 0, indexed_paths)
+                else {
+                    continue;
+                };
+                push_qualified_cross_file_call_edges(
+                    plan,
+                    entities_by_file,
+                    importer_path,
+                    source,
+                    file_hash,
+                    &qualifier,
+                    ".",
+                    &target_path,
+                    "python_module_import_call_target",
+                );
+            }
+        }
+    }
+}
+
+/// Dotted Python module -> repo path. Relative levels anchor at the importer's
+/// package directory; absolute modules try the importer's directory first
+/// (flat-script and implicit-package layouts) and then the repo root. Only an
+/// indexed file resolves.
+fn resolve_python_module_path(
+    importer_path: &str,
+    module: &str,
+    level: usize,
+    indexed_paths: &BTreeSet<String>,
+) -> Option<String> {
+    let importer_dir = Path::new(importer_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let mut bases = Vec::new();
+    if level > 0 {
+        let mut base = importer_dir;
+        for _ in 1..level {
+            base = base.parent().map(Path::to_path_buf)?;
+        }
+        bases.push(base);
+    } else {
+        bases.push(importer_dir);
+        bases.push(PathBuf::new());
+    }
+    let module_relative = module
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<PathBuf>();
+    if module_relative.as_os_str().is_empty() {
+        return None;
+    }
+    for base in bases {
+        let joined = base.join(&module_relative);
+        let file_candidate = normalize_graph_path(&format!("{}.py", joined.to_string_lossy()));
+        if indexed_paths.contains(&file_candidate) {
+            return Some(file_candidate);
+        }
+        let package_candidate = normalize_graph_path(&joined.join("__init__.py").to_string_lossy());
+        if indexed_paths.contains(&package_candidate) {
+            return Some(package_candidate);
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Rust: `use crate::a::b::{x, y as z}` resolves named items; `mod m;` and
+// module-level `use crate::m;` resolve modules whose members are matched at
+// path-qualified call sites (`m::f(...)` — the FYI59e sibling-module case).
+// ---------------------------------------------------------------------------
+
+fn reduce_rust_cross_file_call_edges(
+    plan: &mut GlobalFactReductionPlan,
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    indexed_paths: &BTreeSet<String>,
+    importer_path: &str,
+    source: &str,
+    file_hash: &str,
+) {
+    for (line_index, raw_line) in source.lines().enumerate() {
+        let line = strip_leading_utf8_bom(raw_line);
+        let trimmed = line.trim_start();
+        let span = cross_file_import_line_span(importer_path, line_index, line);
+
+        let use_body = trimmed
+            .strip_prefix("pub use ")
+            .or_else(|| trimmed.strip_prefix("pub(crate) use "))
+            .or_else(|| trimmed.strip_prefix("use "));
+        if let Some(use_body) = use_body {
+            let Some(use_body) = use_body.trim().strip_suffix(';') else {
+                continue;
+            };
+            for (segments, alias) in parse_rust_use_leaves(use_body) {
+                reduce_rust_use_leaf(
+                    plan,
+                    entities_by_file,
+                    indexed_paths,
+                    importer_path,
+                    source,
+                    file_hash,
+                    &segments,
+                    alias.as_deref(),
+                    &span,
+                );
+            }
+            continue;
+        }
+
+        // `mod m;` (declaration only — inline `mod m { .. }` bodies are
+        // same-file and already covered by local extraction).
+        let mod_body = trimmed
+            .strip_prefix("pub mod ")
+            .or_else(|| trimmed.strip_prefix("pub(crate) mod "))
+            .or_else(|| trimmed.strip_prefix("mod "));
+        if let Some(mod_body) = mod_body {
+            let Some(module_name) = mod_body
+                .trim()
+                .strip_suffix(';')
+                .and_then(cross_file_identifier)
+            else {
+                continue;
+            };
+            let Some(target_path) =
+                resolve_rust_child_module_path(importer_path, &[module_name], indexed_paths)
+            else {
+                continue;
+            };
+            push_qualified_cross_file_call_edges(
+                plan,
+                entities_by_file,
+                importer_path,
+                source,
+                file_hash,
+                module_name,
+                "::",
+                &target_path,
+                "rust_module_path_call_target",
+            );
+        }
+    }
+}
+
+/// Expands one `use` body into leaf paths: `crate::a::{x, y as z}` yields
+/// `[crate,a,x]` and `[crate,a,y] as z`. One brace level (the common form);
+/// nested groups and globs resolve nothing.
+fn parse_rust_use_leaves(use_body: &str) -> Vec<(Vec<String>, Option<String>)> {
+    let mut leaves = Vec::new();
+    let use_body = use_body.trim();
+    if use_body.contains('*') {
+        return leaves;
+    }
+    let (prefix, group) = match use_body.split_once('{') {
+        Some((prefix, rest)) => {
+            let Some(group) = rest.strip_suffix('}') else {
+                return leaves;
+            };
+            if group.contains('{') {
+                return leaves;
+            }
+            (prefix.trim_end_matches("::").trim(), Some(group))
+        }
+        // Without a group the whole body is one leaf; the prefix must stay
+        // empty or push_leaf would append the path segments twice.
+        None => ("", None),
+    };
+    let prefix_segments = prefix
+        .split("::")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let mut push_leaf = |leaf: &str| {
+        let (path_part, alias) = match leaf.split_once(" as ") {
+            Some((path_part, alias)) => (path_part.trim(), Some(alias.trim().to_string())),
+            None => (leaf.trim(), None),
+        };
+        if path_part.is_empty() {
+            return;
+        }
+        let mut segments = prefix_segments.clone();
+        for segment in path_part.split("::").map(str::trim) {
+            if segment.is_empty() {
+                return;
+            }
+            segments.push(segment.to_string());
+        }
+        leaves.push((segments, alias));
+    };
+    match group {
+        Some(group) => {
+            for leaf in group.split(',') {
+                let leaf = leaf.trim();
+                if !leaf.is_empty() {
+                    push_leaf(leaf);
+                }
+            }
+        }
+        None => push_leaf(use_body),
+    }
+    leaves
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reduce_rust_use_leaf(
+    plan: &mut GlobalFactReductionPlan,
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    indexed_paths: &BTreeSet<String>,
+    importer_path: &str,
+    source: &str,
+    file_hash: &str,
+    segments: &[String],
+    alias: Option<&str>,
+    span: &SourceSpan,
+) {
+    // Only crate-local anchors resolve; anything else may be an external
+    // crate and must stay out of the exact graph.
+    let (anchor, mut rest) = match segments.split_first() {
+        Some((first, rest)) if first == "crate" || first == "self" || first == "super" => {
+            (first.as_str(), rest)
+        }
+        _ => return,
+    };
+    // Resolve the anchor to the directory the remaining path is relative to.
+    // A module's children live in the directory named after it (`m.rs` plus
+    // `m/`, or `m/mod.rs`), so each extra `super` pops one directory level.
+    let base = match anchor {
+        "crate" => rust_crate_src_root(importer_path),
+        "self" => rust_own_module_dir(importer_path),
+        "super" => rust_own_module_dir(importer_path)
+            .and_then(|own_dir| own_dir.parent().map(Path::to_path_buf)),
+        _ => None,
+    };
+    let Some(mut base) = base else {
+        return;
+    };
+    while rest.first().is_some_and(|segment| segment == "super") {
+        let Some(parent) = base.parent() else {
+            return;
+        };
+        base = parent.to_path_buf();
+        rest = &rest[1..];
+    }
+    let Some((item_name, module_path)) = rest.split_last() else {
+        return;
+    };
+    if item_name == "self" {
+        // `use crate::a::{self}` imports module a — qualified calls only.
+        let Some((module_name, module_prefix)) = module_path.split_last() else {
+            return;
+        };
+        let Some(target_path) =
+            resolve_rust_module_path_from_base(&base, module_prefix, module_name, indexed_paths)
+        else {
+            return;
+        };
+        let qualifier = alias.unwrap_or(module_name.as_str());
+        push_qualified_cross_file_call_edges(
+            plan,
+            entities_by_file,
+            importer_path,
+            source,
+            file_hash,
+            qualifier,
+            "::",
+            &target_path,
+            "rust_module_path_call_target",
+        );
+        return;
+    }
+    // Item import: the leaf is a declared name in the prefix module's file
+    // (the crate-root file when the prefix is bare, e.g. `use crate::helper`).
+    let item_module_file = match module_path.split_last() {
+        Some((module_name, module_prefix)) => {
+            resolve_rust_module_path_from_base(&base, module_prefix, module_name, indexed_paths)
+        }
+        None => rust_module_file_for_dir(&base, indexed_paths),
+    };
+    if let Some(target_path) = item_module_file {
+        if target_path != importer_path {
+            if let Some(target) =
+                resolve_declared_cross_file_target(entities_by_file, &target_path, item_name)
+            {
+                let local_name = alias.unwrap_or(item_name.as_str());
+                if let Some(file_entity) = file_entity_for_path(entities_by_file, importer_path) {
+                    plan.push_edge(resolved_import_edge(
+                        &file_entity.id,
+                        RelationKind::Imports,
+                        &target.id,
+                        span,
+                        file_hash,
+                        "rust_use_import_target",
+                    ));
+                }
+                push_named_cross_file_call_edges(
+                    plan,
+                    entities_by_file,
+                    importer_path,
+                    source,
+                    file_hash,
+                    local_name,
+                    Some(span),
+                    &target,
+                    "rust_use_import_call_target",
+                );
+            }
+        }
+    }
+    // Module import (`use crate::m;`): members resolve at `m::f(...)` sites.
+    // Items and modules live in separate namespaces, so this runs in addition
+    // to the item lookup above rather than as a fallback.
+    if let Some((module_name, module_prefix)) = rest.split_last() {
+        if let Some(target_path) =
+            resolve_rust_module_path_from_base(&base, module_prefix, module_name, indexed_paths)
+        {
+            if target_path != importer_path {
+                let qualifier = alias.unwrap_or(module_name.as_str());
+                push_qualified_cross_file_call_edges(
+                    plan,
+                    entities_by_file,
+                    importer_path,
+                    source,
+                    file_hash,
+                    qualifier,
+                    "::",
+                    &target_path,
+                    "rust_module_path_call_target",
+                );
+            }
+        }
+    }
+}
+
+/// Resolves `prefix::module` relative to a base directory to an indexed
+/// `module.rs` / `module/mod.rs`.
+fn resolve_rust_module_path_from_base(
+    base: &Path,
+    module_prefix: &[String],
+    module_name: &str,
+    indexed_paths: &BTreeSet<String>,
+) -> Option<String> {
+    let mut joined = base.to_path_buf();
+    for segment in module_prefix {
+        joined = joined.join(segment);
+    }
+    let joined = joined.join(module_name);
+    let file_candidate = normalize_graph_path(&format!("{}.rs", joined.to_string_lossy()));
+    if indexed_paths.contains(&file_candidate) {
+        return Some(file_candidate);
+    }
+    let mod_candidate = normalize_graph_path(&joined.join("mod.rs").to_string_lossy());
+    if indexed_paths.contains(&mod_candidate) {
+        return Some(mod_candidate);
+    }
+    None
+}
+
+/// The file of the module whose child modules live in `dir`: `dir.rs`
+/// (2018 layout), `dir/mod.rs`, or a crate-root file when `dir` is src.
+fn rust_module_file_for_dir(dir: &Path, indexed_paths: &BTreeSet<String>) -> Option<String> {
+    let dir_str = dir.to_string_lossy();
+    if !dir_str.is_empty() {
+        let file_candidate = normalize_graph_path(&format!("{dir_str}.rs"));
+        if indexed_paths.contains(&file_candidate) {
+            return Some(file_candidate);
+        }
+    }
+    for root_name in ["mod.rs", "lib.rs", "main.rs"] {
+        let candidate = normalize_graph_path(&dir.join(root_name).to_string_lossy());
+        if indexed_paths.contains(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Child module file for a `mod m;` declaration in the importer.
+fn resolve_rust_child_module_path(
+    importer_path: &str,
+    segments: &[&str],
+    indexed_paths: &BTreeSet<String>,
+) -> Option<String> {
+    let mut base = rust_own_module_dir(importer_path)?;
+    for segment in segments {
+        base = base.join(segment);
+    }
+    let file_candidate = normalize_graph_path(&format!("{}.rs", base.to_string_lossy()));
+    if indexed_paths.contains(&file_candidate) {
+        return Some(file_candidate);
+    }
+    let mod_candidate = normalize_graph_path(&base.join("mod.rs").to_string_lossy());
+    if indexed_paths.contains(&mod_candidate) {
+        return Some(mod_candidate);
+    }
+    None
+}
+
+/// Directory whose children are the importer's child modules: the file's own
+/// dir for crate roots and mod.rs, else a dir named after the file stem.
+fn rust_own_module_dir(importer_path: &str) -> Option<PathBuf> {
+    let importer = Path::new(importer_path);
+    let parent = importer.parent().map(Path::to_path_buf).unwrap_or_default();
+    let file_name = importer.file_name()?.to_string_lossy().to_string();
+    if matches!(file_name.as_str(), "main.rs" | "lib.rs" | "mod.rs") {
+        Some(parent)
+    } else {
+        Some(parent.join(importer.file_stem()?.to_string_lossy().as_ref()))
+    }
+}
+
+/// Crate source root for `crate::` paths: the innermost ancestor directory
+/// named `src`, else the importer's own directory (single-dir layouts).
+fn rust_crate_src_root(importer_path: &str) -> Option<PathBuf> {
+    let importer = Path::new(importer_path);
+    let mut current = importer.parent();
+    while let Some(dir) = current {
+        if dir.file_name().is_some_and(|name| name == "src") {
+            return Some(dir.to_path_buf());
+        }
+        current = dir.parent();
+    }
+    importer.parent().map(Path::to_path_buf)
+}
+
+// ---------------------------------------------------------------------------
+// Go: files in one directory with the same `package` clause share a
+// namespace, so a sibling file's function is callable unqualified — that is
+// the cross-file CALLS surface (package imports need module resolution and
+// stay out of the exact graph for now).
+// ---------------------------------------------------------------------------
+
+fn reduce_go_cross_file_call_edges(
+    plan: &mut GlobalFactReductionPlan,
+    entities_by_file: &BTreeMap<String, Vec<Entity>>,
+    sources: &BTreeMap<String, String>,
+    languages: &BTreeMap<String, Option<String>>,
+    importer_path: &str,
+    source: &str,
+    file_hash: &str,
+) {
+    let Some(package_name) = go_package_name(source) else {
+        return;
+    };
+    let importer_dir = Path::new(importer_path)
+        .parent()
+        .map(|parent| normalize_graph_path(&parent.to_string_lossy()))
+        .unwrap_or_default();
+    for (sibling_path, sibling_source) in sources {
+        if sibling_path == importer_path {
+            continue;
+        }
+        if !languages
+            .get(sibling_path)
+            .and_then(Option::as_deref)
+            .is_some_and(|language| language == "go")
+        {
+            continue;
+        }
+        let sibling_dir = Path::new(sibling_path)
+            .parent()
+            .map(|parent| normalize_graph_path(&parent.to_string_lossy()))
+            .unwrap_or_default();
+        if sibling_dir != importer_dir {
+            continue;
+        }
+        if go_package_name(sibling_source) != Some(package_name) {
+            continue;
+        }
+        let Some(sibling_entities) = entities_by_file.get(sibling_path) else {
+            continue;
+        };
+        for entity in sibling_entities {
+            if entity.kind != EntityKind::Function {
+                continue;
+            }
+            push_named_cross_file_call_edges(
+                plan,
+                entities_by_file,
+                importer_path,
+                source,
+                file_hash,
+                &entity.name,
+                None,
+                entity,
+                "go_same_package_call_target",
+            );
+        }
+    }
+}
+
+fn go_package_name(source: &str) -> Option<&str> {
+    source.lines().find_map(|line| {
+        strip_leading_utf8_bom(line)
+            .trim_start()
+            .strip_prefix("package ")
+            .map(|rest| rest.trim())
+            .and_then(cross_file_identifier)
+    })
 }
 
 fn resolve_import_target_from_bundles(
@@ -13758,7 +14665,9 @@ fn source_span_is_bounded(span: &SourceSpan) -> bool {
 #[allow(clippy::too_many_arguments)]
 /// Allowed (head, tail) micro-node kinds for each persisted exact micro-edge
 /// relation. `None` rejects the relation as unauthorized for persistence.
-fn mvp4_2_micro_edge_endpoint_kinds(
+/// Public because the cli validate-edit micro-edge integrity sweep validates
+/// persisted rows against the same endpoint contract the persist path enforces.
+pub fn mvp4_2_micro_edge_endpoint_kinds(
     kind: MicroEdgeKind,
 ) -> Option<(&'static [MicroNodeKind], &'static [MicroNodeKind])> {
     match kind {
@@ -14496,6 +15405,25 @@ pub const REFERENCE_CLASS_EXTERNAL_DEPENDENCY: &str = "external_dependency";
 pub const REFERENCE_CLASS_BUILTIN_OR_STD: &str = "builtin_or_std";
 pub const REFERENCE_CLASS_MACRO_OR_CODEGEN: &str = "macro_or_codegen";
 pub const REFERENCE_CLASS_DYNAMIC_OR_COMPUTED: &str = "dynamic_or_computed";
+pub const REFERENCE_CLASS_COMPILER_REQUIRED: &str = "compiler_required";
+pub const REFERENCE_CLASS_LSP_REQUIRED: &str = "lsp_required";
+pub const REFERENCE_CLASS_RUNTIME_REQUIRED: &str = "runtime_required";
+pub const REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION: &str =
+    "unsupported_language_or_relation";
+pub const REFERENCE_CLASS_UNKNOWN: &str = "unknown";
+
+pub const REFERENCE_CLASS_ALL: &[&str] = &[
+    REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+    REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+    REFERENCE_CLASS_BUILTIN_OR_STD,
+    REFERENCE_CLASS_MACRO_OR_CODEGEN,
+    REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+    REFERENCE_CLASS_COMPILER_REQUIRED,
+    REFERENCE_CLASS_LSP_REQUIRED,
+    REFERENCE_CLASS_RUNTIME_REQUIRED,
+    REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION,
+    REFERENCE_CLASS_UNKNOWN,
+];
 
 const RUST_STD_ROOTS: &[&str] = &["std", "core", "alloc"];
 const RUST_BUILTIN_MACROS: &[&str] = &[
@@ -14530,6 +15458,45 @@ const RUST_BUILTIN_MACROS: &[&str] = &[
     "compile_error",
     "format_args",
 ];
+/// Rust prelude value/type/trait names that appear BARE (no `std::`/`core::`
+/// path prefix) and so are not caught by RUST_STD_ROOTS. Without this,
+/// `Ok(...)`/`Some(...)`/`Vec::new()` classify as repo_local_candidate and
+/// escalate as false-positive "likely hallucinated symbol" warnings on
+/// ordinary edits (2026-06-18 stress test, Q9).
+const RUST_PRELUDE: &[&str] = &[
+    "Ok",
+    "Err",
+    "Some",
+    "None",
+    "Option",
+    "Result",
+    "Vec",
+    "String",
+    "Box",
+    "Copy",
+    "Clone",
+    "Debug",
+    "Default",
+    "Drop",
+    "Eq",
+    "PartialEq",
+    "Ord",
+    "PartialOrd",
+    "Hash",
+    "From",
+    "Into",
+    "TryFrom",
+    "TryInto",
+    "AsRef",
+    "AsMut",
+    "Iterator",
+    "IntoIterator",
+    "Send",
+    "Sync",
+    "Sized",
+    "ToString",
+    "ToOwned",
+];
 const PYTHON_BUILTINS_AND_STDLIB: &[&str] = &[
     "print",
     "len",
@@ -14543,6 +15510,7 @@ const PYTHON_BUILTINS_AND_STDLIB: &[&str] = &[
     "set",
     "tuple",
     "open",
+    "__import__",
     "isinstance",
     "issubclass",
     "super",
@@ -14609,6 +15577,7 @@ const PYTHON_BUILTINS_AND_STDLIB: &[&str] = &[
     "threading",
     "asyncio",
     "unittest",
+    "importlib",
     "random",
     "string",
     "io",
@@ -14813,6 +15782,83 @@ const GO_BUILTINS_AND_STDLIB_ROOTS: &[&str] = &[
     "cmp",
     "iter",
 ];
+const PYTHON_RUNTIME_REQUIRED_ROOTS: &[&str] = &[
+    "__import__",
+    "importlib",
+    "getattr",
+    "setattr",
+    "delattr",
+    "eval",
+    "exec",
+    "compile",
+    "globals",
+    "locals",
+];
+const JAVA_BUILTIN_OR_STD_ROOTS: &[&str] = &["java", "javax", "jdk"];
+const CSHARP_BUILTIN_OR_STD_ROOTS: &[&str] = &["System", "Microsoft"];
+const C_CPP_BUILTIN_OR_STD_ROOTS: &[&str] = &[
+    "std", "printf", "fprintf", "snprintf", "malloc", "calloc", "realloc", "free", "memcpy",
+    "memset", "strlen", "strcmp", "strncpy", "size_t",
+];
+const RUBY_BUILTIN_OR_STD_ROOTS: &[&str] = &[
+    "Kernel",
+    "Object",
+    "String",
+    "Array",
+    "Hash",
+    "Enumerable",
+    "File",
+    "Dir",
+    "Pathname",
+    "JSON",
+    "Time",
+    "Date",
+    "puts",
+    "print",
+    "p",
+    "require",
+    "require_relative",
+    "load",
+];
+const RUBY_RUNTIME_REQUIRED_ROOTS: &[&str] = &[
+    "send",
+    "__send__",
+    "public_send",
+    "method_missing",
+    "const_get",
+    "autoload",
+    "define_method",
+    "class_eval",
+    "instance_eval",
+];
+const PHP_BUILTIN_OR_STD_ROOTS: &[&str] = &[
+    "echo",
+    "print",
+    "strlen",
+    "count",
+    "array_merge",
+    "in_array",
+    "json_encode",
+    "json_decode",
+    "is_array",
+    "is_string",
+    "sprintf",
+    "printf",
+    "Exception",
+    "DateTime",
+];
+const PHP_RUNTIME_REQUIRED_ROOTS: &[&str] = &[
+    "__call",
+    "__callStatic",
+    "__get",
+    "__set",
+    "__isset",
+    "__unset",
+    "__invoke",
+    "call_user_func",
+    "call_user_func_array",
+    "spl_autoload_register",
+];
 
 /// Built once per index/update run. Classifies persisted lane rows into the
 /// §1.3.2 `reference_class` tiers from name shape, per-language builtin
@@ -14854,6 +15900,27 @@ impl UnresolvedReferenceClassifier {
                 "pyproject.toml" => {
                     collect_pyproject_roots(&contents, &mut declared_dependency_roots)
                 }
+                "setup.cfg" => collect_setup_cfg_roots(
+                    &contents,
+                    &mut declared_dependency_roots,
+                    &mut workspace_member_roots,
+                ),
+                "setup.py" => collect_setup_py_roots(
+                    &contents,
+                    &mut declared_dependency_roots,
+                    &mut workspace_member_roots,
+                ),
+                "go.mod" => collect_go_mod_roots(
+                    &contents,
+                    &mut declared_dependency_roots,
+                    &mut workspace_member_roots,
+                ),
+                "Gemfile" => collect_gemfile_roots(&contents, &mut declared_dependency_roots),
+                "composer.json" => collect_composer_json_roots(
+                    &contents,
+                    &mut declared_dependency_roots,
+                    &mut workspace_member_roots,
+                ),
                 _ => {}
             }
         }
@@ -14875,7 +15942,7 @@ impl UnresolvedReferenceClassifier {
         let language = normalize_reference_language(language);
         // Parser placeholder for a callsite with no resolvable callee node.
         if name.is_empty() || name == "unknown_callee" {
-            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+            return REFERENCE_CLASS_UNKNOWN;
         }
         if language == ReferenceLanguage::JsTs && name == "import" {
             return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
@@ -14888,26 +15955,50 @@ impl UnresolvedReferenceClassifier {
             return REFERENCE_CLASS_MACRO_OR_CODEGEN;
         }
         // Computed callee shapes (expression labels, call chains, indexing).
-        if name.contains(['(', '[', '{', ' ', '<']) {
+        if name.contains(['(', '[', '{', ' ']) {
             return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+        }
+        if name.contains('<') {
+            return if language.requires_compiler_for_generics() {
+                REFERENCE_CLASS_COMPILER_REQUIRED
+            } else {
+                REFERENCE_CLASS_DYNAMIC_OR_COMPUTED
+            };
         }
         let segments: Vec<&str> = if name.contains("::") {
             name.split("::").collect()
+        } else if name.contains('\\') {
+            name.split('\\').collect()
+        } else if name.contains('/') {
+            name.split('/').collect()
         } else {
             name.split('.').collect()
         };
         let first = segments.first().copied().unwrap_or_default();
         if first.is_empty() {
-            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+            return REFERENCE_CLASS_UNKNOWN;
+        }
+
+        if language == ReferenceLanguage::Go {
+            let normalized_go_path = normalize_dependency_root(name);
+            if go_path_matches_any_root(&normalized_go_path, &self.workspace_member_roots) {
+                return REFERENCE_CLASS_REPO_LOCAL_CANDIDATE;
+            }
+            if go_path_matches_any_root(&normalized_go_path, &self.declared_dependency_roots) {
+                return REFERENCE_CLASS_EXTERNAL_DEPENDENCY;
+            }
         }
 
         match language {
             ReferenceLanguage::Rust => {
-                if RUST_STD_ROOTS.contains(&first) {
+                if RUST_STD_ROOTS.contains(&first) || RUST_PRELUDE.contains(&first) {
                     return REFERENCE_CLASS_BUILTIN_OR_STD;
                 }
             }
             ReferenceLanguage::Python => {
+                if PYTHON_RUNTIME_REQUIRED_ROOTS.contains(&first) {
+                    return REFERENCE_CLASS_RUNTIME_REQUIRED;
+                }
                 if PYTHON_BUILTINS_AND_STDLIB.contains(&first) {
                     return REFERENCE_CLASS_BUILTIN_OR_STD;
                 }
@@ -14922,6 +16013,40 @@ impl UnresolvedReferenceClassifier {
                     return REFERENCE_CLASS_BUILTIN_OR_STD;
                 }
             }
+            ReferenceLanguage::Java => {
+                if JAVA_BUILTIN_OR_STD_ROOTS.contains(&first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::CSharp => {
+                if contains_ascii_case_insensitive(CSHARP_BUILTIN_OR_STD_ROOTS, first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::C | ReferenceLanguage::Cpp => {
+                if looks_like_c_macro_reference(name) {
+                    return REFERENCE_CLASS_MACRO_OR_CODEGEN;
+                }
+                if contains_ascii_case_insensitive(C_CPP_BUILTIN_OR_STD_ROOTS, first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::Ruby => {
+                if contains_ascii_case_insensitive(RUBY_RUNTIME_REQUIRED_ROOTS, first) {
+                    return REFERENCE_CLASS_RUNTIME_REQUIRED;
+                }
+                if contains_ascii_case_insensitive(RUBY_BUILTIN_OR_STD_ROOTS, first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
+            ReferenceLanguage::Php => {
+                if contains_ascii_case_insensitive(PHP_RUNTIME_REQUIRED_ROOTS, first) {
+                    return REFERENCE_CLASS_RUNTIME_REQUIRED;
+                }
+                if contains_ascii_case_insensitive(PHP_BUILTIN_OR_STD_ROOTS, first) {
+                    return REFERENCE_CLASS_BUILTIN_OR_STD;
+                }
+            }
             ReferenceLanguage::Other => {}
         }
 
@@ -14932,10 +16057,8 @@ impl UnresolvedReferenceClassifier {
             return REFERENCE_CLASS_EXTERNAL_DEPENDENCY;
         }
 
-        // Tier-2 language guard: only languages with fixture-backed call
-        // coverage may produce repo_local_candidate (escalation eligibility).
         if language == ReferenceLanguage::Other {
-            return REFERENCE_CLASS_DYNAMIC_OR_COMPUTED;
+            return REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION;
         }
 
         if self.workspace_member_roots.contains(&normalized_first) {
@@ -14952,6 +16075,12 @@ impl UnresolvedReferenceClassifier {
         }
         if self.first_segment_is_sibling_module(repo_relative_path, first, language) {
             return REFERENCE_CLASS_REPO_LOCAL_CANDIDATE;
+        }
+        if language.requires_compiler_for_qualified_lookup() {
+            return REFERENCE_CLASS_COMPILER_REQUIRED;
+        }
+        if language.requires_runtime_for_qualified_lookup() {
+            return REFERENCE_CLASS_RUNTIME_REQUIRED;
         }
         REFERENCE_CLASS_DYNAMIC_OR_COMPUTED
     }
@@ -14993,6 +16122,33 @@ impl UnresolvedReferenceClassifier {
                 dir.join(format!("{first_segment}.jsx")),
             ],
             ReferenceLanguage::Go => vec![dir.join(format!("{first_segment}.go"))],
+            ReferenceLanguage::Java => vec![dir.join(format!("{first_segment}.java"))],
+            ReferenceLanguage::CSharp => vec![dir.join(format!("{first_segment}.cs"))],
+            ReferenceLanguage::C => vec![
+                dir.join(format!("{first_segment}.c")),
+                dir.join(format!("{first_segment}.h")),
+            ],
+            ReferenceLanguage::Cpp => vec![
+                dir.join(format!("{first_segment}.cpp")),
+                dir.join(format!("{first_segment}.cc")),
+                dir.join(format!("{first_segment}.cxx")),
+                dir.join(format!("{first_segment}.hpp")),
+                dir.join(format!("{first_segment}.hh")),
+                dir.join(format!("{first_segment}.hxx")),
+                dir.join(format!("{first_segment}.h")),
+            ],
+            ReferenceLanguage::Ruby => vec![
+                dir.join(format!("{first_segment}.rb")),
+                self.repo_root
+                    .join("lib")
+                    .join(format!("{first_segment}.rb")),
+            ],
+            ReferenceLanguage::Php => vec![
+                dir.join(format!("{first_segment}.php")),
+                self.repo_root
+                    .join("src")
+                    .join(format!("{first_segment}.php")),
+            ],
             ReferenceLanguage::Other => Vec::new(),
         };
         let exists = candidates.iter().any(|candidate| candidate.is_file());
@@ -15009,7 +16165,41 @@ enum ReferenceLanguage {
     JsTs,
     Python,
     Go,
+    Java,
+    CSharp,
+    C,
+    Cpp,
+    Ruby,
+    Php,
     Other,
+}
+
+impl ReferenceLanguage {
+    fn requires_compiler_for_generics(self) -> bool {
+        matches!(
+            self,
+            ReferenceLanguage::Java
+                | ReferenceLanguage::CSharp
+                | ReferenceLanguage::C
+                | ReferenceLanguage::Cpp
+                | ReferenceLanguage::Rust
+        )
+    }
+
+    fn requires_compiler_for_qualified_lookup(self) -> bool {
+        matches!(
+            self,
+            ReferenceLanguage::Java
+                | ReferenceLanguage::CSharp
+                | ReferenceLanguage::C
+                | ReferenceLanguage::Cpp
+                | ReferenceLanguage::Php
+        )
+    }
+
+    fn requires_runtime_for_qualified_lookup(self) -> bool {
+        matches!(self, ReferenceLanguage::Ruby)
+    }
 }
 
 fn normalize_reference_language(language: Option<&str>) -> ReferenceLanguage {
@@ -15018,6 +16208,12 @@ fn normalize_reference_language(language: Option<&str>) -> ReferenceLanguage {
         "javascript" | "typescript" | "jsx" | "tsx" | "js" | "ts" => ReferenceLanguage::JsTs,
         "python" => ReferenceLanguage::Python,
         "go" => ReferenceLanguage::Go,
+        "java" => ReferenceLanguage::Java,
+        "csharp" | "c#" | "cs" => ReferenceLanguage::CSharp,
+        "c" => ReferenceLanguage::C,
+        "cpp" | "c++" | "cc" | "cxx" | "hpp" => ReferenceLanguage::Cpp,
+        "ruby" | "rb" => ReferenceLanguage::Ruby,
+        "php" => ReferenceLanguage::Php,
         _ => ReferenceLanguage::Other,
     }
 }
@@ -15030,8 +16226,27 @@ fn looks_like_reference_identifier(token: &str) -> bool {
         && !token.chars().next().is_some_and(|first| first.is_numeric())
 }
 
+fn contains_ascii_case_insensitive(values: &[&str], token: &str) -> bool {
+    values.iter().any(|value| value.eq_ignore_ascii_case(token))
+}
+
+fn looks_like_c_macro_reference(name: &str) -> bool {
+    let token = name
+        .split([':', '.', '/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .trim();
+    token.len() > 1
+        && token
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
+        && token.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
 fn normalize_dependency_root(token: &str) -> String {
-    token.to_ascii_lowercase().replace('-', "_")
+    token.to_ascii_lowercase().replace(['-', '/', '\\'], "_")
 }
 
 const DEPENDENCY_MANIFEST_SCAN_MAX_DEPTH: usize = 4;
@@ -15072,7 +16287,14 @@ fn collect_dependency_manifest_paths(dir: &Path, depth: usize, found: &mut Vec<P
             collect_dependency_manifest_paths(&path, depth + 1, found);
         } else if matches!(
             name.as_ref(),
-            "Cargo.toml" | "package.json" | "pyproject.toml"
+            "Cargo.toml"
+                | "package.json"
+                | "pyproject.toml"
+                | "setup.cfg"
+                | "setup.py"
+                | "go.mod"
+                | "Gemfile"
+                | "composer.json"
         ) {
             found.push(path);
         }
@@ -15169,6 +16391,332 @@ fn collect_pyproject_roots(contents: &str, dependency_roots: &mut BTreeSet<Strin
     }
 }
 
+fn collect_setup_cfg_roots(
+    contents: &str,
+    dependency_roots: &mut BTreeSet<String>,
+    member_roots: &mut BTreeSet<String>,
+) {
+    let mut section = String::new();
+    let mut in_requirement_list = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].trim().to_ascii_lowercase();
+            in_requirement_list = false;
+            continue;
+        }
+        if section == "metadata" {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key.trim().eq_ignore_ascii_case("name") {
+                    collect_python_requirement_root(value, member_roots);
+                }
+            }
+            continue;
+        }
+        if matches!(
+            section.as_str(),
+            "options" | "options.extras_require" | "options.tests_require"
+        ) {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_ascii_lowercase();
+                let starts_known_requirement_list = matches!(
+                    key.as_str(),
+                    "install_requires" | "setup_requires" | "tests_require"
+                ) || section == "options.extras_require";
+                if starts_known_requirement_list {
+                    in_requirement_list = true;
+                    collect_python_requirement_root(value, dependency_roots);
+                    continue;
+                }
+                if in_requirement_list {
+                    collect_python_requirement_root(trimmed, dependency_roots);
+                }
+                continue;
+            }
+            if in_requirement_list {
+                collect_python_requirement_root(trimmed, dependency_roots);
+            }
+        }
+    }
+}
+
+fn collect_setup_py_roots(
+    contents: &str,
+    dependency_roots: &mut BTreeSet<String>,
+    member_roots: &mut BTreeSet<String>,
+) {
+    let mut in_dependency_list = false;
+    let mut bracket_depth = 0isize;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if contains_python_setup_name_key(trimmed) {
+            for literal in python_string_literals(trimmed) {
+                collect_python_requirement_root(&literal, member_roots);
+                break;
+            }
+        }
+        let starts_dependency_list = [
+            "install_requires",
+            "setup_requires",
+            "tests_require",
+            "extras_require",
+        ]
+        .iter()
+        .any(|needle| trimmed.contains(needle));
+        if starts_dependency_list {
+            in_dependency_list = true;
+            bracket_depth = bracket_depth
+                + trimmed.matches('[').count() as isize
+                + trimmed.matches('{').count() as isize
+                - trimmed.matches(']').count() as isize
+                - trimmed.matches('}').count() as isize;
+        }
+        if in_dependency_list {
+            let dependency_slice = if starts_dependency_list {
+                python_setup_dependency_slice(trimmed).unwrap_or(trimmed)
+            } else {
+                trimmed
+            };
+            for literal in python_string_literals(dependency_slice) {
+                collect_python_requirement_root(&literal, dependency_roots);
+            }
+            if !starts_dependency_list {
+                bracket_depth = bracket_depth
+                    + trimmed.matches('[').count() as isize
+                    + trimmed.matches('{').count() as isize
+                    - trimmed.matches(']').count() as isize
+                    - trimmed.matches('}').count() as isize;
+            }
+            if bracket_depth <= 0 && trimmed.contains(')') {
+                in_dependency_list = false;
+                bracket_depth = 0;
+            }
+        }
+    }
+}
+
+fn collect_go_mod_roots(
+    contents: &str,
+    dependency_roots: &mut BTreeSet<String>,
+    member_roots: &mut BTreeSet<String>,
+) {
+    let mut in_require_block = false;
+    for raw_line in contents.lines() {
+        let line = raw_line
+            .split_once("//")
+            .map(|(before, _)| before)
+            .unwrap_or(raw_line)
+            .trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(module) = line.strip_prefix("module ") {
+            collect_go_module_path_root(module, member_roots);
+            continue;
+        }
+        if line == "require (" {
+            in_require_block = true;
+            continue;
+        }
+        if in_require_block {
+            if line.starts_with(')') {
+                in_require_block = false;
+                continue;
+            }
+            collect_go_module_path_root(line, dependency_roots);
+            continue;
+        }
+        if let Some(requirement) = line.strip_prefix("require ") {
+            collect_go_module_path_root(requirement, dependency_roots);
+        }
+    }
+}
+
+fn collect_go_module_path_root(raw: &str, roots: &mut BTreeSet<String>) {
+    let module_path = raw
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+    if module_path.is_empty()
+        || module_path == "("
+        || module_path.starts_with("replace")
+        || module_path.starts_with("exclude")
+    {
+        return;
+    }
+    roots.insert(normalize_dependency_root(module_path));
+}
+
+fn collect_gemfile_roots(contents: &str, dependency_roots: &mut BTreeSet<String>) {
+    for raw_line in contents.lines() {
+        let line = raw_line
+            .split_once('#')
+            .map(|(before, _)| before)
+            .unwrap_or(raw_line)
+            .trim();
+        if !line.starts_with("gem ") {
+            continue;
+        }
+        if let Some(literal) = python_string_literals(line).first() {
+            let root = literal.split(['/', '-']).next().unwrap_or(literal).trim();
+            if !root.is_empty() {
+                dependency_roots.insert(normalize_dependency_root(root));
+            }
+        }
+    }
+}
+
+fn collect_composer_json_roots(
+    contents: &str,
+    dependency_roots: &mut BTreeSet<String>,
+    member_roots: &mut BTreeSet<String>,
+) {
+    let Ok(parsed) = serde_json::from_str::<Value>(contents) else {
+        return;
+    };
+    for key in ["require", "require-dev"] {
+        if let Some(map) = parsed.get(key).and_then(Value::as_object) {
+            for package_name in map.keys() {
+                collect_composer_package_root(package_name, dependency_roots);
+            }
+        }
+    }
+    if let Some(psr4) = parsed
+        .get("autoload")
+        .and_then(|autoload| autoload.get("psr-4"))
+        .and_then(Value::as_object)
+    {
+        for namespace in psr4.keys() {
+            let root = namespace
+                .trim_end_matches('\\')
+                .split('\\')
+                .next()
+                .unwrap_or("");
+            if !root.is_empty() {
+                member_roots.insert(normalize_dependency_root(root));
+            }
+        }
+    }
+}
+
+fn collect_composer_package_root(package_name: &str, roots: &mut BTreeSet<String>) {
+    let normalized = package_name.trim();
+    if normalized.is_empty()
+        || normalized.eq_ignore_ascii_case("php")
+        || normalized.starts_with("ext-")
+    {
+        return;
+    }
+    roots.insert(normalize_dependency_root(normalized));
+    for segment in normalized.split('/') {
+        if !segment.is_empty() {
+            roots.insert(normalize_dependency_root(segment));
+        }
+    }
+}
+
+fn go_path_matches_any_root(path: &str, roots: &BTreeSet<String>) -> bool {
+    roots.iter().any(|root| go_path_matches_root(path, root))
+}
+
+fn go_path_matches_root(path: &str, root: &str) -> bool {
+    if root.is_empty() {
+        return false;
+    }
+    path == root
+        || path.starts_with(&format!("{root}/"))
+        || path.starts_with(&format!("{root}."))
+        || path.starts_with(&format!("{root}_"))
+}
+
+fn contains_python_setup_name_key(line: &str) -> bool {
+    line.starts_with("name=")
+        || line.starts_with("name =")
+        || line.contains(" name=")
+        || line.contains(" name =")
+}
+
+fn python_setup_dependency_slice(line: &str) -> Option<&str> {
+    [
+        "install_requires",
+        "setup_requires",
+        "tests_require",
+        "extras_require",
+    ]
+    .iter()
+    .filter_map(|needle| line.find(needle))
+    .min()
+    .and_then(|idx| line.get(idx..))
+}
+
+fn python_string_literals(line: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut chars = line.char_indices().peekable();
+    while let Some((start, ch)) = chars.next() {
+        if ch != '"' && ch != '\'' {
+            continue;
+        }
+        let quote = ch;
+        let mut escaped = false;
+        let mut end_byte = None;
+        for (idx, next) in chars.by_ref() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if next == '\\' {
+                escaped = true;
+                continue;
+            }
+            if next == quote {
+                end_byte = Some(idx);
+                break;
+            }
+        }
+        if let Some(end) = end_byte {
+            if let Some(value) = line.get(start + quote.len_utf8()..end) {
+                literals.push(value.to_string());
+            }
+        }
+    }
+    literals
+}
+
+fn collect_python_requirement_root(raw: &str, roots: &mut BTreeSet<String>) {
+    let value = raw
+        .trim()
+        .trim_matches(|ch| matches!(ch, '"' | '\'' | ',' | '[' | ']'));
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("python")
+        || value.starts_with('#')
+        || value.starts_with("git+")
+        || value.starts_with("http://")
+        || value.starts_with("https://")
+        || value.starts_with("-r ")
+    {
+        return;
+    }
+    let root: String = value
+        .chars()
+        .take_while(|character| character.is_alphanumeric() || matches!(character, '_' | '-' | '.'))
+        .take_while(|character| !matches!(character, '[' | '<' | '>' | '=' | '!' | '~' | ';'))
+        .collect();
+    let root = root.trim_matches('.');
+    if root.is_empty() || root.eq_ignore_ascii_case("python") {
+        return;
+    }
+    roots.insert(normalize_dependency_root(root));
+}
+
 /// Reference-shaped relations that belong in the always-on unresolved-reference
 /// lane. Local-dataflow relations (Reads/Writes/FlowsTo/Argument*/...) stay
 /// debug-sidecar material: they are noise for hallucination detection.
@@ -15182,6 +16730,25 @@ fn unresolved_reference_lane_relation(relation: RelationKind) -> bool {
             | RelationKind::AliasedBy
             | RelationKind::Reexports
     )
+}
+
+/// Cap-eviction priority for the unresolved-reference lane (lower = kept first
+/// when a file exceeds the per-file row cap). Repo-local candidates are the
+/// forward-hallucination signal and must survive eviction; known-good
+/// builtin/std and external-dependency references are dropped first
+/// (2026-06-18 stress test, Q8 1a).
+/// Evidence-first ordering shared by the per-file persistence cap and the
+/// CLI lane query's bounded compact output: hallucination-relevant classes
+/// survive truncation before known-good noise.
+pub fn unresolved_reference_lane_class_priority(reference_class: &str) -> u8 {
+    match reference_class {
+        REFERENCE_CLASS_REPO_LOCAL_CANDIDATE => 0,
+        REFERENCE_CLASS_MACRO_OR_CODEGEN => 1,
+        REFERENCE_CLASS_DYNAMIC_OR_COMPUTED => 2,
+        REFERENCE_CLASS_EXTERNAL_DEPENDENCY => 3,
+        REFERENCE_CLASS_BUILTIN_OR_STD => 4,
+        _ => 5,
+    }
 }
 
 /// Persists reference-shaped unresolved references in ALL storage modes (Proof
@@ -15215,8 +16782,48 @@ fn persist_unresolved_reference_lane(
             && left.source_span == right.source_span
     });
     let total = lane_references.len();
+    // 1a (2026-06-18 stress test): when a file exceeds the per-file cap, keep the
+    // hallucination-relevant references first. A bare repo_local_candidate (no
+    // std/prelude/builtin/external/macro shape, no repo definition) is the forward
+    // hallucination signal; builtin/std/external/dynamic refs are known-good noise.
+    // Without this bias a NEW unresolved call could be evicted purely for sorting
+    // late by source span. Classification is computed once and reused for the row
+    // metadata. This changes only WHICH rows survive the cap, never the read order
+    // (the lane query re-sorts by span); files still over the cap remain labeled
+    // bounded/unknown by the validate-edit lane-truncation finding.
+    let mut classified = lane_references
+        .iter()
+        .map(|reference| {
+            (
+                *reference,
+                classifier.classify(reference, language, repo_relative_path),
+            )
+        })
+        .collect::<Vec<_>>();
+    classified.sort_by(|(left, left_class), (right, right_class)| {
+        unresolved_reference_lane_class_priority(left_class)
+            .cmp(&unresolved_reference_lane_class_priority(right_class))
+            // Newest source span first WITHIN a class, so an appended/edited
+            // unresolved reference survives the cap even when the file has more
+            // than the cap of SAME-class references (an mcp-server/lib.rs-scale
+            // file has >256 repo_local_candidate refs; class priority alone would
+            // still evict the latest-span one).
+            .then_with(|| {
+                right
+                    .source_span
+                    .start_line
+                    .cmp(&left.source_span.start_line)
+            })
+            .then_with(|| {
+                right
+                    .source_span
+                    .start_column
+                    .cmp(&left.source_span.start_column)
+            })
+            .then_with(|| left.reference_id.cmp(&right.reference_id))
+    });
     let mut rows = 0u64;
-    for reference in lane_references
+    for (reference, reference_class) in classified
         .iter()
         .take(UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE)
     {
@@ -15224,7 +16831,7 @@ fn persist_unresolved_reference_lane(
             "fact_class": "unresolved_reference",
             "persistence_lane": "unresolved_reference_lane",
             "not_graph_proof": true,
-            "reference_class": classifier.classify(reference, language, repo_relative_path),
+            "reference_class": *reference_class,
             "repo_relative_path": normalize_graph_path(repo_relative_path),
         });
         store.insert_unresolved_reference_after_file_delete(
@@ -15678,7 +17285,8 @@ fn parse_extract_pending_files_with_progress(
                     Ok(Some(parsed)) => {
                         let syntax_error = parsed.has_syntax_errors();
                         let extraction_start = Instant::now();
-                        let mut extraction = extract_entities_and_relations(&parsed, &file.source);
+                        let parser_fact_bundle = extract_parser_fact_bundle(&parsed, &file.source);
+                        let mut extraction = parser_fact_bundle.to_basic_extraction();
                         extraction.file.size_bytes = file.size_bytes;
                         extraction.file.metadata = file_manifest_metadata_with_parser_status(
                             file.modified_unix_nanos.clone(),
@@ -16012,7 +17620,9 @@ fn cleanup_facts_for_path(
         return Ok(false);
     }
 
-    if path_has_static_resolver_language(repo_relative_path) {
+    if path_has_static_resolver_language(repo_relative_path)
+        || path_has_cross_file_call_resolver_language(repo_relative_path)
+    {
         *changed_static_resolver_inputs = true;
     }
     if cache.has_cached_facts() {
@@ -16465,7 +18075,9 @@ pub fn update_changed_files_with_cache_to_db(
                 changed_fact_paths.insert(normalize_graph_path(repo_relative_path));
                 continue;
             };
-            if language_supports_static_resolver(language.as_str()) {
+            if language_supports_static_resolver(language.as_str())
+                || language_supports_cross_file_call_resolver(language.as_str())
+            {
                 changed_static_resolver_inputs = true;
             }
 
@@ -16648,7 +18260,8 @@ pub fn update_changed_files_with_cache_to_db(
             }
 
             let extraction_start = Instant::now();
-            let mut extraction = extract_entities_and_relations(&parsed, &source);
+            let parser_fact_bundle = extract_parser_fact_bundle(&parsed, &source);
+            let mut extraction = parser_fact_bundle.to_basic_extraction();
             let Mvp4TypeScriptMicroFlowExtractionContext {
                 inventory: mvp4_micro_node_report,
                 persistable_value_uses,
@@ -17586,6 +19199,24 @@ fn language_supports_static_resolver(language: &str) -> bool {
     matches!(language, "typescript" | "javascript")
 }
 
+/// Languages whose cross-file CALLS edges are (re)generated by the global
+/// resolver (Python from-import/module-import, Rust crate-local use/mod, Go
+/// same-package siblings). Distinct from `language_supports_static_resolver`
+/// so the TS/JS `parse_static_imports` loop never runs on their sources.
+fn language_supports_cross_file_call_resolver(language: &str) -> bool {
+    matches!(language, "python" | "go" | "rust")
+}
+
+fn path_has_cross_file_call_resolver_language(repo_relative_path: &str) -> bool {
+    matches!(
+        Path::new(repo_relative_path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase()),
+        Some(extension) if matches!(extension.as_str(), "py" | "go" | "rs")
+    )
+}
+
 fn static_dependency_targets_any(
     repo_relative_path: &str,
     source: &str,
@@ -17636,10 +19267,10 @@ fn resolver_impact_paths_have_static_sources(
 ) -> Result<bool, IndexError> {
     for file in store.list_files(UNBOUNDED_STORE_READ_LIMIT)? {
         if impacted_paths.contains(&normalize_graph_path(&file.repo_relative_path))
-            && file
-                .language
-                .as_deref()
-                .is_some_and(|language| language == "typescript" || language == "javascript")
+            && file.language.as_deref().is_some_and(|language| {
+                language_supports_static_resolver(language)
+                    || language_supports_cross_file_call_resolver(language)
+            })
         {
             return Ok(true);
         }
@@ -17650,10 +19281,12 @@ fn resolver_impact_paths_have_static_sources(
 #[derive(Debug, Clone, Default)]
 struct GlobalResolverWorkspace {
     resolver_paths: Vec<String>,
+    cross_file_call_paths: Vec<String>,
     test_paths: Vec<String>,
     entities_by_file: BTreeMap<String, Vec<Entity>>,
     indexed_paths: BTreeSet<String>,
     file_hashes: BTreeMap<String, String>,
+    languages: BTreeMap<String, Option<String>>,
     sources: BTreeMap<String, String>,
     has_test_case_entity: bool,
 }
@@ -17666,11 +19299,14 @@ impl GlobalResolverWorkspace {
             .map(|file| normalize_graph_path(&file.repo_relative_path))
             .collect::<BTreeSet<_>>();
         let mut resolver_paths = Vec::new();
+        let mut cross_file_call_paths = Vec::new();
         let mut test_paths = Vec::new();
         let mut file_hashes = BTreeMap::new();
+        let mut languages = BTreeMap::new();
         for file in &files {
             let repo_relative_path = normalize_graph_path(&file.repo_relative_path);
             file_hashes.insert(repo_relative_path.clone(), file.file_hash.clone());
+            languages.insert(repo_relative_path.clone(), file.language.clone());
             if file
                 .language
                 .as_deref()
@@ -17680,19 +19316,29 @@ impl GlobalResolverWorkspace {
                     test_paths.push(repo_relative_path.clone());
                 }
                 resolver_paths.push(repo_relative_path);
+            } else if file
+                .language
+                .as_deref()
+                .is_some_and(language_supports_cross_file_call_resolver)
+            {
+                cross_file_call_paths.push(repo_relative_path);
             }
         }
 
-        if resolver_paths.is_empty() {
+        if resolver_paths.is_empty() && cross_file_call_paths.is_empty() {
             return Ok(Self {
                 indexed_paths,
                 file_hashes,
+                languages,
                 ..Self::default()
             });
         }
 
+        // Load the source of every file either resolver consults. The Go
+        // reducer scans sibling sources, so all cross-file-call sources must be
+        // present, not just the changed importer.
         let mut sources = BTreeMap::new();
-        for repo_relative_path in &resolver_paths {
+        for repo_relative_path in resolver_paths.iter().chain(cross_file_call_paths.iter()) {
             let source_path = repo_root.join(repo_relative_path);
             if source_path.exists() {
                 sources.insert(
@@ -17716,10 +19362,12 @@ impl GlobalResolverWorkspace {
 
         Ok(Self {
             resolver_paths,
+            cross_file_call_paths,
             test_paths,
             entities_by_file,
             indexed_paths,
             file_hashes,
+            languages,
             sources,
             has_test_case_entity,
         })
@@ -17745,10 +19393,22 @@ fn reduce_static_import_edges_from_workspace(
     repo_root: &Path,
     workspace: &GlobalResolverWorkspace,
 ) -> Result<GlobalFactReductionPlan, IndexError> {
-    if workspace.resolver_paths.is_empty() {
+    if workspace.resolver_paths.is_empty() && workspace.cross_file_call_paths.is_empty() {
         return Ok(GlobalFactReductionPlan::default());
     }
     let mut plan = GlobalFactReductionPlan::default();
+    // Python/Go/Rust cross-file CALLS, regenerated from the store so the
+    // incremental (validate-edit) path preserves them across a caller-file
+    // re-index exactly as the full-index bundles path creates them. Edges are
+    // stable-id keyed, so re-running here is idempotent with the bundles pass.
+    reduce_cross_file_call_edges(
+        &mut plan,
+        &workspace.entities_by_file,
+        &workspace.indexed_paths,
+        &workspace.sources,
+        &workspace.file_hashes,
+        &workspace.languages,
+    );
     for importer_path in &workspace.resolver_paths {
         let Some(source) = workspace.sources.get(importer_path) else {
             continue;
@@ -33905,6 +35565,399 @@ pub fn spool_target(value: i32) -> i32 {
         }));
     }
 
+    fn reduced_callable_entity(reduced: &ReducedIndexPlan, path: &str, name: &str) -> Entity {
+        reduced
+            .bundles
+            .iter()
+            .flat_map(|bundle| &bundle.extraction.entities)
+            .find(|entity| {
+                entity.repo_relative_path == path
+                    && matches!(entity.kind, EntityKind::Function | EntityKind::Method)
+                    && entity.name == name
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("missing callable entity {name} in {path}"))
+    }
+
+    fn has_cross_file_calls_edge(
+        reduced: &ReducedIndexPlan,
+        head_id: &str,
+        tail_id: &str,
+        resolver: &str,
+    ) -> bool {
+        reduced.global_facts.edges.iter().any(|edge| {
+            edge.relation == RelationKind::Calls
+                && edge.head_id == head_id
+                && edge.tail_id == tail_id
+                && edge.exactness == Exactness::ParserVerified
+                && edge
+                    .metadata
+                    .get("resolver")
+                    .and_then(|value| value.as_str())
+                    == Some(resolver)
+        })
+    }
+
+    fn reduce_language_fixture(files: &[(&str, &str, &str)]) -> ReducedIndexPlan {
+        let pending = files
+            .iter()
+            .map(|(path, source, language)| pending_language_test_file(path, source, language))
+            .collect::<Vec<_>>();
+        let (bundles, _) = parse_extract_pending_files(pending, 1).expect("parse/extract");
+        reduce_local_fact_bundles(bundles)
+    }
+
+    #[test]
+    fn reducer_resolves_python_from_import_call_target() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "pkg/util.py",
+                "def helper(value):\n    return value + 1\n",
+                "python",
+            ),
+            (
+                "pkg/main.py",
+                "from pkg.util import helper\n\n\ndef run(value):\n    return helper(value)\n",
+                "python",
+            ),
+        ]);
+        let helper = reduced_callable_entity(&reduced, "pkg/util.py", "helper");
+        let run = reduced_callable_entity(&reduced, "pkg/main.py", "run");
+        assert!(
+            has_cross_file_calls_edge(
+                &reduced,
+                &run.id,
+                &helper.id,
+                "python_from_import_call_target"
+            ),
+            "python from-import call should resolve to a ParserVerified CALLS edge"
+        );
+        assert!(
+            reduced.global_facts.edges.iter().any(|edge| {
+                edge.relation == RelationKind::Imports
+                    && edge.tail_id == helper.id
+                    && edge
+                        .metadata
+                        .get("resolver")
+                        .and_then(|value| value.as_str())
+                        == Some("python_from_import_target")
+            }),
+            "python from-import should also record an Imports edge to the target"
+        );
+    }
+
+    #[test]
+    fn reducer_resolves_python_module_import_qualified_call() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "lib/util.py",
+                "def compute(value):\n    return value * 2\n",
+                "python",
+            ),
+            (
+                "app.py",
+                "import lib.util\n\n\ndef run(value):\n    return lib.util.compute(value)\n",
+                "python",
+            ),
+        ]);
+        let compute = reduced_callable_entity(&reduced, "lib/util.py", "compute");
+        let run = reduced_callable_entity(&reduced, "app.py", "run");
+        assert!(
+            has_cross_file_calls_edge(
+                &reduced,
+                &run.id,
+                &compute.id,
+                "python_module_import_call_target"
+            ),
+            "python module import should resolve qualified call sites"
+        );
+    }
+
+    #[test]
+    fn reducer_python_local_shadow_suppresses_cross_file_call() {
+        let reduced = reduce_language_fixture(&[
+            ("pkg/util.py", "def helper():\n    return 1\n", "python"),
+            (
+                "pkg/main.py",
+                "from pkg.util import helper\n\n\ndef helper():\n    return 2\n\n\ndef run():\n    return helper()\n",
+                "python",
+            ),
+        ]);
+        assert!(
+            !reduced.global_facts.edges.iter().any(|edge| {
+                edge.relation == RelationKind::Calls
+                    && edge
+                        .metadata
+                        .get("resolver")
+                        .and_then(|value| value.as_str())
+                        == Some("python_from_import_call_target")
+            }),
+            "a same-file redefinition of the imported name must suppress the cross-file CALLS edge"
+        );
+    }
+
+    #[test]
+    fn reducer_resolves_rust_use_item_import_call() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "src/util.rs",
+                "pub fn helper(value: u32) -> u32 {\n    value + 1\n}\n",
+                "rust",
+            ),
+            (
+                "src/main.rs",
+                "mod util;\nuse crate::util::helper;\n\nfn run(value: u32) -> u32 {\n    helper(value)\n}\n\nfn main() {\n    run(1);\n}\n",
+                "rust",
+            ),
+        ]);
+        let helper = reduced_callable_entity(&reduced, "src/util.rs", "helper");
+        let run = reduced_callable_entity(&reduced, "src/main.rs", "run");
+        assert!(
+            has_cross_file_calls_edge(&reduced, &run.id, &helper.id, "rust_use_import_call_target"),
+            "rust use-item import should resolve unqualified call sites"
+        );
+    }
+
+    #[test]
+    fn reducer_resolves_rust_use_alias_in_brace_group_call() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "src/util.rs",
+                "pub fn helper(value: u32) -> u32 {\n    value + 1\n}\n",
+                "rust",
+            ),
+            (
+                "src/main.rs",
+                "mod util;\nuse crate::util::{helper as lifted};\n\nfn run(value: u32) -> u32 {\n    lifted(value)\n}\n",
+                "rust",
+            ),
+        ]);
+        let helper = reduced_callable_entity(&reduced, "src/util.rs", "helper");
+        let run = reduced_callable_entity(&reduced, "src/main.rs", "run");
+        assert!(
+            has_cross_file_calls_edge(&reduced, &run.id, &helper.id, "rust_use_import_call_target"),
+            "rust brace-group alias import should resolve call sites under the alias"
+        );
+    }
+
+    #[test]
+    fn reducer_resolves_rust_mod_declaration_qualified_call() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "src/util.rs",
+                "pub fn helper() -> u32 {\n    7\n}\n",
+                "rust",
+            ),
+            (
+                "src/main.rs",
+                "mod util;\n\nfn main() {\n    let _value = util::helper();\n}\n",
+                "rust",
+            ),
+        ]);
+        let helper = reduced_callable_entity(&reduced, "src/util.rs", "helper");
+        let main = reduced_callable_entity(&reduced, "src/main.rs", "main");
+        assert!(
+            has_cross_file_calls_edge(
+                &reduced,
+                &main.id,
+                &helper.id,
+                "rust_module_path_call_target"
+            ),
+            "a `mod m;` declaration should resolve `m::f()` call sites (FYI59e)"
+        );
+    }
+
+    #[test]
+    fn reducer_resolves_rust_super_import_call() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "src/nested/util.rs",
+                "pub fn helper() -> u32 {\n    3\n}\n",
+                "rust",
+            ),
+            (
+                "src/nested/worker.rs",
+                "use super::util::helper;\n\npub fn run() -> u32 {\n    helper()\n}\n",
+                "rust",
+            ),
+        ]);
+        let helper = reduced_callable_entity(&reduced, "src/nested/util.rs", "helper");
+        let run = reduced_callable_entity(&reduced, "src/nested/worker.rs", "run");
+        assert!(
+            has_cross_file_calls_edge(&reduced, &run.id, &helper.id, "rust_use_import_call_target"),
+            "a super-anchored use should resolve against the parent module directory"
+        );
+    }
+
+    #[test]
+    fn reducer_resolves_go_same_package_sibling_call() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "svc/helper.go",
+                "package svc\n\nfunc Helper(value int) int {\n\treturn value + 1\n}\n",
+                "go",
+            ),
+            (
+                "svc/runner.go",
+                "package svc\n\nfunc Run(value int) int {\n\treturn Helper(value)\n}\n",
+                "go",
+            ),
+        ]);
+        let helper = reduced_callable_entity(&reduced, "svc/helper.go", "Helper");
+        let run = reduced_callable_entity(&reduced, "svc/runner.go", "Run");
+        assert!(
+            has_cross_file_calls_edge(&reduced, &run.id, &helper.id, "go_same_package_call_target"),
+            "go same-package sibling functions should resolve unqualified call sites"
+        );
+    }
+
+    #[test]
+    fn reducer_go_cross_directory_files_resolve_nothing() {
+        let reduced = reduce_language_fixture(&[
+            (
+                "svc/helper.go",
+                "package svc\n\nfunc Helper(value int) int {\n\treturn value + 1\n}\n",
+                "go",
+            ),
+            (
+                "other/runner.go",
+                "package other\n\nfunc Run(value int) int {\n\treturn Helper(value)\n}\n",
+                "go",
+            ),
+        ]);
+        assert!(
+            !reduced.global_facts.edges.iter().any(|edge| {
+                edge.relation == RelationKind::Calls
+                    && edge
+                        .metadata
+                        .get("resolver")
+                        .and_then(|value| value.as_str())
+                        == Some("go_same_package_call_target")
+            }),
+            "go files in different directories must not produce same-package CALLS edges"
+        );
+    }
+
+    fn count_cross_file_calls_from(db: &Path, caller_file: &str, resolver_reason: &str) -> usize {
+        let store = SqliteGraphStore::open(db).expect("store");
+        store
+            .list_edges(UNBOUNDED_STORE_READ_LIMIT)
+            .expect("edges")
+            .into_iter()
+            .filter(|edge| {
+                edge.relation == RelationKind::Calls
+                    && edge.exactness == Exactness::ParserVerified
+                    && normalize_graph_path(&edge.source_span.repo_relative_path) == caller_file
+                    && edge
+                        .metadata
+                        .get("resolver")
+                        .and_then(|value| value.as_str())
+                        == Some(resolver_reason)
+            })
+            .count()
+    }
+
+    // Regression for the incremental-path drop: re-indexing the CALLER file
+    // (as the forward-probe / any edit does) must regenerate the cross-file
+    // CALLS edge via the store-based resolver, not delete it. Before the fix
+    // the workspace resolver was TS/JS-only, so a single validate-edit on the
+    // caller silently removed the deleted-callee interrupt for these languages.
+    fn assert_incremental_caller_reindex_preserves_cross_file_calls(
+        name: &str,
+        files: &[(&str, &str)],
+        caller_file: &str,
+        caller_touch_suffix: &str,
+        resolver_reason: &str,
+    ) {
+        let repo = temp_repo(name);
+        for (path, source) in files {
+            write_test_file(&repo, path, source);
+        }
+        let db = repo.join("target").join(format!("{name}.sqlite"));
+        index_repo_to_db(&repo, &db).expect("fresh index");
+        assert!(
+            count_cross_file_calls_from(&db, caller_file, resolver_reason) >= 1,
+            "fresh index must persist the cross-file CALLS edge from {caller_file}"
+        );
+
+        let original = files
+            .iter()
+            .find(|(path, _)| *path == caller_file)
+            .map(|(_, source)| *source)
+            .expect("caller source present");
+        write_test_file(
+            &repo,
+            caller_file,
+            &format!("{original}{caller_touch_suffix}"),
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from(caller_file)], &db)
+            .expect("incremental caller re-index");
+        assert!(
+            count_cross_file_calls_from(&db, caller_file, resolver_reason) >= 1,
+            "incremental re-index of {caller_file} must preserve the cross-file CALLS edge"
+        );
+    }
+
+    #[test]
+    fn incremental_caller_reindex_preserves_python_cross_file_calls() {
+        assert_incremental_caller_reindex_preserves_cross_file_calls(
+            "xfile-incremental-python",
+            &[
+                (
+                    "pkg/service.py",
+                    "def legacy_helper(flag):\n    return \"legacy\" if flag else \"modern\"\n",
+                ),
+                (
+                    "main.py",
+                    "from pkg.service import legacy_helper\n\n\ndef run_app(flag):\n    return legacy_helper(flag)\n",
+                ),
+            ],
+            "main.py",
+            "\n# touched\n",
+            "python_from_import_call_target",
+        );
+    }
+
+    #[test]
+    fn incremental_caller_reindex_preserves_rust_cross_file_calls() {
+        assert_incremental_caller_reindex_preserves_cross_file_calls(
+            "xfile-incremental-rust",
+            &[
+                (
+                    "src/helpers.rs",
+                    "pub fn legacy_helper(flag: bool) -> &'static str {\n    if flag {\n        \"legacy\"\n    } else {\n        \"modern\"\n    }\n}\n",
+                ),
+                (
+                    "src/main.rs",
+                    "mod helpers;\n\nfn run_app(flag: bool) -> &'static str {\n    helpers::legacy_helper(flag)\n}\n\nfn main() {\n    let _ = run_app(true);\n}\n",
+                ),
+            ],
+            "src/main.rs",
+            "\n// touched\n",
+            "rust_module_path_call_target",
+        );
+    }
+
+    #[test]
+    fn incremental_caller_reindex_preserves_go_cross_file_calls() {
+        assert_incremental_caller_reindex_preserves_cross_file_calls(
+            "xfile-incremental-go",
+            &[
+                (
+                    "lib.go",
+                    "package main\n\nfunc legacyHelper(flag bool) string {\n\tif flag {\n\t\treturn \"legacy\"\n\t}\n\treturn \"modern\"\n}\n",
+                ),
+                (
+                    "main.go",
+                    "package main\n\nfunc runApp(flag bool) string {\n\treturn legacyHelper(flag)\n}\n\nfunc main() {\n\t_ = runApp(true)\n}\n",
+                ),
+            ],
+            "main.go",
+            "\n// touched\n",
+            "go_same_package_call_target",
+        );
+    }
+
     #[test]
     fn full_index_worker_count_determinism_preserves_graph_facts() {
         let repo = temp_repo("worker-db-determinism");
@@ -34224,12 +36277,20 @@ pub fn spool_target(value: i32) -> i32 {
     }
 
     fn pending_test_file(repo_relative_path: &str, source: &str) -> PendingIndexFile {
+        pending_language_test_file(repo_relative_path, source, "typescript")
+    }
+
+    fn pending_language_test_file(
+        repo_relative_path: &str,
+        source: &str,
+        language: &str,
+    ) -> PendingIndexFile {
         PendingIndexFile {
             repo_relative_path: repo_relative_path.to_string(),
             source: source.to_string(),
             file_hash: content_hash(source),
-            language: Some("typescript".to_string()),
-            file_kind: "typescript".to_string(),
+            language: Some(language.to_string()),
+            file_kind: language.to_string(),
             source_role: "production".to_string(),
             source_role_classification_ms: 0.0,
             size_bytes: source.len() as u64,
@@ -35413,6 +37474,108 @@ pub fn caller() {
     }
 
     #[test]
+    fn index_persists_queryable_capability_metadata_without_source_bodies() {
+        let repo = temp_repo("capability-metadata-storage");
+        let source = "export async function login(input: string) {\n  await import(input);\n  return hallucinatedHelper(input);\n}\n";
+        write_test_file(&repo, "src/login.ts", source);
+        let db = repo.join("target").join("capability.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open_read_only(&db).expect("store");
+        let rows = store
+            .query_capability_metadata(&CapabilityMetadataQueryOptions {
+                repo_relative_path: Some("src/login.ts".to_string()),
+                limit: 128,
+                ..CapabilityMetadataQueryOptions::default()
+            })
+            .expect("capability metadata");
+        assert!(
+            rows.iter().any(|row| {
+                row.owner_fact_kind == "file"
+                    && row.language.as_deref() == Some("typescript")
+                    && row.frontend.as_deref() == Some("typescript")
+                    && row.resolver_status.as_deref() == Some("unsupported")
+            }),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.capability_flag == "dynamic_unknown"
+                    || row.capability_flag == "call_extracted"),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| row.not_graph_proof),
+            "metadata rows must not be graph proof: {rows:?}"
+        );
+        let serialized = serde_json::to_string(&rows).expect("rows json");
+        assert!(!serialized.contains("hallucinatedHelper(input)"));
+        assert!(!serialized.contains("await import(input)"));
+
+        let unknowns = store
+            .query_unknown_boundary_metadata(&CapabilityMetadataQueryOptions {
+                repo_relative_path: Some("src/login.ts".to_string()),
+                limit: 128,
+                ..CapabilityMetadataQueryOptions::default()
+            })
+            .expect("unknown metadata");
+        assert!(
+            !unknowns.is_empty(),
+            "dynamic import and parser-only call metadata should be queryable"
+        );
+
+        let snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/login.ts")],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions::default(),
+        )
+        .expect("snapshot");
+        assert!(
+            snapshot
+                .facts
+                .capability_metadata
+                .iter()
+                .any(|row| row.repo_relative_path == "src/login.ts"),
+            "{snapshot:?}"
+        );
+
+        drop(store);
+        write_test_file(
+            &repo,
+            "src/login.ts",
+            "export function login(input: string) {\n  return input;\n}\n",
+        );
+        update_changed_files_to_db(&repo, &[PathBuf::from("src/login.ts")], &db)
+            .expect("update clean source");
+        let refreshed = SqliteGraphStore::open_read_only(&db).expect("refreshed store");
+        let refreshed_unknowns = refreshed
+            .query_unknown_boundary_metadata(&CapabilityMetadataQueryOptions {
+                repo_relative_path: Some("src/login.ts".to_string()),
+                limit: 128,
+                ..CapabilityMetadataQueryOptions::default()
+            })
+            .expect("refreshed unknown metadata");
+        assert!(
+            refreshed_unknowns.iter().all(|row| {
+                let kind_ok = match row.unknown_boundary_kind.as_deref() {
+                    Some(kind) => !kind.contains("dynamic_import"),
+                    None => true,
+                };
+                let reason_ok = match row.unknown_boundary_reason.as_deref() {
+                    Some(reason) => !reason.contains("hallucinatedHelper"),
+                    None => true,
+                };
+                kind_ok && reason_ok
+            }),
+            "changed-file reindex must refresh unknown boundary metadata: {refreshed_unknowns:?}"
+        );
+        drop(refreshed);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
     fn reference_class_tiers_match_spec_shapes() {
         let repo = temp_repo("reference-class");
         write_test_file(&repo, "src/auth.rs", "pub fn real() {}\n");
@@ -35431,6 +37594,27 @@ pub fn caller() {
             &repo,
             "pyproject.toml",
             "[project]\nname = \"fixture\"\ndependencies = [\n  \"requests>=2.0\",\n]\n",
+        );
+        write_test_file(
+            &repo,
+            "setup.cfg",
+            "[metadata]\nname = cfg-fixture\n\n[options]\ninstall_requires =\n    rich>=13\n",
+        );
+        write_test_file(
+            &repo,
+            "setup.py",
+            "from setuptools import setup\nsetup(name=\"setup-fixture\", install_requires=[\"httpx>=0.27\"])\n",
+        );
+        write_test_file(
+            &repo,
+            "go.mod",
+            "module example.com/acme/app\n\ngo 1.23\n\nrequire (\n    github.com/acme/ext v1.2.3\n    golang.org/x/sync v0.10.0\n)\n",
+        );
+        write_test_file(&repo, "Gemfile", "gem \"rails\"\ngem \"sidekiq\"\n");
+        write_test_file(
+            &repo,
+            "composer.json",
+            "{\n  \"require\": { \"monolog/monolog\": \"^3\" },\n  \"autoload\": { \"psr-4\": { \"App\\\\\": \"src/\" } }\n}\n",
         );
         let classifier = UnresolvedReferenceClassifier::for_repo(&repo);
         let reference = |name: &str| LocalFactReference {
@@ -35517,8 +37701,33 @@ pub fn caller() {
             REFERENCE_CLASS_BUILTIN_OR_STD
         );
         assert_eq!(
+            classify("importlib.import_module", "python", "src/api.py"),
+            REFERENCE_CLASS_RUNTIME_REQUIRED,
+            "importlib lookups are runtime-boundary diagnostics, not repo proof"
+        );
+        assert_eq!(
+            classify("__import__", "python", "src/api.py"),
+            REFERENCE_CLASS_RUNTIME_REQUIRED,
+            "__import__ is a runtime-boundary diagnostic, not repo proof"
+        );
+        assert_eq!(
+            classify("getattr", "python", "src/api.py"),
+            REFERENCE_CLASS_RUNTIME_REQUIRED,
+            "getattr target lookup is runtime-required"
+        );
+        assert_eq!(
             classify("requests.get", "python", "src/api.py"),
             REFERENCE_CLASS_EXTERNAL_DEPENDENCY
+        );
+        assert_eq!(
+            classify("rich.console.Console", "python", "src/api.py"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+            "setup.cfg dependencies are diagnostic external-dependency evidence"
+        );
+        assert_eq!(
+            classify("httpx.Client", "python", "src/api.py"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+            "setup.py dependencies are diagnostic external-dependency evidence"
         );
         assert_eq!(
             classify("tools.summarize_results", "python", "src/api.py"),
@@ -35546,20 +37755,97 @@ pub fn caller() {
             "sibling src/tools.go must make tools. repo-local"
         );
         assert_eq!(
+            classify("example.com/acme/app/internal/tools", "go", "src/main.go"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "go.mod module path is diagnostic repo-local evidence"
+        );
+        assert_eq!(
+            classify("github.com/acme/ext/pkg", "go", "src/main.go"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+            "go.mod require path is diagnostic external-dependency evidence"
+        );
+        assert_eq!(
+            classify("golang.org/x/sync/errgroup", "go", "src/main.go"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+            "go.mod require block path prefix is diagnostic external-dependency evidence"
+        );
+        assert_eq!(
             classify("input.String", "go", "src/main.go"),
             REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
             "method on a local receiver is not escalation-eligible"
         );
 
+        // Java / C# / C / C++ / Ruby / PHP capability-aware shapes.
+        assert_eq!(
+            classify("java.util.List", "java", "src/Main.java"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("com.acme.MissingService", "java", "src/Main.java"),
+            REFERENCE_CLASS_COMPILER_REQUIRED,
+            "qualified Java lookup needs compiler/project resolver proof"
+        );
+        assert_eq!(
+            classify("missingJavaHelper", "java", "src/Main.java"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+        assert_eq!(
+            classify("System.Console.WriteLine", "csharp", "src/App.cs"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("Acme.MissingService.Run", "csharp", "src/App.cs"),
+            REFERENCE_CLASS_COMPILER_REQUIRED
+        );
+        assert_eq!(
+            classify("MAX_SIZE", "c", "src/main.c"),
+            REFERENCE_CLASS_MACRO_OR_CODEGEN
+        );
+        assert_eq!(
+            classify("std::vector", "cpp", "src/main.cpp"),
+            REFERENCE_CLASS_BUILTIN_OR_STD
+        );
+        assert_eq!(
+            classify("missingCpp<T>", "cpp", "src/main.cpp"),
+            REFERENCE_CLASS_COMPILER_REQUIRED
+        );
+        assert_eq!(
+            classify("Rails.application", "ruby", "app/app.rb"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+            "Gemfile dependencies are external diagnostics"
+        );
+        assert_eq!(
+            classify("send", "ruby", "app/app.rb"),
+            REFERENCE_CLASS_RUNTIME_REQUIRED
+        );
+        assert_eq!(
+            classify("missing_ruby", "ruby", "app/app.rb"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE
+        );
+        assert_eq!(
+            classify("App\\Service\\MissingThing", "php", "src/App.php"),
+            REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "composer psr-4 roots are repo-local candidates without resolver proof"
+        );
+        assert_eq!(
+            classify("Monolog\\Logger", "php", "src/App.php"),
+            REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+            "composer package roots are external diagnostics"
+        );
+        assert_eq!(
+            classify("__call", "php", "src/App.php"),
+            REFERENCE_CLASS_RUNTIME_REQUIRED
+        );
+
         // Guards.
         assert_eq!(
-            classify("missing_fn", "ruby", "src/app.rb"),
-            REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
-            "non-Tier-2 languages must never produce repo_local_candidate"
+            classify("missing_fn", "madeup", "src/app.unknown"),
+            REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION,
+            "unregistered language/parser relations are explicit unsupported diagnostics"
         );
         assert_eq!(
             classify("unknown_callee", "typescript", "src/app.ts"),
-            REFERENCE_CLASS_DYNAMIC_OR_COMPUTED
+            REFERENCE_CLASS_UNKNOWN
         );
 
         fs::remove_dir_all(repo).expect("cleanup");
@@ -35664,6 +37950,41 @@ pub fn caller() {
             "truncation metadata must record the pre-cap total; got {truncation:?}"
         );
 
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn unresolved_reference_lane_cap_keeps_repo_local_candidate_over_builtin() {
+        // 1a regression (2026-06-18 stress test): a file with more refs than the
+        // cap, where the only repo_local_candidate has the LATEST source span,
+        // must still keep that candidate — known-good builtin/std refs are evicted
+        // first so an appended hallucinated call is never silently shed by the cap.
+        let repo = temp_repo("unresolved-lane-priority");
+        let mut source = String::from("pub fn flood() {\n");
+        for index in 0..UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE {
+            source.push_str(&format!("    std::probe_noise_{index}();\n"));
+        }
+        // Lone repo-local candidate at the latest span: span-order alone evicts it.
+        source.push_str("    missing_local_fn_zzz();\n");
+        source.push_str("}\n");
+        write_test_file(&repo, "src/flood.rs", &source);
+        let db = repo.join("target").join("lane-priority.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+
+        let store = SqliteGraphStore::open_read_only(&db).expect("store");
+        let lane = store
+            .list_unresolved_references_by_file("src/flood.rs")
+            .expect("lane");
+        assert_eq!(
+            lane.len(),
+            UNRESOLVED_REFERENCE_LANE_MAX_ROWS_PER_FILE,
+            "lane must cap rows per file"
+        );
+        assert!(
+            lane.iter().any(|row| row.name == "missing_local_fn_zzz"),
+            "the repo_local_candidate must survive the cap over builtin/std refs; got {lane:?}"
+        );
         drop(store);
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -40446,6 +42767,53 @@ pub fn caller() {
                 && entity.repo_relative_path != "src/other.ts"));
         assert!(!repo.join(".codegraph").exists());
 
+        fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn snapshot_unresolved_lane_survives_shared_budget_exhaustion() {
+        // 1d regression (2026-06-18 stress test): the unresolved-reference lane is
+        // read LAST in the per-path snapshot, after entities/edges spend the shared
+        // budget. On fact-dense files that silently starved the forward-hallucination
+        // delta (validate-edit new_count=0 / status=ok on a genuinely new bad call).
+        // The lane now has a dedicated budget and must survive even when the shared
+        // per-path budget is fully exhausted.
+        let repo = temp_repo("snapshot-unresolved-budget");
+        write_test_file(
+            &repo,
+            "src/lib.rs",
+            "pub fn real_fn() -> i32 { 0 }\n\
+             pub fn big() {\n\
+             real_fn();\n    real_fn();\n    real_fn();\n\
+             cg_nonexistent_zzz();\n\
+             }\n",
+        );
+        let db = repo.join("target").join("snap-unresolved.sqlite");
+        index_repo_to_db(&repo, &db).expect("index");
+        let snapshot = snapshot_normalized_facts_for_paths_to_db(
+            &repo,
+            &[PathBuf::from("src/lib.rs")],
+            &[],
+            &db,
+            NormalizedFactSnapshotOptions {
+                max_facts_per_path: 3,
+                ..NormalizedFactSnapshotOptions::default()
+            },
+        )
+        .expect("snapshot");
+        assert!(
+            snapshot.omission.truncated,
+            "test must exhaust the shared per-path budget to be meaningful"
+        );
+        assert!(
+            snapshot
+                .facts
+                .unresolved_references
+                .iter()
+                .any(|fact| fact.name == "cg_nonexistent_zzz"),
+            "the unresolved ref must survive shared-budget exhaustion via its dedicated budget; got {:?}",
+            snapshot.facts.unresolved_references
+        );
         fs::remove_dir_all(repo).expect("cleanup");
     }
 

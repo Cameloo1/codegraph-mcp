@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{EntityKind, EvidenceRole, Exactness, RelationKind, SourceSpan};
+use crate::{
+    dirty_evidence::ProofLadderLevel, EntityKind, EvidenceRole, Exactness, RelationKind, SourceSpan,
+};
 
 pub const VALIDATION_PACKET_SCHEMA_VERSION: u32 = 1;
 pub const HARD_INTERRUPT_PACKET_SCHEMA_VERSION: u32 = 1;
@@ -525,6 +527,172 @@ pub enum ValidationLifecycleRequirement {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ValidationRequiredExactness {
+    ReverifiedGraphSourceProof,
+    ReverifiedGraphIntegrity,
+    ParserExactInvariant,
+    ResolverOrCompilerExact,
+    DiagnosticOnly,
+    NotApplicable,
+}
+
+impl Default for ValidationRequiredExactness {
+    fn default() -> Self {
+        Self::DiagnosticOnly
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationEscalationPolicy {
+    BlockOnlyWithCapabilityMetadata,
+    WarnUntilResolverExact,
+    WarningOrUnknownOnly,
+    DiagnosticOnly,
+    NotApplicable,
+}
+
+impl Default for ValidationEscalationPolicy {
+    fn default() -> Self {
+        Self::DiagnosticOnly
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationUnsupportedBehavior {
+    Warn,
+    Unknown,
+    NotApplicable,
+    DiagnosticOnly,
+}
+
+impl Default for ValidationUnsupportedBehavior {
+    fn default() -> Self {
+        Self::DiagnosticOnly
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationRecoveryActionKind {
+    SourceEdit,
+    InspectUnknown,
+    ReindexOrRepair,
+    ContinueWithCaution,
+    NotApplicable,
+}
+
+impl Default for ValidationRecoveryActionKind {
+    fn default() -> Self {
+        Self::NotApplicable
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationRuleCapabilityContract {
+    pub required_capability: Option<LanguageFactFamily>,
+    pub required_exactness: ValidationRequiredExactness,
+    pub required_source_span: bool,
+    pub required_provenance: bool,
+    pub source_role_policy: ValidationSourceRoleRequirement,
+    pub lifecycle_requirement: ValidationLifecycleRequirement,
+    pub escalation_policy: ValidationEscalationPolicy,
+    pub unsupported_behavior: ValidationUnsupportedBehavior,
+    pub recovery_action_kind: ValidationRecoveryActionKind,
+    pub old_tier_label_authorizes_blocking: bool,
+}
+
+impl Default for ValidationRuleCapabilityContract {
+    fn default() -> Self {
+        Self::diagnostic()
+    }
+}
+
+impl ValidationRuleCapabilityContract {
+    pub const fn exact_blocking(
+        relation_kind: Option<RelationKind>,
+        source_span_requirement: ValidationSourceSpanRequirement,
+        provenance_requirement: ValidationProvenanceRequirement,
+        source_role_requirement: ValidationSourceRoleRequirement,
+        lifecycle_requirement: ValidationLifecycleRequirement,
+    ) -> Self {
+        Self {
+            required_capability: relation_kind_to_language_fact_family(relation_kind),
+            required_exactness: ValidationRequiredExactness::ReverifiedGraphSourceProof,
+            required_source_span: source_span_requirement.requires_span(),
+            required_provenance: provenance_requirement.requires_provenance(),
+            source_role_policy: source_role_requirement,
+            lifecycle_requirement,
+            escalation_policy: ValidationEscalationPolicy::BlockOnlyWithCapabilityMetadata,
+            unsupported_behavior: ValidationUnsupportedBehavior::Unknown,
+            recovery_action_kind: ValidationRecoveryActionKind::SourceEdit,
+            old_tier_label_authorizes_blocking: false,
+        }
+    }
+
+    pub const fn diagnostic() -> Self {
+        Self {
+            required_capability: None,
+            required_exactness: ValidationRequiredExactness::DiagnosticOnly,
+            required_source_span: false,
+            required_provenance: false,
+            source_role_policy: ValidationSourceRoleRequirement::NotApplicable,
+            lifecycle_requirement: ValidationLifecycleRequirement::DiagnosticReadOnly,
+            escalation_policy: ValidationEscalationPolicy::DiagnosticOnly,
+            unsupported_behavior: ValidationUnsupportedBehavior::DiagnosticOnly,
+            recovery_action_kind: ValidationRecoveryActionKind::NotApplicable,
+            old_tier_label_authorizes_blocking: false,
+        }
+    }
+
+    pub fn with_required_exactness(mut self, exactness: ValidationRequiredExactness) -> Self {
+        self.required_exactness = exactness;
+        self
+    }
+
+    pub fn with_escalation_policy(mut self, policy: ValidationEscalationPolicy) -> Self {
+        self.escalation_policy = policy;
+        self
+    }
+
+    pub fn with_recovery_action(mut self, action: ValidationRecoveryActionKind) -> Self {
+        self.recovery_action_kind = action;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationCapabilityEvaluation {
+    pub language: Option<String>,
+    pub frontend: Option<String>,
+    pub capability_required: Option<LanguageFactFamily>,
+    pub capability_present: bool,
+    pub capability_missing_reason: Option<String>,
+    pub exactness: Option<Exactness>,
+    pub resolver_status: String,
+    pub proof_strength: String,
+    pub recommended_action: String,
+}
+
+impl Default for ValidationCapabilityEvaluation {
+    fn default() -> Self {
+        Self {
+            language: None,
+            frontend: None,
+            capability_required: None,
+            capability_present: false,
+            capability_missing_reason: None,
+            exactness: None,
+            resolver_status: "not_applicable".to_string(),
+            proof_strength: "diagnostic_only".to_string(),
+            recommended_action: "no_source_fix_required".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ValidationProofStatus {
     ReverifiedGraphSourceProof,
     ReverifiedGraphIntegrity,
@@ -559,6 +727,456 @@ impl ValidationEvidenceKind {
     pub const fn can_support_blocking_graph_proof(self) -> bool {
         matches!(self, Self::GraphSource | Self::GraphIntegrity)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageFactFamily {
+    EntityDeclaration,
+    SourceSpan,
+    ImportIncludeRequireUse,
+    PackageModule,
+    Call,
+    ReadWrite,
+    Dataflow,
+    TestAssertMockStub,
+    RouteFramework,
+    Bridge,
+    SecuritySourceSink,
+}
+
+impl LanguageFactFamily {
+    pub const ALL: &'static [Self] = &[
+        Self::EntityDeclaration,
+        Self::SourceSpan,
+        Self::ImportIncludeRequireUse,
+        Self::PackageModule,
+        Self::Call,
+        Self::ReadWrite,
+        Self::Dataflow,
+        Self::TestAssertMockStub,
+        Self::RouteFramework,
+        Self::Bridge,
+        Self::SecuritySourceSink,
+    ];
+}
+
+const fn relation_kind_to_language_fact_family(
+    relation_kind: Option<RelationKind>,
+) -> Option<LanguageFactFamily> {
+    match relation_kind {
+        Some(
+            RelationKind::Imports
+            | RelationKind::Reexports
+            | RelationKind::Exports
+            | RelationKind::AliasedBy
+            | RelationKind::AliasOf,
+        ) => Some(LanguageFactFamily::ImportIncludeRequireUse),
+        Some(
+            RelationKind::Calls
+            | RelationKind::CalledBy
+            | RelationKind::Callee
+            | RelationKind::Argument0
+            | RelationKind::Argument1
+            | RelationKind::ArgumentN,
+        ) => Some(LanguageFactFamily::Call),
+        Some(
+            RelationKind::Reads
+            | RelationKind::Writes
+            | RelationKind::Mutates
+            | RelationKind::MutatedBy
+            | RelationKind::MayRead
+            | RelationKind::MayMutate,
+        ) => Some(LanguageFactFamily::ReadWrite),
+        Some(
+            RelationKind::FlowsTo
+            | RelationKind::ReachingDef
+            | RelationKind::AssignedFrom
+            | RelationKind::ControlDependsOn
+            | RelationKind::DataDependsOn
+            | RelationKind::ReturnsTo
+            | RelationKind::AsyncReaches,
+        ) => Some(LanguageFactFamily::Dataflow),
+        Some(
+            RelationKind::Tests
+            | RelationKind::Asserts
+            | RelationKind::Mocks
+            | RelationKind::Stubs
+            | RelationKind::Covers
+            | RelationKind::FixturesFor,
+        ) => Some(LanguageFactFamily::TestAssertMockStub),
+        Some(RelationKind::ListensTo | RelationKind::Handles | RelationKind::Configures) => {
+            Some(LanguageFactFamily::RouteFramework)
+        }
+        Some(RelationKind::ApiReaches | RelationKind::Publishes | RelationKind::Emits) => {
+            Some(LanguageFactFamily::Bridge)
+        }
+        Some(
+            RelationKind::Authorizes
+            | RelationKind::ChecksRole
+            | RelationKind::ChecksPermission
+            | RelationKind::Sanitizes
+            | RelationKind::Validates
+            | RelationKind::Exposes
+            | RelationKind::TrustBoundary
+            | RelationKind::SourceOfTaint
+            | RelationKind::SinksTo,
+        ) => Some(LanguageFactFamily::SecuritySourceSink),
+        Some(
+            RelationKind::DefinedIn
+            | RelationKind::Defines
+            | RelationKind::Declares
+            | RelationKind::Contains,
+        ) => Some(LanguageFactFamily::SourceSpan),
+        Some(
+            RelationKind::BelongsTo
+            | RelationKind::DependsOnSchema
+            | RelationKind::ReadsTable
+            | RelationKind::WritesTable
+            | RelationKind::AltersColumn
+            | RelationKind::Migrates,
+        ) => Some(LanguageFactFamily::PackageModule),
+        Some(_) => Some(LanguageFactFamily::EntityDeclaration),
+        None => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageFactLinterConsumption {
+    BlockOnlyWhenExactCurrentSourceSpannedAndPolicyAllows,
+    WarnUnlessParserInvariant,
+    WarningOnly,
+    DiagnosticOnly,
+    UnknownByDefault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LanguageFactExactnessContract {
+    pub fact_family: LanguageFactFamily,
+    pub parser_exact_scope: &'static str,
+    pub resolver_or_compiler_strengthening: &'static str,
+    pub exact_graph_requirements: &'static [&'static str],
+    pub allowed_proof_ladder_levels: &'static [ProofLadderLevel],
+    pub non_exact_boundaries: &'static [&'static str],
+    pub parser_fact_can_claim_target_identity: bool,
+    pub resolver_metadata_required_for_target_identity: bool,
+    pub heuristic_convention_is_graph_proof: bool,
+    pub old_tier_can_promote_exactness: bool,
+    pub mutation_proof_allowed_in_this_lane: bool,
+    pub linter_consumption: LanguageFactLinterConsumption,
+}
+
+const BASE_EXACT_FACT_REQUIREMENTS: &[&str] = &[
+    "language",
+    "frontend",
+    "source_role",
+    "source_span",
+    "extractor_version",
+    "exactness",
+    "provenance",
+    "capability_flag",
+];
+const RESOLVED_TARGET_REQUIREMENTS: &[&str] = &[
+    "language",
+    "frontend",
+    "source_role",
+    "source_span",
+    "extractor_version",
+    "resolver_or_compiler_version",
+    "project_config_source_when_used",
+    "exactness",
+    "provenance",
+    "capability_flag",
+];
+const DERIVED_FLOW_REQUIREMENTS: &[&str] = &[
+    "language",
+    "frontend",
+    "source_role",
+    "source_span",
+    "extractor_version",
+    "local_binding_resolver_version",
+    "provenance_edges",
+    "exactness",
+    "capability_flag",
+];
+const SOURCE_ROLE_REQUIREMENTS: &[&str] = &[
+    "language",
+    "frontend",
+    "source_role",
+    "source_span",
+    "extractor_version",
+    "exactness",
+    "provenance",
+    "capability_flag",
+    "production_or_test_boundary",
+];
+const STATIC_LINK_REQUIREMENTS: &[&str] = &[
+    "language",
+    "frontend",
+    "source_role",
+    "source_span",
+    "extractor_version",
+    "both_endpoints_indexed",
+    "static_source_spanned_binding",
+    "exactness",
+    "provenance",
+    "capability_flag",
+];
+const DIAGNOSTIC_REQUIREMENTS: &[&str] = &[
+    "language",
+    "frontend",
+    "source_span_when_available",
+    "extractor_version",
+    "capability_flag",
+    "unknown_boundary_reason",
+];
+
+const UNKNOWN_DYNAMIC_BOUNDARIES: &[&str] = &[
+    "dynamic_unknown",
+    "runtime_required",
+    "macro_required",
+    "preprocessor_required",
+];
+const RESOLVER_REQUIRED_BOUNDARIES: &[&str] = &[
+    "resolver_required",
+    "compiler_required",
+    "lsp_required",
+    "project_config_required",
+];
+const HEURISTIC_BOUNDARIES: &[&str] = &[
+    "framework_heuristic",
+    "source_text_only",
+    "name_matching_only",
+    "runtime_required",
+];
+const UNSUPPORTED_BOUNDARIES: &[&str] = &[
+    "unsupported",
+    "not_implemented",
+    "separate_exact_model_required",
+];
+const BASIC_GRAPH_LEVELS: &[ProofLadderLevel] = &[
+    ProofLadderLevel::SymbolEvidence,
+    ProofLadderLevel::GraphRelationProof,
+    ProofLadderLevel::Unknown,
+    ProofLadderLevel::Unsupported,
+    ProofLadderLevel::DiagnosticOnly,
+];
+const SYNTAX_ONLY_LEVELS: &[ProofLadderLevel] = &[
+    ProofLadderLevel::SymbolEvidence,
+    ProofLadderLevel::Unknown,
+    ProofLadderLevel::Unsupported,
+    ProofLadderLevel::DiagnosticOnly,
+];
+const TEXT_AND_GRAPH_LEVELS: &[ProofLadderLevel] = &[
+    ProofLadderLevel::TextEvidence,
+    ProofLadderLevel::CandidateEvidence,
+    ProofLadderLevel::SourceNavigationEvidence,
+    ProofLadderLevel::SymbolEvidence,
+    ProofLadderLevel::GraphRelationProof,
+    ProofLadderLevel::Unknown,
+    ProofLadderLevel::Unsupported,
+    ProofLadderLevel::DiagnosticOnly,
+];
+const DATAFLOW_LEVELS: &[ProofLadderLevel] = &[
+    ProofLadderLevel::GraphRelationProof,
+    ProofLadderLevel::FlowProof,
+    ProofLadderLevel::Unknown,
+    ProofLadderLevel::Unsupported,
+    ProofLadderLevel::DiagnosticOnly,
+];
+const HEURISTIC_LEVELS: &[ProofLadderLevel] = &[
+    ProofLadderLevel::TextEvidence,
+    ProofLadderLevel::CandidateEvidence,
+    ProofLadderLevel::SourceNavigationEvidence,
+    ProofLadderLevel::Unknown,
+    ProofLadderLevel::Unsupported,
+    ProofLadderLevel::DiagnosticOnly,
+];
+const DIAGNOSTIC_LEVELS: &[ProofLadderLevel] = &[
+    ProofLadderLevel::TextEvidence,
+    ProofLadderLevel::CandidateEvidence,
+    ProofLadderLevel::Unknown,
+    ProofLadderLevel::Unsupported,
+    ProofLadderLevel::DiagnosticOnly,
+];
+
+pub const LANGUAGE_FACT_EXACTNESS_CONTRACTS: &[LanguageFactExactnessContract] = &[
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::EntityDeclaration,
+        parser_exact_scope: "source-spanned declaration syntax and declared name",
+        resolver_or_compiler_strengthening:
+            "qualified binding identity requires resolver/compiler provenance",
+        exact_graph_requirements: BASE_EXACT_FACT_REQUIREMENTS,
+        allowed_proof_ladder_levels: BASIC_GRAPH_LEVELS,
+        non_exact_boundaries: RESOLVER_REQUIRED_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption:
+            LanguageFactLinterConsumption::BlockOnlyWhenExactCurrentSourceSpannedAndPolicyAllows,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::SourceSpan,
+        parser_exact_scope: "current source span for the extracted syntax node",
+        resolver_or_compiler_strengthening:
+            "byte offsets alone are not stable identity without current source-span metadata",
+        exact_graph_requirements: BASE_EXACT_FACT_REQUIREMENTS,
+        allowed_proof_ladder_levels: SYNTAX_ONLY_LEVELS,
+        non_exact_boundaries: &["missing_source_span", "stale_source_span", "foreign_source_span"],
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: false,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption:
+            LanguageFactLinterConsumption::BlockOnlyWhenExactCurrentSourceSpannedAndPolicyAllows,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::ImportIncludeRequireUse,
+        parser_exact_scope: "import/include/require/use syntax and source span",
+        resolver_or_compiler_strengthening:
+            "target resolution requires resolver, compiler, manifest, or project config provenance",
+        exact_graph_requirements: RESOLVED_TARGET_REQUIREMENTS,
+        allowed_proof_ladder_levels: TEXT_AND_GRAPH_LEVELS,
+        non_exact_boundaries: RESOLVER_REQUIRED_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::WarnUnlessParserInvariant,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::PackageModule,
+        parser_exact_scope: "package/module text only when syntax exposes it",
+        resolver_or_compiler_strengthening:
+            "package/module identity requires manifest, project config, resolver, or compiler evidence",
+        exact_graph_requirements: RESOLVED_TARGET_REQUIREMENTS,
+        allowed_proof_ladder_levels: TEXT_AND_GRAPH_LEVELS,
+        non_exact_boundaries: RESOLVER_REQUIRED_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::WarnUnlessParserInvariant,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::Call,
+        parser_exact_scope: "callsite syntax, callee text, and source span only",
+        resolver_or_compiler_strengthening:
+            "caller/callee identity requires resolver/compiler or current exact graph resolver provenance",
+        exact_graph_requirements: RESOLVED_TARGET_REQUIREMENTS,
+        allowed_proof_ladder_levels: TEXT_AND_GRAPH_LEVELS,
+        non_exact_boundaries: UNKNOWN_DYNAMIC_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::WarnUnlessParserInvariant,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::ReadWrite,
+        parser_exact_scope: "read/write syntax and local source span",
+        resolver_or_compiler_strengthening:
+            "local binding identity requires lexical binding resolver or compiler provenance",
+        exact_graph_requirements: RESOLVED_TARGET_REQUIREMENTS,
+        allowed_proof_ladder_levels: TEXT_AND_GRAPH_LEVELS,
+        non_exact_boundaries: UNKNOWN_DYNAMIC_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::WarnUnlessParserInvariant,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::Dataflow,
+        parser_exact_scope: "parser proximity is not flow proof",
+        resolver_or_compiler_strengthening:
+            "derived local flow requires exact source facts plus provenance; flow_proof remains MVP4-gated",
+        exact_graph_requirements: DERIVED_FLOW_REQUIREMENTS,
+        allowed_proof_ladder_levels: DATAFLOW_LEVELS,
+        non_exact_boundaries: UNKNOWN_DYNAMIC_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption:
+            LanguageFactLinterConsumption::BlockOnlyWhenExactCurrentSourceSpannedAndPolicyAllows,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::TestAssertMockStub,
+        parser_exact_scope: "test/assert/mock/stub syntax and source-role proof",
+        resolver_or_compiler_strengthening:
+            "test evidence is not production proof unless a rule explicitly allows test-impact consumption",
+        exact_graph_requirements: SOURCE_ROLE_REQUIREMENTS,
+        allowed_proof_ladder_levels: BASIC_GRAPH_LEVELS,
+        non_exact_boundaries: &["test_evidence_not_production_proof", "source_role_unknown"],
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: false,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::WarningOnly,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::RouteFramework,
+        parser_exact_scope: "source-spanned static route binding only where extractor proves it",
+        resolver_or_compiler_strengthening:
+            "framework convention, DSL text, or name matching stays heuristic/unknown",
+        exact_graph_requirements: STATIC_LINK_REQUIREMENTS,
+        allowed_proof_ladder_levels: HEURISTIC_LEVELS,
+        non_exact_boundaries: HEURISTIC_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::UnknownByDefault,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::Bridge,
+        parser_exact_scope: "bridge syntax is not linkage proof",
+        resolver_or_compiler_strengthening:
+            "bridge proof requires both sides indexed and source-spanned linkage provenance",
+        exact_graph_requirements: STATIC_LINK_REQUIREMENTS,
+        allowed_proof_ladder_levels: HEURISTIC_LEVELS,
+        non_exact_boundaries: HEURISTIC_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::UnknownByDefault,
+    },
+    LanguageFactExactnessContract {
+        fact_family: LanguageFactFamily::SecuritySourceSink,
+        parser_exact_scope: "security/source-sink patterns are diagnostics unless separately proven",
+        resolver_or_compiler_strengthening:
+            "vulnerability proof requires a separate exact source-sink model and activation gate",
+        exact_graph_requirements: DIAGNOSTIC_REQUIREMENTS,
+        allowed_proof_ladder_levels: DIAGNOSTIC_LEVELS,
+        non_exact_boundaries: UNSUPPORTED_BOUNDARIES,
+        parser_fact_can_claim_target_identity: false,
+        resolver_metadata_required_for_target_identity: true,
+        heuristic_convention_is_graph_proof: false,
+        old_tier_can_promote_exactness: false,
+        mutation_proof_allowed_in_this_lane: false,
+        linter_consumption: LanguageFactLinterConsumption::DiagnosticOnly,
+    },
+];
+
+pub const OLD_LANGUAGE_TIER_CAN_PROMOTE_EXACTNESS: bool = false;
+pub const OLD_LANGUAGE_TIER_CAN_PROMOTE_LINTER_BLOCKING: bool = false;
+
+pub fn language_fact_exactness_contracts() -> &'static [LanguageFactExactnessContract] {
+    LANGUAGE_FACT_EXACTNESS_CONTRACTS
 }
 
 pub fn mvp3_6_severity_policy_contract() -> SeverityPolicy {
@@ -1596,10 +2214,86 @@ pub struct ValidationRule {
     pub lifecycle_requirement: ValidationLifecycleRequirement,
     pub supported_relation_status: SupportedRelationStatus,
     pub default_classification_when_unsupported: ValidationClassification,
+    #[serde(default)]
+    pub capability_contract: ValidationRuleCapabilityContract,
     pub docs_summary: String,
 }
 
 impl ValidationRule {
+    pub fn refreshed_capability_contract(&self) -> ValidationRuleCapabilityContract {
+        let mut contract = self.capability_contract.clone();
+        if contract.required_capability.is_none() {
+            contract.required_capability =
+                relation_kind_to_language_fact_family(self.relation_kind);
+        }
+        contract.required_source_span = self.source_span_requirement.requires_span();
+        contract.required_provenance = self.provenance_requirement.requires_provenance();
+        contract.source_role_policy = self.source_role_requirement;
+        contract.lifecycle_requirement = self.lifecycle_requirement;
+        contract.old_tier_label_authorizes_blocking = false;
+        contract.unsupported_behavior = match self.default_classification_when_unsupported {
+            ValidationClassification::Warn | ValidationClassification::Degraded => {
+                ValidationUnsupportedBehavior::Warn
+            }
+            ValidationClassification::Diagnostic => ValidationUnsupportedBehavior::DiagnosticOnly,
+            ValidationClassification::Unsupported => ValidationUnsupportedBehavior::NotApplicable,
+            ValidationClassification::Block | ValidationClassification::Unknown => {
+                ValidationUnsupportedBehavior::Unknown
+            }
+        };
+        contract.escalation_policy = match self.supported_relation_status {
+            SupportedRelationStatus::ExactBlockingCandidate => {
+                ValidationEscalationPolicy::BlockOnlyWithCapabilityMetadata
+            }
+            SupportedRelationStatus::ExactWarningCandidate => {
+                ValidationEscalationPolicy::WarnUntilResolverExact
+            }
+            SupportedRelationStatus::ActivationGated | SupportedRelationStatus::Unknown => {
+                ValidationEscalationPolicy::WarningOrUnknownOnly
+            }
+            SupportedRelationStatus::Unsupported => {
+                ValidationEscalationPolicy::WarningOrUnknownOnly
+            }
+            SupportedRelationStatus::DiagnosticOnly => ValidationEscalationPolicy::DiagnosticOnly,
+        };
+        contract.required_exactness = match self.proof_requirement {
+            ValidationProofRequirement::ReverifiedGraphSourceProof => {
+                ValidationRequiredExactness::ReverifiedGraphSourceProof
+            }
+            ValidationProofRequirement::ReverifiedGraphIntegrity => {
+                ValidationRequiredExactness::ReverifiedGraphIntegrity
+            }
+            ValidationProofRequirement::LifecycleCurrentClaimable => {
+                ValidationRequiredExactness::NotApplicable
+            }
+            ValidationProofRequirement::DiagnosticOnly
+            | ValidationProofRequirement::NotGraphProof => {
+                ValidationRequiredExactness::DiagnosticOnly
+            }
+        };
+        contract.recovery_action_kind = match self.rule_kind {
+            ValidationRuleKind::ProofIntegrity | ValidationRuleKind::LifecycleIntegrity => {
+                ValidationRecoveryActionKind::ReindexOrRepair
+            }
+            ValidationRuleKind::UnsupportedRelationBoundary
+            | ValidationRuleKind::ClosureBudgetBoundary
+            | ValidationRuleKind::Diagnostic => ValidationRecoveryActionKind::InspectUnknown,
+            _ if matches!(
+                self.supported_relation_status,
+                SupportedRelationStatus::ExactBlockingCandidate
+            ) =>
+            {
+                ValidationRecoveryActionKind::SourceEdit
+            }
+            _ => ValidationRecoveryActionKind::ContinueWithCaution,
+        };
+        contract
+    }
+
+    pub fn refresh_capability_contract(&mut self) {
+        self.capability_contract = self.refreshed_capability_contract();
+    }
+
     pub fn exact_blocking(
         validation_rule_id: impl Into<String>,
         rule_kind: ValidationRuleKind,
@@ -1621,6 +2315,13 @@ impl ValidationRule {
             lifecycle_requirement: ValidationLifecycleRequirement::ClaimableCurrentDb,
             supported_relation_status: SupportedRelationStatus::ExactBlockingCandidate,
             default_classification_when_unsupported: ValidationClassification::Unknown,
+            capability_contract: ValidationRuleCapabilityContract::exact_blocking(
+                relation_kind,
+                ValidationSourceSpanRequirement::RequiredForClaimableGraphFact,
+                ValidationProvenanceRequirement::Optional,
+                ValidationSourceRoleRequirement::ProductionOnlyByDefault,
+                ValidationLifecycleRequirement::ClaimableCurrentDb,
+            ),
             docs_summary: docs_summary.into(),
         }
     }
@@ -1643,6 +2344,7 @@ impl ValidationRule {
             lifecycle_requirement: ValidationLifecycleRequirement::DiagnosticReadOnly,
             supported_relation_status: SupportedRelationStatus::DiagnosticOnly,
             default_classification_when_unsupported: ValidationClassification::Diagnostic,
+            capability_contract: ValidationRuleCapabilityContract::diagnostic(),
             docs_summary: docs_summary.into(),
         }
     }
@@ -1754,6 +2456,9 @@ impl ValidationEvidenceItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationReverificationInput {
     pub lifecycle: ValidationLifecycleState,
+    pub capability_metadata_present: bool,
+    pub required_capability_present: bool,
+    pub old_tier_label_only: bool,
     pub relation_supported: bool,
     pub relation_exact: bool,
     pub graph_source_relation_reverified: bool,
@@ -1779,6 +2484,9 @@ impl ValidationReverificationInput {
         let reason = reason.into();
         Self {
             lifecycle,
+            capability_metadata_present: true,
+            required_capability_present: true,
+            old_tier_label_only: false,
             relation_supported: true,
             relation_exact: true,
             graph_source_relation_reverified: true,
@@ -1800,6 +2508,14 @@ impl ValidationReverificationInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationReverification {
     pub db_claimable_current: bool,
+    #[serde(default)]
+    pub capability_metadata_present: bool,
+    #[serde(default)]
+    pub required_capability_present: bool,
+    #[serde(default)]
+    pub old_tier_label_only: bool,
+    #[serde(default)]
+    pub capability_metadata_allows_blocking: bool,
     pub relation_supported: bool,
     pub relation_exact: bool,
     pub graph_source_relation_reverified: bool,
@@ -1821,6 +2537,9 @@ pub fn reverify_validation_graph_source_contract(
     input: &ValidationReverificationInput,
 ) -> ValidationReverification {
     let db_claimable_current = input.lifecycle.is_claimable_current();
+    let capability_metadata_allows_blocking = input.capability_metadata_present
+        && input.required_capability_present
+        && !input.old_tier_label_only;
     let evidence_can_support_blocking = input
         .evidence_items
         .iter()
@@ -1835,6 +2554,7 @@ pub fn reverify_validation_graph_source_contract(
     let common_blocking_preconditions = db_claimable_current
         && relation_supported
         && input.relation_exact
+        && capability_metadata_allows_blocking
         && input.source_role_allowed
         && evidence_can_support_blocking
         && !input.over_budget;
@@ -1849,6 +2569,12 @@ pub fn reverify_validation_graph_source_contract(
 
     let downgrade_reason = if input.over_budget {
         Some("closure_or_packet_budget_hit".to_string())
+    } else if input.old_tier_label_only {
+        Some("old_tier_label_does_not_authorize_blocking".to_string())
+    } else if !input.capability_metadata_present {
+        Some("capability_metadata_missing".to_string())
+    } else if !input.required_capability_present {
+        Some("required_capability_missing".to_string())
     } else if input.unsupported_relation || !input.relation_supported {
         Some("relation_unsupported_or_not_enabled".to_string())
     } else if !db_claimable_current {
@@ -1877,6 +2603,10 @@ pub fn reverify_validation_graph_source_contract(
 
     ValidationReverification {
         db_claimable_current,
+        capability_metadata_present: input.capability_metadata_present,
+        required_capability_present: input.required_capability_present,
+        old_tier_label_only: input.old_tier_label_only,
+        capability_metadata_allows_blocking,
         relation_supported,
         relation_exact: input.relation_exact,
         graph_source_relation_reverified: input.graph_source_relation_reverified,
@@ -1917,6 +2647,10 @@ pub struct ValidationFinding {
     pub relation_kind: Option<RelationKind>,
     pub exactness: Option<Exactness>,
     pub provenance: Value,
+    #[serde(default)]
+    pub rule_capability_contract: ValidationRuleCapabilityContract,
+    #[serde(default)]
+    pub capability_evaluation: ValidationCapabilityEvaluation,
     pub old_fact_claim_state: String,
     pub new_fact_claim_state: String,
     pub lifecycle: ValidationLifecycleState,
@@ -1953,6 +2687,10 @@ pub struct InterruptEligibility {
     pub eligible: bool,
     pub reason: String,
     pub disqualifiers: Vec<String>,
+    #[serde(default)]
+    pub capability_metadata_ok: bool,
+    #[serde(default)]
+    pub old_tier_label_not_blocking: bool,
     pub lifecycle_ok: bool,
     pub claimability_ok: bool,
     pub classification_ok: bool,
@@ -2640,6 +3378,7 @@ fn hard_interrupt_compact_rules_json(rules: &[ValidationRule]) -> Value {
         sorted_rules
             .into_iter()
             .map(|rule| {
+                let capability_contract = rule.refreshed_capability_contract();
                 json!({
                     "validation_rule_id": &rule.validation_rule_id,
                     "rule_kind": rule.rule_kind,
@@ -2653,6 +3392,7 @@ fn hard_interrupt_compact_rules_json(rules: &[ValidationRule]) -> Value {
                     "lifecycle_requirement": rule.lifecycle_requirement,
                     "supported_relation_status": rule.supported_relation_status,
                     "default_classification_when_unsupported": rule.default_classification_when_unsupported,
+                    "capability_contract": capability_contract,
                 })
             })
             .collect(),
@@ -3222,6 +3962,8 @@ pub fn interrupt_eligibility_for_finding(
             eligible: false,
             reason: "validation rule was not available for interrupt eligibility".to_string(),
             disqualifiers,
+            capability_metadata_ok: false,
+            old_tier_label_not_blocking: true,
             lifecycle_ok: false,
             claimability_ok: false,
             classification_ok,
@@ -3238,6 +3980,25 @@ pub fn interrupt_eligibility_for_finding(
         SupportedRelationStatus::ExactBlockingCandidate
     ) {
         push_disqualifier("rule_family_not_exact_blocking_candidate");
+    }
+    let rule_capability_contract = rule.refreshed_capability_contract();
+
+    let capability_metadata_ok = finding.capability_evaluation.capability_present
+        && !finding
+            .capability_evaluation
+            .recommended_action
+            .contains("legacy_tier");
+    if !capability_metadata_ok {
+        push_disqualifier("capability_metadata_not_interrupt_eligible");
+    }
+
+    let old_tier_label_not_blocking = !rule_capability_contract.old_tier_label_authorizes_blocking
+        && !finding
+            .capability_evaluation
+            .recommended_action
+            .contains("legacy_tier");
+    if !old_tier_label_not_blocking {
+        push_disqualifier("old_tier_label_does_not_authorize_blocking");
     }
 
     let lifecycle_rule = matches!(rule.rule_kind, ValidationRuleKind::LifecycleIntegrity);
@@ -3346,6 +4107,8 @@ pub fn interrupt_eligibility_for_finding(
             "finding is not eligible for hard interrupt".to_string()
         },
         disqualifiers,
+        capability_metadata_ok,
+        old_tier_label_not_blocking,
         lifecycle_ok,
         claimability_ok,
         classification_ok,
@@ -3396,6 +4159,7 @@ pub fn classify_validation_finding(
     finding_id: impl Into<String>,
     input: ValidationReverificationInput,
 ) -> ValidationFinding {
+    let rule_capability_contract = rule.refreshed_capability_contract();
     let reverification = reverify_validation_graph_source_contract(&input);
     let classification = if reverification.over_budget {
         ValidationClassification::Degraded
@@ -3484,6 +4248,43 @@ pub fn classify_validation_finding(
                 .unwrap_or_else(|| "not_a_blocking_graph_source_finding".to_string()),
         );
     }
+    let capability_present = reverification.capability_metadata_allows_blocking
+        || matches!(
+            rule.supported_relation_status,
+            SupportedRelationStatus::ExactWarningCandidate
+                | SupportedRelationStatus::DiagnosticOnly
+                | SupportedRelationStatus::Unsupported
+        );
+    let capability_missing_reason = (!reverification.capability_metadata_allows_blocking)
+        .then(|| reverification.downgrade_reason.clone())
+        .flatten();
+    let resolver_status = if input.provenance_required && input.provenance_present {
+        "provenance_present".to_string()
+    } else if input.provenance_required {
+        "provenance_missing".to_string()
+    } else if rule_capability_contract.required_exactness
+        == ValidationRequiredExactness::ResolverOrCompilerExact
+    {
+        "resolver_required".to_string()
+    } else {
+        "not_required_for_rule".to_string()
+    };
+    let recommended_action = if reverification.old_tier_label_only {
+        "ignore_legacy_tier_for_blocking_and_check_capability_metadata".to_string()
+    } else if !reverification.capability_metadata_present {
+        "reindex_or_repair_capability_metadata_before_blocking".to_string()
+    } else if !reverification.required_capability_present {
+        "treat_as_warning_unknown_or_not_applicable_until_capability_exists".to_string()
+    } else if matches!(classification, ValidationClassification::Block) {
+        "fix_reverified_graph_source_issue".to_string()
+    } else if matches!(
+        classification,
+        ValidationClassification::Unknown | ValidationClassification::Unsupported
+    ) {
+        "inspect_unknown_or_unsupported_boundary".to_string()
+    } else {
+        "continue_with_caution".to_string()
+    };
 
     ValidationFinding {
         finding_id: finding_id.into(),
@@ -3509,6 +4310,18 @@ pub fn classify_validation_finding(
             "required": input.provenance_required,
             "present": input.provenance_present
         }),
+        rule_capability_contract: rule_capability_contract.clone(),
+        capability_evaluation: ValidationCapabilityEvaluation {
+            language: None,
+            frontend: None,
+            capability_required: rule_capability_contract.required_capability,
+            capability_present,
+            capability_missing_reason,
+            exactness: input.relation_exact.then_some(Exactness::ParserVerified),
+            resolver_status,
+            proof_strength: proof_strength.to_string(),
+            recommended_action,
+        },
         old_fact_claim_state: "unknown".to_string(),
         new_fact_claim_state: if reverification.db_claimable_current {
             "claimable_current".to_string()
@@ -3872,6 +4685,20 @@ impl ValidationPacket {
         proof_ladder_changes: Value,
         lifecycle: Value,
     ) -> Self {
+        let validation_rules_evaluated = validation_rules_evaluated
+            .into_iter()
+            .map(|mut rule| {
+                rule.refresh_capability_contract();
+                rule
+            })
+            .collect::<Vec<_>>();
+        let validation_rules_skipped = validation_rules_skipped
+            .into_iter()
+            .map(|mut rule| {
+                rule.refresh_capability_contract();
+                rule
+            })
+            .collect::<Vec<_>>();
         let mut blocking_errors = Vec::new();
         let mut warnings = Vec::new();
         let mut unknowns = Vec::new();
@@ -4298,9 +5125,36 @@ fn validation_packet_compact_rules_json(
         .collect::<Vec<_>>();
     rule_ids.sort();
     rule_ids.dedup();
+    let mut required_capabilities = rules
+        .iter()
+        .filter_map(|rule| {
+            rule.refreshed_capability_contract()
+                .required_capability
+                .and_then(|capability| serde_json::to_value(capability).ok())
+                .and_then(|value| value.as_str().map(ToString::to_string))
+        })
+        .collect::<Vec<_>>();
+    required_capabilities.sort();
+    required_capabilities.dedup();
+    let mut escalation_policies = rules
+        .iter()
+        .filter_map(|rule| {
+            serde_json::to_value(rule.refreshed_capability_contract().escalation_policy)
+                .ok()
+                .and_then(|value| value.as_str().map(ToString::to_string))
+        })
+        .collect::<Vec<_>>();
+    escalation_policies.sort();
+    escalation_policies.dedup();
     json!({
         "count": rules.len(),
         "rule_ids": rule_ids,
+        "capability_summary": {
+            "required_capabilities": required_capabilities,
+            "escalation_policies": escalation_policies,
+            "exact_blocking_requires_capability_metadata": true,
+            "old_tier_label_authorizes_blocking": false,
+        },
         "full_detail_handle": full_detail_handle,
         "agent_json_compacted": true,
     })
@@ -4777,6 +5631,8 @@ mod tests {
             reason: "schema fixture: caller supplied an already reverified blocking graph/source finding"
                 .to_string(),
             disqualifiers: Vec::new(),
+            capability_metadata_ok: true,
+            old_tier_label_not_blocking: true,
             lifecycle_ok: true,
             claimability_ok: true,
             classification_ok: true,
@@ -4794,6 +5650,414 @@ mod tests {
             target: "errors[0]".to_string(),
             reason: "Expand the top hard-interrupt error with full evidence detail.".to_string(),
         }
+    }
+
+    fn fact_contract(family: LanguageFactFamily) -> &'static LanguageFactExactnessContract {
+        LANGUAGE_FACT_EXACTNESS_CONTRACTS
+            .iter()
+            .find(|contract| contract.fact_family == family)
+            .expect("language fact family contract")
+    }
+
+    #[test]
+    fn language_fact_exactness_contract_covers_required_families() {
+        let families = LANGUAGE_FACT_EXACTNESS_CONTRACTS
+            .iter()
+            .map(|contract| contract.fact_family)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(families.len(), LanguageFactFamily::ALL.len());
+        for family in LanguageFactFamily::ALL {
+            assert!(families.contains(family), "missing contract for {family:?}");
+        }
+        assert!(LANGUAGE_FACT_EXACTNESS_CONTRACTS.iter().all(|contract| {
+            !contract.old_tier_can_promote_exactness
+                && !contract.mutation_proof_allowed_in_this_lane
+                && !contract.heuristic_convention_is_graph_proof
+        }));
+        assert!(!OLD_LANGUAGE_TIER_CAN_PROMOTE_EXACTNESS);
+        assert!(!OLD_LANGUAGE_TIER_CAN_PROMOTE_LINTER_BLOCKING);
+    }
+
+    #[test]
+    fn parser_call_extraction_is_not_caller_callee_exact() {
+        let call = fact_contract(LanguageFactFamily::Call);
+        assert_eq!(
+            call.parser_exact_scope,
+            "callsite syntax, callee text, and source span only"
+        );
+        assert!(!call.parser_fact_can_claim_target_identity);
+        assert!(call.resolver_metadata_required_for_target_identity);
+        assert!(call
+            .exact_graph_requirements
+            .contains(&"resolver_or_compiler_version"));
+        assert!(call
+            .allowed_proof_ladder_levels
+            .contains(&ProofLadderLevel::GraphRelationProof));
+        assert!(call.non_exact_boundaries.contains(&"dynamic_unknown"));
+    }
+
+    #[test]
+    fn language_fact_contract_preserves_non_graph_boundaries() {
+        for level in [
+            ProofLadderLevel::TextEvidence,
+            ProofLadderLevel::CandidateEvidence,
+            ProofLadderLevel::SourceNavigationEvidence,
+            ProofLadderLevel::DiagnosticOnly,
+            ProofLadderLevel::Unknown,
+            ProofLadderLevel::Unsupported,
+        ] {
+            assert!(
+                !level.is_graph_proof_level(),
+                "{level:?} must not become graph proof"
+            );
+        }
+
+        let route = fact_contract(LanguageFactFamily::RouteFramework);
+        assert!(!route.heuristic_convention_is_graph_proof);
+        assert!(!route
+            .allowed_proof_ladder_levels
+            .contains(&ProofLadderLevel::GraphRelationProof));
+        assert!(route.non_exact_boundaries.contains(&"framework_heuristic"));
+
+        let bridge = fact_contract(LanguageFactFamily::Bridge);
+        assert!(!bridge.heuristic_convention_is_graph_proof);
+        assert!(bridge.non_exact_boundaries.contains(&"name_matching_only"));
+
+        let security = fact_contract(LanguageFactFamily::SecuritySourceSink);
+        assert_eq!(
+            security.linter_consumption,
+            LanguageFactLinterConsumption::DiagnosticOnly
+        );
+        assert!(!security
+            .allowed_proof_ladder_levels
+            .contains(&ProofLadderLevel::GraphRelationProof));
+    }
+
+    #[test]
+    fn dynamic_macro_runtime_and_preprocessor_boundaries_are_unknown_not_proof() {
+        let call = fact_contract(LanguageFactFamily::Call);
+        for reason in [
+            "dynamic_unknown",
+            "runtime_required",
+            "macro_required",
+            "preprocessor_required",
+        ] {
+            assert!(call.non_exact_boundaries.contains(&reason));
+        }
+    }
+
+    #[test]
+    fn derived_flow_without_provenance_is_rejected_as_blocking_proof() {
+        let mut input = exact_graph_source_input();
+        input.provenance_required = true;
+        input.provenance_present = false;
+        input.reason = "derived local flow fact omitted provenance".to_string();
+
+        let reverification = reverify_validation_graph_source_contract(&input);
+        assert!(!reverification.blocking_graph_source_relation_allowed);
+        assert_eq!(
+            reverification.downgrade_reason.as_deref(),
+            Some("required_provenance_missing")
+        );
+    }
+
+    #[test]
+    fn text_candidate_and_source_navigation_evidence_do_not_block() {
+        for kind in [
+            ValidationEvidenceKind::TextEvidence,
+            ValidationEvidenceKind::Candidate,
+            ValidationEvidenceKind::Vector,
+            ValidationEvidenceKind::SourceNavigation,
+            ValidationEvidenceKind::Nuance,
+            ValidationEvidenceKind::Binary,
+        ] {
+            let mut input = exact_graph_source_input();
+            input.evidence_items = vec![ValidationEvidenceItem::non_graph(
+                kind,
+                "candidate://not-proof",
+                "non-graph evidence cannot prove a graph relation",
+            )];
+
+            let reverification = reverify_validation_graph_source_contract(&input);
+            assert!(!reverification.blocking_graph_source_relation_allowed);
+            assert_eq!(
+                reverification.downgrade_reason.as_deref(),
+                Some("evidence_is_not_reverified_graph_source_proof")
+            );
+        }
+    }
+
+    #[test]
+    fn test_evidence_is_not_production_proof_by_default() {
+        let contract = fact_contract(LanguageFactFamily::TestAssertMockStub);
+        assert_eq!(
+            contract.linter_consumption,
+            LanguageFactLinterConsumption::WarningOnly
+        );
+        assert!(contract
+            .non_exact_boundaries
+            .contains(&"test_evidence_not_production_proof"));
+
+        let mut input = exact_graph_source_input();
+        input.source_role_allowed = false;
+        input.reason = "test evidence cannot satisfy a production-only proof rule".to_string();
+
+        let reverification = reverify_validation_graph_source_contract(&input);
+        assert!(!reverification.blocking_graph_source_relation_allowed);
+        assert_eq!(
+            reverification.downgrade_reason.as_deref(),
+            Some("source_role_not_allowed_for_production_proof")
+        );
+    }
+
+    #[test]
+    fn typescript_packet_flow_proof_does_not_generalize_to_other_languages() {
+        use crate::{
+            mvp4_3_local_micro_flow_packet_language_capability, MicroSourceRole, ProofLadderLevel,
+        };
+
+        let dataflow = fact_contract(LanguageFactFamily::Dataflow);
+        assert!(dataflow
+            .allowed_proof_ladder_levels
+            .contains(&ProofLadderLevel::FlowProof));
+        assert_eq!(
+            dataflow.linter_consumption,
+            LanguageFactLinterConsumption::BlockOnlyWhenExactCurrentSourceSpannedAndPolicyAllows
+        );
+
+        let typescript = mvp4_3_local_micro_flow_packet_language_capability("typescript");
+        assert!(typescript.supports_claimable_packets(MicroSourceRole::Production));
+
+        for language in [
+            "javascript",
+            "jsx",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php",
+        ] {
+            let capability = mvp4_3_local_micro_flow_packet_language_capability(language);
+            assert!(
+                !capability.supports_claimable_packets(MicroSourceRole::Production),
+                "{language} must not inherit TypeScript flow_proof"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rule_contract_records_capability_policy() {
+        let rule = exact_calls_rule();
+        let contract = rule.refreshed_capability_contract();
+
+        assert_eq!(contract.required_capability, Some(LanguageFactFamily::Call));
+        assert_eq!(
+            contract.required_exactness,
+            ValidationRequiredExactness::ReverifiedGraphSourceProof
+        );
+        assert!(contract.required_source_span);
+        assert!(!contract.required_provenance);
+        assert_eq!(
+            contract.escalation_policy,
+            ValidationEscalationPolicy::BlockOnlyWithCapabilityMetadata
+        );
+        assert_eq!(
+            contract.recovery_action_kind,
+            ValidationRecoveryActionKind::SourceEdit
+        );
+        assert!(!contract.old_tier_label_authorizes_blocking);
+    }
+
+    #[test]
+    fn old_tier_label_alone_does_not_block() {
+        let rule = exact_calls_rule();
+        let mut input = exact_graph_source_input();
+        input.old_tier_label_only = true;
+        input.reason = "legacy tier label was present without capability metadata".to_string();
+
+        let finding = classify_validation_finding(&rule, "finding://legacy-tier-only", input);
+
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding
+                .capability_evaluation
+                .capability_missing_reason
+                .as_deref(),
+            Some("old_tier_label_does_not_authorize_blocking")
+        );
+        assert_eq!(
+            finding.capability_evaluation.recommended_action,
+            "ignore_legacy_tier_for_blocking_and_check_capability_metadata"
+        );
+
+        let eligibility = interrupt_eligibility_for_finding(
+            &finding,
+            Some(&rule),
+            &serde_json::json!({"claimable": true, "current": true, "blockers": []}),
+        );
+        assert!(!eligibility.eligible);
+        assert!(!eligibility.capability_metadata_ok);
+        assert!(eligibility
+            .disqualifiers
+            .contains(&"capability_metadata_not_interrupt_eligible".to_string()));
+    }
+
+    #[test]
+    fn exact_provenance_backed_fact_can_block_when_capability_present() {
+        let mut rule = exact_imports_rule();
+        rule.provenance_requirement = ValidationProvenanceRequirement::RequiredForDerivedEdges;
+        let mut input = exact_graph_source_input();
+        input.provenance_required = true;
+        input.provenance_present = true;
+        input.reason = "resolver-derived import relation carried provenance".to_string();
+
+        let finding = classify_validation_finding(&rule, "finding://resolver/exact", input);
+
+        assert_eq!(finding.classification, ValidationClassification::Block);
+        assert!(finding.capability_evaluation.capability_present);
+        assert_eq!(
+            finding.capability_evaluation.resolver_status,
+            "provenance_present"
+        );
+        assert_eq!(
+            finding.rule_capability_contract.required_capability,
+            Some(LanguageFactFamily::ImportIncludeRequireUse)
+        );
+        assert!(finding.rule_capability_contract.required_provenance);
+    }
+
+    #[test]
+    fn missing_capability_metadata_recommends_reindex_or_repair_not_source_edit() {
+        let rule = exact_calls_rule();
+        let mut input = exact_graph_source_input();
+        input.capability_metadata_present = false;
+        input.reason = "capability sidecar metadata was missing".to_string();
+
+        let finding = classify_validation_finding(&rule, "finding://capability/missing", input);
+
+        assert_ne!(finding.classification, ValidationClassification::Block);
+        assert_eq!(
+            finding
+                .capability_evaluation
+                .capability_missing_reason
+                .as_deref(),
+            Some("capability_metadata_missing")
+        );
+        assert_eq!(
+            finding.capability_evaluation.recommended_action,
+            "reindex_or_repair_capability_metadata_before_blocking"
+        );
+    }
+
+    #[test]
+    fn parser_only_warning_candidate_stays_warning() {
+        let mut rule = exact_calls_rule();
+        rule.validation_rule_id = "mvp3_3.calls.parser_only_warning".to_string();
+        rule.supported_relation_status = SupportedRelationStatus::ExactWarningCandidate;
+        rule.capability_contract = rule
+            .refreshed_capability_contract()
+            .with_escalation_policy(ValidationEscalationPolicy::WarnUntilResolverExact);
+
+        let finding = classify_validation_finding(
+            &rule,
+            "finding://parser-only/call",
+            exact_graph_source_input(),
+        );
+
+        assert_eq!(finding.classification, ValidationClassification::Warn);
+        assert_eq!(finding.blocking_level, ValidationBlockingLevel::Warning);
+        assert_eq!(
+            finding.rule_capability_contract.escalation_policy,
+            ValidationEscalationPolicy::WarnUntilResolverExact
+        );
+    }
+
+    #[test]
+    fn compact_validation_packet_preserves_capability_reason() {
+        let rule = exact_calls_rule();
+        let finding = classify_validation_finding(
+            &rule,
+            "finding://capability/compact",
+            exact_graph_source_input(),
+        );
+        let packet = ValidationPacket::new(
+            vec!["src/main.rs".to_string()],
+            json!({"summary": {"edge_delta_count": 1}}),
+            vec![finding],
+            vec![rule],
+            Vec::new(),
+            json!({"claimable": true, "current": true, "blockers": []}),
+            json!({"graph_relation_proof": {"changed": true}}),
+            json!({"claimable": true, "current": true}),
+        );
+        let compact = packet.compact_agent_json(1);
+
+        assert_eq!(
+            compact["validation_rules_evaluated"]["capability_summary"]
+                ["exact_blocking_requires_capability_metadata"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            compact["validation_rules_evaluated"]["capability_summary"]
+                ["old_tier_label_authorizes_blocking"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            compact["blocking_errors"][0]["capability_evaluation"]["capability_required"].as_str(),
+            Some("call")
+        );
+    }
+
+    #[test]
+    fn unsupported_relation_is_not_applicable_not_blocking() {
+        let mut rule = exact_calls_rule();
+        rule.supported_relation_status = SupportedRelationStatus::Unsupported;
+        rule.default_classification_when_unsupported = ValidationClassification::Unsupported;
+        let mut input = exact_graph_source_input();
+        input.unsupported_relation = true;
+        input.required_capability_present = false;
+        input.reason = "dynamic runtime relation is unsupported".to_string();
+
+        let finding = classify_validation_finding(&rule, "finding://unsupported/dynamic", input);
+
+        assert_eq!(
+            finding.classification,
+            ValidationClassification::Unsupported
+        );
+        assert_eq!(finding.blocking_level, ValidationBlockingLevel::Unknown);
+        assert_eq!(
+            finding.rule_capability_contract.unsupported_behavior,
+            ValidationUnsupportedBehavior::NotApplicable
+        );
+        assert_eq!(
+            finding.capability_evaluation.recommended_action,
+            "treat_as_warning_unknown_or_not_applicable_until_capability_exists"
+        );
+    }
+
+    #[test]
+    fn tool_state_rules_recover_tool_state_instead_of_source_error() {
+        let mut rule = lifecycle_integrity_rule();
+        rule.proof_requirement = ValidationProofRequirement::LifecycleCurrentClaimable;
+        let contract = rule.refreshed_capability_contract();
+
+        assert_eq!(
+            contract.recovery_action_kind,
+            ValidationRecoveryActionKind::ReindexOrRepair
+        );
+        assert_eq!(
+            contract.required_exactness,
+            ValidationRequiredExactness::NotApplicable
+        );
+        assert!(!contract.old_tier_label_authorizes_blocking);
     }
 
     fn hard_interrupt_error_example() -> HardInterruptError {
@@ -7460,6 +8724,8 @@ mod tests {
             "eligible",
             "reason",
             "disqualifiers",
+            "capability_metadata_ok",
+            "old_tier_label_not_blocking",
             "lifecycle_ok",
             "claimability_ok",
             "classification_ok",

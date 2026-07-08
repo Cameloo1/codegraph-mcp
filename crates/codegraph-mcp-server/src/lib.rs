@@ -20,10 +20,12 @@ use std::{
 
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role, classify_validation_finding,
-    entity_kind_defines_symbol, mvp4_micro_edge_language_capability, normalize_repo_relative_path,
-    ContextPacket, ContextSnippet, DictV1PacketBody, Edge, Entity, EvidenceRole, Exactness,
-    MicroEdgeKind, MicroExactness, MicroSourceRole, PathEvidence, RelationKind, RetrievalCandidate,
-    SourceSpan, SupportedRelationStatus, ValidationBlockingLevel, ValidationClassification,
+    entity_kind_defines_symbol, mvp4_3_local_micro_flow_packet_active_languages,
+    mvp4_micro_edge_language_capability, normalize_repo_relative_path, ContextPacket,
+    ContextSnippet, DictV1PacketBody, Edge, Entity, EvidenceRole, Exactness, MicroEdgeKind,
+    MicroEdgeSupportStatus, MicroExactness, MicroSourceRole, PathEvidence, RelationKind,
+    RetrievalCandidate, SourceSpan,
+    SupportedRelationStatus, ValidationBlockingLevel, ValidationClassification,
     ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
     ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
     ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
@@ -36,25 +38,34 @@ use codegraph_core::{
 use codegraph_index::{
     candidate_spool_index_status_for_repo, compute_entity_source_role_delta, default_db_path,
     index_repo_to_db_with_options, inspect_db_lifecycle_preflight, load_vector_chunk_index_json,
-    query_candidate_spool_index_for_repo, rtds_dependency_closure_for_changed_paths_to_db,
+    mvp4_2_micro_edge_endpoint_kinds, query_candidate_spool_index_for_repo,
+    rtds_dependency_closure_for_changed_paths_to_db,
     snapshot_normalized_facts_for_paths_to_db, update_changed_files_to_db,
     validate_edit_changed_files_preflight_with_scope, validate_vector_chunk_source_bindings,
     vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
     CandidateSpoolIndexQueryResult, DbLifecyclePreflight, EdgeDeltaEntry,
     EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport, IndexOptions, IndexScopeOptions,
     NormalizedFactSnapshotOptions, UnresolvedReferenceDeltaEntry,
-    ValidateEditChangedFilesPreflight, VectorChunkIndexBuildOptions, UNBOUNDED_STORE_READ_LIMIT,
-    VALIDATE_EDIT_CHANGED_FILES_MAX,
+    ValidateEditChangedFilesPreflight, VectorChunkIndexBuildOptions,
+    REFERENCE_CLASS_BUILTIN_OR_STD, REFERENCE_CLASS_COMPILER_REQUIRED,
+    REFERENCE_CLASS_DYNAMIC_OR_COMPUTED, REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+    REFERENCE_CLASS_LSP_REQUIRED, REFERENCE_CLASS_MACRO_OR_CODEGEN,
+    REFERENCE_CLASS_REPO_LOCAL_CANDIDATE, REFERENCE_CLASS_RUNTIME_REQUIRED,
+    REFERENCE_CLASS_UNKNOWN, REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION,
+    UNBOUNDED_STORE_READ_LIMIT, VALIDATE_EDIT_CHANGED_FILES_MAX,
 };
-use codegraph_parser::language_frontends;
+use codegraph_parser::{
+    language_frontends, LANGUAGE_CAPABILITY_FLAGS, LANGUAGE_CAPABILITY_STATUS_VALUES,
+};
 use codegraph_query::{
     plan_task_retrieval, ExactGraphQueryEngine, GraphPath, QueryLimits, RetrievalDocument,
     RetrievalFunnel, RetrievalFunnelConfig, RetrievalFunnelRequest, RetrievalTraceStage,
     VectorCandidateBranchStatus,
 };
 use codegraph_store::{
-    classify_sqlite_access_problem, AstMicroEdgeRow, AstMicroNodeRow, DbPreflightReport,
-    GraphStore, LocalFlowPacketRow, SqliteGraphStore, TextSearchHit, TextSearchKind,
+    classify_sqlite_access_problem, AstMicroEdgeRow, AstMicroNodeRow,
+    CapabilityMetadataQueryOptions, DbPreflightReport, GraphStore, LocalFlowPacketRow,
+    SqliteGraphStore, TextSearchHit, TextSearchKind,
 };
 use codegraph_trace::{TraceConfig, TraceLogger};
 use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
@@ -131,8 +142,6 @@ const CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE: &str = "CG_MVP4_3_PACKET_SHADOW_
 const CG_MVP4_3_PACKET_LAYER_TRUNCATED: &str = "CG_MVP4_3_PACKET_LAYER_TRUNCATED";
 const CG_MVP4_3_PACKET_LAYER_UNAVAILABLE: &str = "CG_MVP4_3_PACKET_LAYER_UNAVAILABLE";
 const MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV: &str = "CODEGRAPH_BLOCK_ON_UNRESOLVED_LOCAL";
-const REFERENCE_CLASS_REPO_LOCAL_CANDIDATE: &str = "repo_local_candidate";
-const REFERENCE_CLASS_DYNAMIC_OR_COMPUTED: &str = "dynamic_or_computed";
 
 const MCP_RESOURCE_URIS: &[&str] = &[
     "codegraph://status",
@@ -1796,6 +1805,10 @@ impl McpServer {
             "query": query,
             "mode": mode,
             "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+            "capability_metadata": mcp_query_capability_metadata_summary_json(&store),
+            "proof_status": "symbol_source_fact_found",
+            "proof_strength": "symbol_source_navigation",
+            "graph_proof": false,
             "hits": hits,
             "pagination": pagination,
             "resource_links": result_resource_links(),
@@ -1834,6 +1847,10 @@ impl McpServer {
             "query": query,
             "mode": mode,
             "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+            "capability_metadata": mcp_query_capability_metadata_summary_json(&store),
+            "proof_status": "not_graph_proof",
+            "proof_strength": "text_evidence_non_graph",
+            "graph_proof": false,
             "hits": hits,
             "pagination": pagination,
             "resource_links": result_resource_links(),
@@ -1939,6 +1956,7 @@ impl McpServer {
             return Err(mcp_unsafe_preflight_error(&db_path, &preflight));
         }
         let store = SqliteGraphStore::open_read_only(&db_path).map_err(mcp_store_error)?;
+        let capability_metadata = mcp_query_capability_metadata_summary_json(&store);
         let vector_branch = enable_vector_candidates.then(|| {
             load_mcp_vector_branch(
                 &repo_root,
@@ -2047,6 +2065,15 @@ impl McpServer {
                 "funnel_trace": result.trace.iter().map(retrieval_trace_stage_json).collect::<Vec<_>>(),
                 "vector_candidate_diagnostics": vector_candidate_diagnostics,
                 "nuance_rescue_diagnostics": nuance_rescue_diagnostics,
+                "capability_metadata": capability_metadata.clone(),
+                "language_capability_context": mcp_context_pack_language_capability_context_json(
+                    &capability_metadata,
+                    &packet,
+                    packet.metadata.get("proof_status").and_then(Value::as_str).unwrap_or(if packet.verified_paths.is_empty() { "unknown" } else { "proof_path_found" }),
+                    !packet.verified_paths.is_empty(),
+                    packet.metadata.get("evidence_status").and_then(Value::as_str).unwrap_or("unknown"),
+                    if packet.verified_paths.is_empty() { "source_navigation_evidence" } else { "graph_relation_proof" },
+                ),
                 "read_path_metrics": read_path_metrics,
                 "staged_availability": staged_availability.clone(),
                 "proof": "Context packet is built through Stage 0 exact seeds, Stage 1 binary sieve, Stage 2 compressed rerank, Stage 3 exact graph verification, and Stage 4 packet emission.",
@@ -2075,6 +2102,7 @@ impl McpServer {
             vector_candidate_diagnostics,
             nuance_rescue_diagnostics,
             staged_availability.clone(),
+            capability_metadata,
         );
         if let Some(object) = compact.as_object_mut() {
             object.insert("read_path_metrics".to_string(), read_path_metrics);
@@ -2113,6 +2141,10 @@ impl McpServer {
             object.insert(
                 "db_lifecycle_read".to_string(),
                 mcp_db_lifecycle_preflight_json(&preflight),
+            );
+            object.insert(
+                "capability_metadata".to_string(),
+                mcp_query_capability_metadata_summary_json(&store),
             );
         }
         Ok(value)
@@ -2200,6 +2232,10 @@ impl McpServer {
             object.insert(
                 "db_lifecycle_read".to_string(),
                 mcp_db_lifecycle_preflight_json(&preflight),
+            );
+            object.insert(
+                "capability_metadata".to_string(),
+                mcp_query_capability_metadata_summary_json(&store),
             );
         }
         Ok(value)
@@ -2361,6 +2397,15 @@ impl McpServer {
             "codegraph://languages" => Ok(json!({
                 "status": "ok",
                 "phase": PHASE,
+                "capability_model": {
+                    "source_of_truth": "language_frontends.capabilities",
+                    "old_tiers_backward_compatible": true,
+                    "old_tier_alone_drives_proof": false,
+                    "old_tier_alone_drives_linter_blocking": false,
+                    "promotion_gate": "reports/audit/artifacts/pre_mvp4_4_full_language_frontends/promotion_gate_contract.json"
+                },
+                "capability_flags": LANGUAGE_CAPABILITY_FLAGS,
+                "capability_status_values": LANGUAGE_CAPABILITY_STATUS_VALUES,
                 "frontends": language_frontends(),
                 "proof": "Language capabilities are declared by the parser frontend registry.",
             })),
@@ -3043,7 +3088,7 @@ fn resource_definition(uri: &str) -> Value {
         ),
         "codegraph://languages" => (
             "languages",
-            "Language frontend support tiers and exactness.",
+            "Language frontend support tiers, capability flags, and exactness.",
         ),
         "codegraph://bench/latest" => ("bench/latest", "Latest benchmark summary when available."),
         _ => ("context/<id>", "Context packet resource placeholder by id."),
@@ -3993,8 +4038,8 @@ fn mcp_validate_edit_unresolved_reference_validation_rules() -> Vec<ValidationRu
         ),
         ValidationRule::diagnostic(
             CG_MVP3_REF_EXTERNAL_OR_BUILTIN,
-            "unresolved references classified external_dependency/builtin_or_std/macro_or_codegen are counted as diagnostics only and never produce a warning",
-            "No action required; these references resolve outside the repo graph by design.",
+            "unresolved references classified external_dependency/builtin_or_std/macro_or_codegen/compiler_required/lsp_required/runtime_required/unsupported_language_or_relation/unknown are counted as diagnostics only and never produce a warning",
+            "No action required by default; these references either resolve outside the repo graph or require compiler/LSP/runtime/framework evidence that is not present.",
         ),
         ValidationRule::diagnostic(
             CG_MVP3_REF_DYNAMIC,
@@ -4170,6 +4215,7 @@ fn mcp_validate_edit_unresolved_reference_warning(
     entry: &UnresolvedReferenceDeltaEntry,
     lookup: &McpUnresolvedReferenceRepoGraphLookup,
     block_on_unresolved_local: bool,
+    block_on_unresolved_local_eligible: bool,
 ) -> ValidationFinding {
     let escalated = lookup.definition_count == 0;
     let relation_label = entry.relation.to_ascii_lowercase();
@@ -4191,7 +4237,7 @@ fn mcp_validate_edit_unresolved_reference_warning(
         "unresolved-reference://{}:{}:{}",
         entry.repo_relative_path, entry.source_span.start_line, entry.name
     );
-    let promoted = escalated && block_on_unresolved_local;
+    let promoted = escalated && block_on_unresolved_local && block_on_unresolved_local_eligible;
     let mut input =
         ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), &reason);
     input.relation_exact = false;
@@ -4251,6 +4297,12 @@ fn mcp_validate_edit_unresolved_reference_warning(
                 format!("{}_definition_candidates_exist", lookup.definition_count)
             },
             "claimability": "claimable_as_source_text_reference_only",
+            "block_on_unresolved_local_eligible": block_on_unresolved_local_eligible,
+            "capability_required": "resolver_or_compiler_verified_reference_absence",
+            "capability_present": false,
+            "capability_missing_reason": "unresolved_reference_delta_is_parser_source_text_without_resolver_provenance",
+            "resolver_status": "not_recorded_for_unresolved_reference_delta",
+            "unsupported_behavior": "warning_only",
         }
     });
     finding.source_span = Some(entry.source_span.clone());
@@ -4273,6 +4325,19 @@ fn mcp_validate_edit_unresolved_reference_warning(
     finding
 }
 
+fn mcp_validate_edit_unresolved_reference_block_eligible(
+    entry: &UnresolvedReferenceDeltaEntry,
+) -> bool {
+    if entry.reference_class != REFERENCE_CLASS_REPO_LOCAL_CANDIDATE {
+        return false;
+    }
+    // Unresolved-reference delta rows are parser/source-text diagnostics.
+    // They do not currently carry compiler/resolver provenance, so the
+    // language linter must keep them warning-only. Exact CALLS/IMPORTS graph
+    // rules still block separately when their proof contract is met.
+    false
+}
+
 fn mcp_validate_edit_collect_unresolved_reference_findings(
     store: &SqliteGraphStore,
     rule_by_id: &BTreeMap<&str, &ValidationRule>,
@@ -4293,8 +4358,19 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
     let mut escalated_total = 0usize;
     let mut external_or_builtin_count = 0usize;
     let mut dynamic_or_computed_count = 0usize;
+    let mut external_dependency_count = 0usize;
+    let mut builtin_or_std_count = 0usize;
+    let mut macro_or_codegen_count = 0usize;
+    let mut compiler_required_count = 0usize;
+    let mut lsp_required_count = 0usize;
+    let mut runtime_required_count = 0usize;
+    let mut unsupported_language_or_relation_count = 0usize;
+    let mut unknown_count = 0usize;
+    let mut diagnostic_non_blocking_count = 0usize;
     let mut repo_local_definition_candidate_count = 0usize;
     let mut repo_local_no_definition_count = 0usize;
+    let mut block_eligible_repo_local_no_definition_count = 0usize;
+    let mut block_ineligible_repo_local_no_definition_count = 0usize;
 
     for entry in &delta.unresolved_references_added {
         if !changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path)) {
@@ -4323,6 +4399,12 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
                 continue;
             }
             repo_local_no_definition_count += 1;
+            let block_eligible = mcp_validate_edit_unresolved_reference_block_eligible(entry);
+            if block_eligible {
+                block_eligible_repo_local_no_definition_count += 1;
+            } else {
+                block_ineligible_repo_local_no_definition_count += 1;
+            }
             escalated_total += 1;
             let finding = mcp_validate_edit_unresolved_reference_warning(
                 rule,
@@ -4330,6 +4412,7 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
                 entry,
                 &lookup,
                 block_on_unresolved_local,
+                block_eligible,
             );
             if escalated_inline.len() < ESCALATED_INLINE_LIMIT {
                 escalated_inline.push(json!({
@@ -4346,11 +4429,12 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
                     } else {
                         format!("{}_definition_candidates_exist", lookup.definition_count)
                     },
-                    "severity": if lookup.definition_count == 0 && block_on_unresolved_local {
-                        "blocking"
-                    } else {
-                        "warning"
-                    },
+                    "severity": "warning",
+                    "block_on_unresolved_local_eligible": block_eligible,
+                    "capability_required": "resolver_or_compiler_verified_reference_absence",
+                    "capability_present": false,
+                    "capability_missing_reason": "unresolved_reference_delta_is_parser_source_text_without_resolver_provenance",
+                    "resolver_status": "not_recorded_for_unresolved_reference_delta",
                     "proof_strength": "text_evidence",
                     "claimability": "claimable_as_source_text_reference_only",
                     "recommended_fix": format!(
@@ -4360,10 +4444,43 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
                 }));
             }
             findings.push(finding);
-        } else if entry.reference_class == REFERENCE_CLASS_DYNAMIC_OR_COMPUTED {
-            dynamic_or_computed_count += 1;
         } else {
-            external_or_builtin_count += 1;
+            diagnostic_non_blocking_count += 1;
+            match entry.reference_class.as_str() {
+                REFERENCE_CLASS_EXTERNAL_DEPENDENCY => {
+                    external_dependency_count += 1;
+                    external_or_builtin_count += 1;
+                }
+                REFERENCE_CLASS_BUILTIN_OR_STD => {
+                    builtin_or_std_count += 1;
+                    external_or_builtin_count += 1;
+                }
+                REFERENCE_CLASS_MACRO_OR_CODEGEN => {
+                    macro_or_codegen_count += 1;
+                    external_or_builtin_count += 1;
+                }
+                REFERENCE_CLASS_DYNAMIC_OR_COMPUTED => {
+                    dynamic_or_computed_count += 1;
+                }
+                REFERENCE_CLASS_COMPILER_REQUIRED => {
+                    compiler_required_count += 1;
+                }
+                REFERENCE_CLASS_LSP_REQUIRED => {
+                    lsp_required_count += 1;
+                }
+                REFERENCE_CLASS_RUNTIME_REQUIRED => {
+                    runtime_required_count += 1;
+                }
+                REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION => {
+                    unsupported_language_or_relation_count += 1;
+                }
+                REFERENCE_CLASS_UNKNOWN => {
+                    unknown_count += 1;
+                }
+                _ => {
+                    unknown_count += 1;
+                }
+            }
         }
     }
 
@@ -4389,14 +4506,56 @@ fn mcp_validate_edit_collect_unresolved_reference_findings(
         ),
         "repo_local_definition_candidate_count": repo_local_definition_candidate_count,
         "repo_local_no_definition_count": repo_local_no_definition_count,
+        "block_eligible_repo_local_no_definition_count": block_eligible_repo_local_no_definition_count,
+        "block_ineligible_repo_local_no_definition_count": block_ineligible_repo_local_no_definition_count,
         "external_or_builtin_count": external_or_builtin_count,
         "dynamic_or_computed_count": dynamic_or_computed_count,
+        "external_dependency_count": external_dependency_count,
+        "builtin_or_std_count": builtin_or_std_count,
+        "macro_or_codegen_count": macro_or_codegen_count,
+        "compiler_required_count": compiler_required_count,
+        "lsp_required_count": lsp_required_count,
+        "runtime_required_count": runtime_required_count,
+        "unsupported_language_or_relation_count": unsupported_language_or_relation_count,
+        "unknown_count": unknown_count,
+        "diagnostic_non_blocking_count": diagnostic_non_blocking_count,
         "count_semantics": {
             "new_count": "parser unresolved references after changed-file and CALLEE de-dup filters",
             "escalated_total": "repo-local references with no defining entity in the current graph",
-            "repo_local_definition_candidate_count": "repo-local parser-unresolved references suppressed because a definition candidate exists elsewhere in the graph"
+            "repo_local_definition_candidate_count": "repo-local parser-unresolved references suppressed because a definition candidate exists elsewhere in the graph",
+            "block_eligible_repo_local_no_definition_count": "repo-local no-definition diagnostics eligible for optional --block-on-unresolved-local promotion",
+            "block_ineligible_repo_local_no_definition_count": "repo-local no-definition diagnostics kept warning-only because the language/surface lacks an exact blocking policy",
+            "diagnostic_non_blocking_count": "external/builtin/std/macro/dynamic/compiler/lsp/runtime/unsupported/unknown unresolved references are non-graph diagnostics"
         },
         "block_on_unresolved_local": block_on_unresolved_local,
+        "block_on_unresolved_local_policy": {
+            "warning_by_default": true,
+            "eligible_reference_class": REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "eligible_extensions": [],
+            "deferred_until_exact_resolver_extensions": ["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php"],
+            "exact_resolver_provenance_required_for_new_languages": true,
+            "js_ts_family_unresolved_delta_policy": {
+                "typescript_exact_graph_blockers": "CG_MVP3_CALLS and CG_MVP3_IMPORTS rules may block when exact source-spanned graph proof exists",
+                "unresolved_reference_delta_rows": "warning_only_until_resolver_or_compiler_provenance_is_recorded",
+                "javascript_tsx_jsx": "warning_only; parser facts and diagnostic project metadata do not authorize hard interrupts"
+            },
+            "ruby_php_unresolved_delta_policy": {
+                "ruby": "warning_only; parser facts, require/load text, method_missing, send/public_send, autoload, open classes, monkeypatching, and framework conventions do not authorize hard interrupts without exact resolver or runtime provenance",
+                "php": "warning_only; parser facts, include/use text, Composer/autoload gaps, magic methods, variable functions, dynamic includes, and framework containers do not authorize hard interrupts without exact resolver or runtime provenance",
+                "unresolved_reference_delta_rows": "warning_only_until_resolver_or_runtime_provenance_is_recorded"
+            },
+            "non_eligible_classes_non_blocking": [
+                REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+                REFERENCE_CLASS_BUILTIN_OR_STD,
+                REFERENCE_CLASS_MACRO_OR_CODEGEN,
+                REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+                REFERENCE_CLASS_COMPILER_REQUIRED,
+                REFERENCE_CLASS_LSP_REQUIRED,
+                REFERENCE_CLASS_RUNTIME_REQUIRED,
+                REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION,
+                REFERENCE_CLASS_UNKNOWN
+            ]
+        },
         "expansion_handle": "validation_packet:unresolved_references",
         "not_graph_proof": true,
     }))
@@ -5082,9 +5241,19 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     let Some(relation_kind) = MicroEdgeKind::from_storage_str(&edge.relation_kind) else {
         return Ok(());
     };
-    if relation_kind != MicroEdgeKind::LocalReturnsTo {
+    // Validate every relation the index persists for the row's language
+    // (returns_to + reads/writes/flows_to for TypeScript since mvp4_2b); kinds
+    // with no implemented adapter stay skipped, matching the cli sweep's
+    // capability-matrix gate.
+    let capability = mvp4_micro_edge_language_capability(&edge.language, relation_kind);
+    if !matches!(
+        capability.activation_status,
+        MicroEdgeSupportStatus::ExactCapable | MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+    ) {
         return Ok(());
     }
+    let relation_label = edge.relation_kind.trim().to_ascii_uppercase();
+    let expected_endpoints = mvp4_2_micro_edge_endpoint_kinds(relation_kind);
     let head = nodes_by_id.get(&edge.source_micro_node_id);
     let tail = nodes_by_id.get(&edge.target_micro_node_id);
     let relation_span = edge
@@ -5095,7 +5264,7 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     let provenance_present = edge.provenance_id.is_some();
 
     let mut push = |rule_id: &'static str,
-                    reason: &'static str,
+                    reason: &str,
                     source_span_present: bool,
                     provenance_present: bool|
      -> Result<(), ToolCallError> {
@@ -5124,7 +5293,7 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     if head.is_none() {
         push(
             CG_MVP4_2_MICRO_EDGE_DANGLING_HEAD,
-            "persisted LOCAL_RETURNS_TO edge references a missing ReturnSite head micro-node",
+            &format!("persisted {relation_label} edge references a missing head micro-node"),
             relation_span_present,
             provenance_present,
         )?;
@@ -5132,7 +5301,7 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     if tail.is_none() {
         push(
             CG_MVP4_2_MICRO_EDGE_DANGLING_TAIL,
-            "persisted LOCAL_RETURNS_TO edge references a missing FunctionFrame tail micro-node",
+            &format!("persisted {relation_label} edge references a missing tail micro-node"),
             relation_span_present,
             provenance_present,
         )?;
@@ -5143,27 +5312,41 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     let Some(tail) = tail else {
         return Ok(());
     };
-    if head.micro_kind != "return_site" {
-        push(
-            CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
-            "persisted LOCAL_RETURNS_TO head endpoint is not a ReturnSite",
-            relation_span_present,
-            provenance_present,
-        )?;
-    }
-    if tail.micro_kind != "function_frame" {
-        push(
-            CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
-            "persisted LOCAL_RETURNS_TO tail endpoint is not a FunctionFrame",
-            relation_span_present,
-            provenance_present,
-        )?;
+    if let Some((expected_head_kinds, expected_tail_kinds)) = expected_endpoints {
+        if !expected_head_kinds
+            .iter()
+            .any(|kind| kind.as_str() == head.micro_kind)
+        {
+            push(
+                CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
+                &format!(
+                    "persisted {relation_label} head endpoint kind `{}` is not authorized for this relation",
+                    head.micro_kind
+                ),
+                relation_span_present,
+                provenance_present,
+            )?;
+        }
+        if !expected_tail_kinds
+            .iter()
+            .any(|kind| kind.as_str() == tail.micro_kind)
+        {
+            push(
+                CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
+                &format!(
+                    "persisted {relation_label} tail endpoint kind `{}` is not authorized for this relation",
+                    tail.micro_kind
+                ),
+                relation_span_present,
+                provenance_present,
+            )?;
+        }
     }
     if head.file_id != edge.file_id || tail.file_id != edge.file_id || head.file_id != tail.file_id
     {
         push(
             CG_MVP4_2_MICRO_EDGE_CROSS_FILE,
-            "persisted LOCAL_RETURNS_TO endpoints do not share the edge file identity",
+            &format!("persisted {relation_label} endpoints do not share the edge file identity"),
             relation_span_present,
             provenance_present,
         )?;
@@ -5171,7 +5354,9 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     if head.function_entity_id != tail.function_entity_id {
         push(
             CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION,
-            "persisted LOCAL_RETURNS_TO endpoints do not share the same function identity domain",
+            &format!(
+                "persisted {relation_label} endpoints do not share the same function identity domain"
+            ),
             relation_span_present,
             provenance_present,
         )?;
@@ -5179,7 +5364,9 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     if edge.function_entity_id != head.function_entity_id {
         push(
             CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
-            "persisted LOCAL_RETURNS_TO edge does not point to the nearest enclosing FunctionFrame identity",
+            &format!(
+                "persisted {relation_label} edge does not point to the nearest enclosing function identity"
+            ),
             relation_span_present,
             provenance_present,
         )?;
@@ -5187,7 +5374,7 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     if !relation_span_present {
         push(
             CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
-            "persisted claimable LOCAL_RETURNS_TO edge is missing its relation source span",
+            &format!("persisted claimable {relation_label} edge is missing its relation source span"),
             false,
             provenance_present,
         )?;
@@ -5195,17 +5382,16 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     if !provenance_present {
         push(
             CG_MVP4_2_MICRO_EDGE_MISSING_PROVENANCE,
-            "persisted claimable LOCAL_RETURNS_TO edge is missing direct-AST provenance",
+            &format!("persisted claimable {relation_label} edge is missing persisted provenance"),
             relation_span_present,
             false,
         )?;
     }
-    let capability = mvp4_micro_edge_language_capability(&edge.language, relation_kind);
     let source_role =
         MicroSourceRole::from_storage_str(&edge.source_role).unwrap_or(MicroSourceRole::Unknown);
     let exactness =
         MicroExactness::from_storage_str(&edge.exactness).unwrap_or(MicroExactness::Unknown);
-    if !capability.supports_claimable_exact(
+    if !capability.supports_claimable_proof_row(
         &edge.frontend,
         source_role,
         exactness,
@@ -5214,7 +5400,10 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     ) {
         push(
             CG_MVP4_2_MICRO_EDGE_EXACTNESS_MISMATCH,
-            "persisted LOCAL_RETURNS_TO edge does not meet an active exact claimable micro-edge language capability",
+            &format!(
+                "persisted {relation_label} edge does not meet an active claimable micro-edge language capability (expected `{}` exactness)",
+                capability.exactness_capability.as_str()
+            ),
             relation_span_present,
             provenance_present,
         )?;
@@ -5225,7 +5414,9 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     {
         push(
             CG_MVP4_2_MICRO_EDGE_VERSION_MISMATCH,
-            "persisted LOCAL_RETURNS_TO edge version does not match the current MVP4.2 extraction contract",
+            &format!(
+                "persisted {relation_label} edge version does not match the current MVP4.2 extraction contract"
+            ),
             relation_span_present,
             provenance_present,
         )?;
@@ -6779,6 +6970,7 @@ fn mcp_context_pack_compact_json(
     vector_candidate_diagnostics: Value,
     nuance_rescue_diagnostics: Value,
     staged_availability: Value,
+    capability_metadata: Value,
 ) -> Value {
     let lifecycle = mcp_compact_lifecycle_summary(preflight);
     let claimable = lifecycle
@@ -6834,6 +7026,18 @@ fn mcp_context_pack_compact_json(
         });
     let proof_strength =
         mcp_context_pack_proof_strength(graph_proof, &fallback_evidence, &packet.snippets);
+    let language_capability_context = mcp_context_pack_language_capability_context_json(
+        &capability_metadata,
+        packet,
+        proof_status,
+        graph_proof,
+        packet
+            .metadata
+            .get("evidence_status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        proof_strength,
+    );
     let (task_intent, task_profile, retrieval_plan) = plan_task_retrieval(task);
     let compact_staged_availability = mcp_compact_staged_availability_summary(&staged_availability);
     let staged_fields = mcp_staged_top_level_fields(&compact_staged_availability);
@@ -6865,6 +7069,8 @@ fn mcp_context_pack_compact_json(
         "proof_status": proof_status,
         "proof_strength": proof_strength,
         "graph_proof": graph_proof,
+        "capability_metadata": capability_metadata,
+        "language_capability_context": language_capability_context,
         "evidence_status": packet.metadata.get("evidence_status").cloned().unwrap_or(Value::Null),
         "proof_failure_reason": packet.metadata.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
         "staged_availability": compact_staged_availability,
@@ -6907,6 +7113,144 @@ fn mcp_context_pack_proof_strength(
     "unknown"
 }
 
+fn mcp_context_pack_language_capability_context_json(
+    capability_metadata: &Value,
+    packet: &ContextPacket,
+    proof_status: &str,
+    graph_proof: bool,
+    evidence_status: &str,
+    proof_strength: &str,
+) -> Value {
+    let unknown_boundary_rows = capability_metadata
+        .pointer("/summary/unknown_boundary_rows")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resolver_metadata_rows = capability_metadata
+        .pointer("/summary/resolver_metadata_rows")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let fallback_evidence_count = packet
+        .metadata
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "status": if capability_metadata.get("status").and_then(Value::as_str) == Some("ok") {
+            "available"
+        } else {
+            "unavailable"
+        },
+        "capability_metadata_status": capability_metadata.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "rows_by_language": capability_metadata
+            .pointer("/summary/rows_by_language")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "rows_by_capability_status": capability_metadata
+            .pointer("/summary/rows_by_capability_status")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "proof_status": proof_status,
+        "proof_strength": proof_strength,
+        "graph_proof": graph_proof,
+        "evidence_status": evidence_status,
+        "resolver_metadata_rows": resolver_metadata_rows,
+        "unknown_boundary_rows": unknown_boundary_rows,
+        "fallback_evidence_count": fallback_evidence_count,
+        "evidence_ladder": [
+            {
+                "layer": "resolver_backed_graph_proof",
+                "status": if graph_proof && resolver_metadata_rows > 0 { "available_when_path_provenance_matches" } else { "not_present_or_not_required" },
+                "proof_boundary": "compiler/LSP/resolver facts require recorded resolver provenance before semantic exactness is claimable"
+            },
+            {
+                "layer": "parser_graph_or_source_facts",
+                "status": if graph_proof { "graph_path_found" } else { "parser_or_source_facts_require_fallback_labels" },
+                "proof_boundary": "parser facts can support source-spanned facts; caller/callee proof still requires exact graph relation evidence"
+            },
+            {
+                "layer": "source_text_evidence",
+                "status": if fallback_evidence_count > 0 || !packet.snippets.is_empty() { "available" } else { "not_returned" },
+                "proof_boundary": "text/source-navigation evidence is useful context but not graph relation proof"
+            },
+            {
+                "layer": "unknown_dynamic_runtime_macro",
+                "status": if unknown_boundary_rows > 0 { "present" } else { "none_in_bounded_metadata_summary" },
+                "proof_boundary": "unknown, dynamic, runtime, macro, preprocessor, compiler_required, and lsp_required facts stay non-blocking/non-proof"
+            }
+        ],
+        "local_flow_packet_boundary": {
+            "active_languages": mvp4_3_local_micro_flow_packet_active_languages(),
+            "typescript_packet_handles_preserved": true,
+            "non_typescript_packet_support": "not_implemented_without_explicit_exact_gate",
+            "non_typescript_packet_overclaim_count": 0,
+            "handles_do_not_create_proof": true,
+            "context_entry_command_activated": false
+        },
+        "compact_output_contract": {
+            "evidence_first": true,
+            "source_spans_required_for_claimable_facts": true,
+            "capability_metadata_does_not_create_graph_proof": true,
+            "candidate_vector_nuance_evidence_not_graph_proof": true
+        }
+    })
+}
+
+fn mcp_context_pack_source_language_capability_json(
+    file: Option<&str>,
+    evidence_kind: &str,
+    proof_status: &str,
+    graph_proof: bool,
+    exactness: &str,
+    source_role: &str,
+) -> Value {
+    let language = file
+        .and_then(mcp_frontend_from_repo_relative_path)
+        .unwrap_or_else(|| "unknown".to_string());
+    let proof_strength = if graph_proof {
+        "graph_relation_proof"
+    } else if evidence_kind == "text_evidence" {
+        "text_evidence_non_graph"
+    } else if evidence_kind == "source_navigation_evidence" {
+        "source_navigation_evidence"
+    } else if matches!(exactness, "exact" | "parser_verified") {
+        "parser_source_fact"
+    } else {
+        "unknown_non_graph"
+    };
+    let claimable_as = if graph_proof {
+        vec!["graph_relation_proof", "source_text_existence"]
+    } else if evidence_kind == "text_evidence" {
+        vec!["source_text_existence"]
+    } else {
+        Vec::<&str>::new()
+    };
+    json!({
+        "language": language,
+        "frontend": language,
+        "source_role": source_role,
+        "capability_flags": [evidence_kind],
+        "capability_status": match evidence_kind {
+            "text_evidence" => "source_text_evidence",
+            "source_navigation_evidence" => "source_navigation_evidence",
+            "graph_path" => "graph_relation_evidence",
+            _ => "unknown",
+        },
+        "exactness": exactness,
+        "resolver_status": "not_claimed_by_context_pack",
+        "proof_status": proof_status,
+        "proof_strength": proof_strength,
+        "claimability": {
+            "claimable": !claimable_as.is_empty(),
+            "claimable_as": claimable_as,
+            "not_claimable_as": if graph_proof { Vec::<&str>::new() } else { vec!["typed_graph_relation", "caller_callee_proof", "resolver_exactness"] },
+            "graph_proof": graph_proof
+        },
+        "source_span_available": file.is_some(),
+        "not_graph_proof": !graph_proof
+    })
+}
+
 fn mcp_compact_lifecycle_summary(preflight: &DbLifecyclePreflight) -> Value {
     json!({
         "claimable": preflight.safe,
@@ -6926,6 +7270,20 @@ fn mcp_compact_lifecycle_summary(preflight: &DbLifecyclePreflight) -> Value {
 fn mcp_compact_path_evidence_json(path: &PathEvidence) -> Value {
     let edge_limit = 8usize;
     let span_limit = 8usize;
+    let primary_file = path
+        .source_spans
+        .first()
+        .map(|span| span.repo_relative_path.as_str());
+    let evidence_role = path
+        .metadata
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let proof_status = path
+        .metadata
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or("proof_path_found");
     json!({
         "path_id": path.id.clone(),
         "summary": path.summary.clone(),
@@ -6942,8 +7300,16 @@ fn mcp_compact_path_evidence_json(path: &PathEvidence) -> Value {
         "source_spans": path.source_spans.iter().take(span_limit).collect::<Vec<_>>(),
         "exactness": path.exactness.to_string(),
         "confidence": path.confidence,
-        "evidence_role": path.metadata.get("evidence_role").and_then(Value::as_str).unwrap_or("unknown"),
-        "proof_status": path.metadata.get("proof_status").and_then(Value::as_str).unwrap_or("proof_path_found"),
+        "evidence_role": evidence_role,
+        "proof_status": proof_status,
+        "language_capability": mcp_context_pack_source_language_capability_json(
+            primary_file,
+            "graph_path",
+            proof_status,
+            true,
+            &path.exactness.to_string(),
+            evidence_role,
+        ),
         "classification_reason": path.metadata.get("evidence_role_reason").or_else(|| path.metadata.get("classification_reason")).cloned().unwrap_or(Value::Null),
         "omitted_edges": path.edges.len().saturating_sub(edge_limit),
         "omitted_source_spans": path.source_spans.len().saturating_sub(span_limit),
@@ -6956,6 +7322,14 @@ fn mcp_compact_context_snippet_json(snippet: &ContextSnippet) -> Value {
         "lines": snippet.lines.clone(),
         "text": compact_mcp_text(&snippet.text, 600),
         "reason": snippet.reason.clone(),
+        "language_capability": mcp_context_pack_source_language_capability_json(
+            Some(&snippet.file),
+            "source_navigation_evidence",
+            "not_graph_proof",
+            false,
+            "source_span",
+            "unknown",
+        ),
     })
 }
 
@@ -10369,6 +10743,179 @@ fn typescript_resolver_available() -> bool {
         .is_ok()
 }
 
+fn mcp_query_capability_metadata_summary_json(store: &SqliteGraphStore) -> Value {
+    match store.capability_metadata_summary(&CapabilityMetadataQueryOptions {
+        limit: 512,
+        ..CapabilityMetadataQueryOptions::default()
+    }) {
+        Ok(summary) => json!({
+            "status": "ok",
+            "summary": summary,
+            "bounded": true,
+            "limit": 512,
+            "not_graph_proof": true,
+            "proof_boundary": "capability metadata labels parser/resolver/source-role facts; it does not create relation proof by itself",
+        }),
+        Err(error) => json!({
+            "status": "unavailable",
+            "error": error.to_string(),
+            "not_graph_proof": true,
+            "proof_boundary": "capability metadata summary unavailable; MCP query results must rely on per-row exactness labels only",
+        }),
+    }
+}
+
+fn mcp_entity_language_capability_json(entity: &Entity) -> Value {
+    let role = classify_entity_source_role(entity);
+    let language = metadata_string(&entity.metadata, "parser_fact_language")
+        .or_else(|| mcp_frontend_from_repo_relative_path(&entity.repo_relative_path))
+        .unwrap_or_else(|| "unknown".to_string());
+    let frontend = metadata_string(&entity.metadata, "parser_fact_frontend")
+        .or_else(|| Some(language.clone()))
+        .or_else(|| mcp_frontend_from_repo_relative_path(&entity.repo_relative_path))
+        .unwrap_or_else(|| "unknown".to_string());
+    let capability_flag = metadata_string(&entity.metadata, "parser_capability_flag")
+        .unwrap_or_else(|| "unknown".to_string());
+    let capability_status = metadata_string(&entity.metadata, "parser_capability_status")
+        .unwrap_or_else(|| "unknown".to_string());
+    let exactness = metadata_string(&entity.metadata, "parser_fact_exactness")
+        .unwrap_or_else(|| "unknown".to_string());
+    let resolver_status = metadata_string(&entity.metadata, "parser_resolver_status")
+        .unwrap_or_else(|| "unknown".to_string());
+    let resolver_provenance = metadata_string(&entity.metadata, "parser_resolver_provenance");
+    let unknown_boundary_reason =
+        metadata_string(&entity.metadata, "parser_unknown_boundary_reason");
+    let proof_strength = mcp_language_capability_proof_strength(
+        &exactness,
+        resolver_provenance.as_deref(),
+        unknown_boundary_reason.as_deref(),
+    );
+    let claimable = entity.source_span.is_some()
+        && unknown_boundary_reason.is_none()
+        && (!matches!(exactness.as_str(), "compiler_verified" | "lsp_verified")
+            || resolver_provenance.is_some())
+        && !matches!(
+            capability_status.as_str(),
+            "unsupported"
+                | "unknown"
+                | "not_implemented"
+                | "runtime_required"
+                | "compiler_required"
+                | "lsp_required"
+                | "macro_required"
+                | "preprocessor_required"
+                | "requires_runtime"
+                | "requires_compiler"
+                | "requires_lsp"
+                | "requires_macro_expansion"
+                | "requires_preprocessor"
+        );
+    let claimable_as = if claimable {
+        vec!["source_spanned_language_fact"]
+    } else {
+        Vec::<&str>::new()
+    };
+    json!({
+        "language": language,
+        "frontend": frontend,
+        "source_role": role.role.as_str(),
+        "capability_flags": [capability_flag],
+        "capability_status": capability_status,
+        "exactness": exactness,
+        "resolver_status": resolver_status,
+        "resolver_version": metadata_string(&entity.metadata, "parser_resolver_version"),
+        "provenance_ref": resolver_provenance,
+        "unknown_boundary_reason": unknown_boundary_reason,
+        "proof_strength": proof_strength,
+        "claimability": {
+            "claimable": claimable,
+            "claimable_as": claimable_as,
+            "not_claimable_as": ["typed_graph_relation_without_matching_edge", "caller_callee_proof_without_resolver_edge"],
+            "graph_proof": false,
+            "reason": "MCP symbol facts expose parser/resolver metadata; relation proof still requires exact graph relation evidence"
+        },
+        "source_span": {
+            "available": entity.source_span.is_some(),
+            "required_for_claimable_fact": true
+        },
+        "not_graph_proof": true
+    })
+}
+
+fn metadata_string(metadata: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn mcp_frontend_from_repo_relative_path(path: &str) -> Option<String> {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase();
+    let language = match extension.as_str() {
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "jsx",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "py" => "python",
+        "go" => "go",
+        "rs" => "rust",
+        "java" => "java",
+        "cs" => "csharp",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+        "rb" => "ruby",
+        "php" => "php",
+        _ => return None,
+    };
+    Some(language.to_string())
+}
+
+fn mcp_language_capability_proof_strength(
+    exactness: &str,
+    resolver_provenance: Option<&str>,
+    unknown_boundary_reason: Option<&str>,
+) -> &'static str {
+    if unknown_boundary_reason.is_some() {
+        return "unknown_boundary_non_proof";
+    }
+    match exactness {
+        "compiler_verified" | "lsp_verified"
+            if resolver_provenance.is_some_and(|value| !value.trim().is_empty()) =>
+        {
+            "resolver_verified_fact"
+        }
+        "compiler_verified" | "lsp_verified" => "resolver_claim_missing_provenance",
+        "exact" | "parser_verified" => "parser_source_fact",
+        "static_heuristic" => "heuristic_source_fact",
+        "inferred" => "inferred_non_proof",
+        _ => "symbol_source_navigation",
+    }
+}
+
+fn mcp_text_evidence_language_capability_json() -> Value {
+    json!({
+        "language": "unknown",
+        "frontend": "unknown",
+        "source_role": "text_evidence",
+        "capability_flags": ["text_evidence"],
+        "capability_status": "source_text_evidence",
+        "exactness": "textual_exact_match",
+        "resolver_status": "not_applicable",
+        "proof_strength": "text_evidence_non_graph",
+        "claimability": {
+            "claimable": true,
+            "claimable_as": ["source_text_existence"],
+            "not_claimable_as": ["typed_graph_relation", "caller_callee_proof", "resolver_exactness"],
+            "graph_proof": false
+        },
+        "not_graph_proof": true
+    })
+}
+
 fn entity_json(entity: &Entity) -> Value {
     let heuristic = entity.created_from.contains("heuristic")
         || entity.metadata.keys().any(|key| key.contains("heuristic"));
@@ -10385,6 +10932,8 @@ fn entity_json(entity: &Entity) -> Value {
         "heuristic": heuristic,
         "unsupported": false,
         "confidence": entity.confidence,
+        "source_role": classify_entity_source_role(entity).role.as_str(),
+        "language_capability": mcp_entity_language_capability_json(entity),
         "metadata": entity.metadata,
     })
 }
@@ -10777,6 +11326,10 @@ fn insert_text_evidence_labels(object: &mut serde_json::Map<String, Value>) {
     object.insert("proof_status".to_string(), json!("not_graph_proof"));
     object.insert("graph_proof".to_string(), json!(false));
     object.insert("graph_relation_claims".to_string(), json!([]));
+    object.insert(
+        "language_capability".to_string(),
+        mcp_text_evidence_language_capability_json(),
+    );
     object.insert(
         "claimability".to_string(),
         json!({
@@ -12169,6 +12722,37 @@ mod tests {
         packet
     }
 
+    #[test]
+    fn mcp_validate_edit_packet_exposes_capability_contract_metadata() {
+        let packet = mcp_test_severity_packet("blocking_graph_error");
+        let value = serde_json::to_value(&packet).expect("validation packet json");
+
+        let rule_contract = &value["validation_rules_evaluated"][0]["capability_contract"];
+        assert_eq!(rule_contract["required_capability"].as_str(), Some("call"));
+        assert_eq!(
+            rule_contract["escalation_policy"].as_str(),
+            Some("block_only_with_capability_metadata")
+        );
+        assert_eq!(
+            rule_contract["old_tier_label_authorizes_blocking"].as_bool(),
+            Some(false)
+        );
+
+        let finding_capability = &value["blocking_errors"][0]["capability_evaluation"];
+        assert_eq!(
+            finding_capability["capability_required"].as_str(),
+            Some("call")
+        );
+        assert_eq!(
+            finding_capability["capability_present"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            finding_capability["recommended_action"].as_str(),
+            Some("fix_reverified_graph_source_issue")
+        );
+    }
+
     fn mcp_packet_status_string(packet: &ValidationPacket) -> String {
         serde_json::to_value(packet.status)
             .expect("packet status json")
@@ -12506,7 +13090,31 @@ mod tests {
     }
 
     #[test]
-    fn mcp_validate_edit_mirrors_unresolved_reference_warning_block() {
+    fn mcp_validate_edit_js_ts_family_unresolved_refs_remain_warning_only_without_resolver() {
+        let _env_lock = ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        struct PolicyEnvGuard {
+            previous: Option<std::ffi::OsString>,
+        }
+        impl PolicyEnvGuard {
+            fn set() -> Self {
+                let previous = std::env::var_os(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
+                std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, "1");
+                Self { previous }
+            }
+        }
+        impl Drop for PolicyEnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(previous) => {
+                        std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, previous)
+                    }
+                    None => std::env::remove_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV),
+                }
+            }
+        }
+        let _policy = PolicyEnvGuard::set();
         let repo = fixture_repo();
         fs::write(
             repo.join("src").join("forward.ts"),
@@ -12589,8 +13197,637 @@ mod tests {
                         && item["proof_strength"].as_str() == Some("text_evidence")
                         && item["claimability"].as_str()
                             == Some("claimable_as_source_text_reference_only")
+                        && item["severity"].as_str() == Some("warning")
+                        && item["capability_present"].as_bool() == Some(false)
+                        && item["capability_missing_reason"].as_str()
+                            == Some("unresolved_reference_delta_is_parser_source_text_without_resolver_provenance")
                 }),
             "{packet}"
+        );
+        assert_eq!(
+            block["block_eligible_repo_local_no_definition_count"].as_u64(),
+            Some(0),
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_ineligible_repo_local_no_definition_count"].as_u64(),
+            Some(1),
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_on_unresolved_local_policy"]["eligible_extensions"]
+                .as_array()
+                .map(Vec::len),
+            Some(0),
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_on_unresolved_local_policy"]["js_ts_family_unresolved_delta_policy"]
+                ["unresolved_reference_delta_rows"]
+                .as_str(),
+            Some("warning_only_until_resolver_or_compiler_provenance_is_recorded"),
+            "{packet}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_validate_edit_java_csharp_unresolved_refs_remain_warning_only_without_resolver() {
+        let _env_lock = ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        struct PolicyEnvGuard {
+            previous: Option<std::ffi::OsString>,
+        }
+        impl PolicyEnvGuard {
+            fn set() -> Self {
+                let previous = std::env::var_os(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
+                std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, "1");
+                Self { previous }
+            }
+        }
+        impl Drop for PolicyEnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(previous) => {
+                        std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, previous)
+                    }
+                    None => std::env::remove_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV),
+                }
+            }
+        }
+        let _policy = PolicyEnvGuard::set();
+
+        let repo = fixture_repo();
+        let clean_java = "package demo;\n\nclass App {\n    int run(int value) {\n        return value;\n    }\n}\n";
+        let clean_csharp = "namespace Demo {\n    class App {\n        int Run(int value) {\n            return value;\n        }\n    }\n}\n";
+        fs::write(repo.join("src").join("App.java"), clean_java).expect("write java fixture");
+        fs::write(repo.join("src").join("App.cs"), clean_csharp).expect("write csharp fixture");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-java-csharp-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+
+        fs::write(
+            repo.join("src").join("App.java"),
+            "package demo;\n\nclass App {\n    int run(int value) {\n        return missingJavaHelper(value);\n    }\n}\n",
+        )
+        .expect("write java unresolved fixture");
+        fs::write(
+            repo.join("src").join("App.cs"),
+            "namespace Demo {\n    class App {\n        int Run(int value) {\n            return MissingCsharpHelper(value);\n        }\n    }\n}\n",
+        )
+        .expect("write csharp unresolved fixture");
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 96,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["src/App.java", "src/App.cs"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        let packet = &response["result"]["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("warning"), "{packet}");
+        assert_eq!(
+            packet["must_fix_before_continuing"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["hard_interrupt_available"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        let block = &packet["validation_packet"]["unresolved_references"];
+        assert_eq!(block["not_graph_proof"].as_bool(), Some(true), "{packet}");
+        assert!(
+            block["repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2,
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_eligible_repo_local_no_definition_count"].as_u64(),
+            Some(0),
+            "{packet}"
+        );
+        assert!(
+            block["block_ineligible_repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2,
+            "{packet}"
+        );
+        for missing_name in ["missingJavaHelper", "MissingCsharpHelper"] {
+            assert!(
+                block["escalated"]
+                    .as_array()
+                    .expect("escalated")
+                    .iter()
+                    .any(|item| {
+                        item["name"].as_str() == Some(missing_name)
+                            && item["severity"].as_str() == Some("warning")
+                            && item["block_on_unresolved_local_eligible"].as_bool() == Some(false)
+                            && item["proof_strength"].as_str() == Some("text_evidence")
+                    }),
+                "expected warning-only Java/C# unresolved ref {missing_name}; got {packet}"
+            );
+        }
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_validate_edit_c_cpp_unresolved_refs_remain_warning_only_without_resolver() {
+        let _env_lock = ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        struct PolicyEnvGuard {
+            previous: Option<std::ffi::OsString>,
+        }
+        impl PolicyEnvGuard {
+            fn set() -> Self {
+                let previous = std::env::var_os(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
+                std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, "1");
+                Self { previous }
+            }
+        }
+        impl Drop for PolicyEnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(previous) => {
+                        std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, previous)
+                    }
+                    None => std::env::remove_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV),
+                }
+            }
+        }
+        let _policy = PolicyEnvGuard::set();
+
+        let repo = fixture_repo();
+        let clean_c = "int run_c(int value) {\n  return value;\n}\n";
+        let clean_cpp = "int run_cpp(int value) {\n  return value;\n}\n";
+        fs::write(repo.join("src").join("main.c"), clean_c).expect("write c fixture");
+        fs::write(repo.join("src").join("main.cpp"), clean_cpp).expect("write cpp fixture");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-c-cpp-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+
+        fs::write(
+            repo.join("src").join("main.c"),
+            "int run_c(int value) {\n  return missing_c_helper(value);\n}\n",
+        )
+        .expect("write c unresolved fixture");
+        fs::write(
+            repo.join("src").join("main.cpp"),
+            "int run_cpp(int value) {\n  return missingCppHelper(value);\n}\n",
+        )
+        .expect("write cpp unresolved fixture");
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 97,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["src/main.c", "src/main.cpp"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        let packet = &response["result"]["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("warning"), "{packet}");
+        assert_eq!(
+            packet["must_fix_before_continuing"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["hard_interrupt_available"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        let block = &packet["validation_packet"]["unresolved_references"];
+        assert_eq!(block["not_graph_proof"].as_bool(), Some(true), "{packet}");
+        assert!(
+            block["repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2,
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_eligible_repo_local_no_definition_count"].as_u64(),
+            Some(0),
+            "{packet}"
+        );
+        assert!(
+            block["block_ineligible_repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2,
+            "{packet}"
+        );
+        for missing_name in ["missing_c_helper", "missingCppHelper"] {
+            assert!(
+                block["escalated"]
+                    .as_array()
+                    .expect("escalated")
+                    .iter()
+                    .any(|item| {
+                        item["name"].as_str() == Some(missing_name)
+                            && item["severity"].as_str() == Some("warning")
+                            && item["block_on_unresolved_local_eligible"].as_bool() == Some(false)
+                            && item["proof_strength"].as_str() == Some("text_evidence")
+                    }),
+                "expected warning-only C/C++ unresolved ref {missing_name}; got {packet}"
+            );
+        }
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_validate_edit_python_go_rust_unresolved_refs_remain_warning_only_without_resolver() {
+        let _env_lock = ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        struct PolicyEnvGuard {
+            previous: Option<std::ffi::OsString>,
+        }
+        impl PolicyEnvGuard {
+            fn set() -> Self {
+                let previous = std::env::var_os(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
+                std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, "1");
+                Self { previous }
+            }
+        }
+        impl Drop for PolicyEnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(previous) => {
+                        std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, previous)
+                    }
+                    None => std::env::remove_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV),
+                }
+            }
+        }
+        let _policy = PolicyEnvGuard::set();
+
+        let repo = fixture_repo();
+        let clean_python = "def run_python(value):\n    return value\n";
+        let clean_go = "package demo\n\nfunc RunGo(value int) int {\n\treturn value\n}\n";
+        let clean_rust = "pub fn run_rust(value: i32) -> i32 {\n    value\n}\n";
+        fs::write(
+            repo.join("pyproject.toml"),
+            "[project]\nname = \"pgr-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write pyproject");
+        fs::write(repo.join("go.mod"), "module example.com/pgr\n\ngo 1.22\n")
+            .expect("write go.mod");
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"pgr_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("write Cargo.toml");
+        fs::write(repo.join("src").join("app.py"), clean_python).expect("write python fixture");
+        fs::write(repo.join("src").join("main.go"), clean_go).expect("write go fixture");
+        fs::write(repo.join("src").join("lib.rs"), clean_rust).expect("write rust fixture");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-python-go-rust-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+
+        fs::write(
+            repo.join("src").join("app.py"),
+            "def run_python(value):\n    return missing_python_helper(value)\n",
+        )
+        .expect("write python unresolved fixture");
+        fs::write(
+            repo.join("src").join("main.go"),
+            "package demo\n\nfunc RunGo(value int) int {\n\treturn missingGoHelper(value)\n}\n",
+        )
+        .expect("write go unresolved fixture");
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            "pub fn run_rust(value: i32) -> i32 {\n    missing_rust_helper(value)\n}\n",
+        )
+        .expect("write rust unresolved fixture");
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 98,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["src/app.py", "src/main.go", "src/lib.rs"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        let packet = &response["result"]["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("warning"), "{packet}");
+        assert_eq!(
+            packet["must_fix_before_continuing"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["hard_interrupt_available"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        let block = &packet["validation_packet"]["unresolved_references"];
+        assert_eq!(block["not_graph_proof"].as_bool(), Some(true), "{packet}");
+        assert!(
+            block["repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 3,
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_eligible_repo_local_no_definition_count"].as_u64(),
+            Some(0),
+            "{packet}"
+        );
+        assert!(
+            block["block_ineligible_repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 3,
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_on_unresolved_local_policy"]["deferred_until_exact_resolver_extensions"],
+            json!(["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php"]),
+            "{packet}"
+        );
+        assert!(
+            block["escalated_total"].as_u64().unwrap_or_default() >= 3,
+            "{packet}"
+        );
+        assert!(
+            block["escalated"]
+                .as_array()
+                .expect("escalated")
+                .iter()
+                .all(|item| {
+                    item["severity"].as_str() == Some("warning")
+                        && item["proof_strength"].as_str() == Some("text_evidence")
+                        && !item
+                            .get("block_on_unresolved_local_eligible")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                }),
+            "inline compact unresolved refs must stay warning-only; got {packet}"
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_validate_edit_ruby_php_unresolved_refs_remain_warning_only_without_resolver() {
+        let _env_lock = ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        struct PolicyEnvGuard {
+            previous: Option<std::ffi::OsString>,
+        }
+        impl PolicyEnvGuard {
+            fn set() -> Self {
+                let previous = std::env::var_os(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV);
+                std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, "1");
+                Self { previous }
+            }
+        }
+        impl Drop for PolicyEnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(previous) => {
+                        std::env::set_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV, previous)
+                    }
+                    None => std::env::remove_var(MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV),
+                }
+            }
+        }
+        let _policy = PolicyEnvGuard::set();
+
+        let repo = fixture_repo();
+        fs::create_dir_all(repo.join("lib")).expect("create lib");
+        let clean_ruby = "def run_ruby(value)\n  value\nend\n";
+        let clean_php = "<?php\nfunction run_php($value) {\n    return $value;\n}\n";
+        fs::write(repo.join("Gemfile"), "source 'https://rubygems.org'\n").expect("write Gemfile");
+        fs::write(
+            repo.join("composer.json"),
+            "{\n  \"autoload\": {\"psr-4\": {\"App\\\\\": \"src/\"}}\n}\n",
+        )
+        .expect("write composer.json");
+        fs::write(repo.join("lib").join("app.rb"), clean_ruby).expect("write ruby fixture");
+        fs::write(repo.join("src").join("App.php"), clean_php).expect("write php fixture");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-ruby-php-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+
+        fs::write(
+            repo.join("lib").join("app.rb"),
+            "def run_ruby(value)\n  missing_ruby_helper(value)\nend\n",
+        )
+        .expect("write ruby unresolved fixture");
+        fs::write(
+            repo.join("src").join("App.php"),
+            "<?php\nfunction run_php($value) {\n    return missing_php_helper($value);\n}\n",
+        )
+        .expect("write php unresolved fixture");
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["lib/app.rb", "src/App.php"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        let packet = &response["result"]["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("warning"), "{packet}");
+        assert_eq!(
+            packet["must_fix_before_continuing"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["hard_interrupt_available"].as_bool(),
+            Some(false),
+            "{packet}"
+        );
+        let block = &packet["validation_packet"]["unresolved_references"];
+        assert_eq!(block["not_graph_proof"].as_bool(), Some(true), "{packet}");
+        assert!(
+            block["repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2,
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_eligible_repo_local_no_definition_count"].as_u64(),
+            Some(0),
+            "{packet}"
+        );
+        assert!(
+            block["block_ineligible_repo_local_no_definition_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2,
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_on_unresolved_local_policy"]["deferred_until_exact_resolver_extensions"],
+            json!(["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php"]),
+            "{packet}"
+        );
+        assert_eq!(
+            block["block_on_unresolved_local_policy"]["ruby_php_unresolved_delta_policy"]
+                ["unresolved_reference_delta_rows"]
+                .as_str(),
+            Some("warning_only_until_resolver_or_runtime_provenance_is_recorded"),
+            "{packet}"
+        );
+        for missing_name in ["missing_ruby_helper", "missing_php_helper"] {
+            assert!(
+                block["escalated"]
+                    .as_array()
+                    .expect("escalated")
+                    .iter()
+                    .any(|item| {
+                        item["name"].as_str() == Some(missing_name)
+                            && item["severity"].as_str() == Some("warning")
+                            && item["block_on_unresolved_local_eligible"].as_bool() == Some(false)
+                            && item["proof_strength"].as_str() == Some("text_evidence")
+                    }),
+                "expected warning-only Ruby/PHP unresolved ref {missing_name}; got {packet}"
+            );
+        }
+
+        fs::write(repo.join("lib").join("app.rb"), clean_ruby).expect("fix ruby fixture");
+        fs::write(repo.join("src").join("App.php"), clean_php).expect("fix php fixture");
+        let fixed = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 100,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["lib/app.rb", "src/App.php"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call fixed response");
+        assert!(fixed.get("error").is_none(), "{fixed}");
+        let fixed_packet = &fixed["result"]["structuredContent"];
+        assert_eq!(
+            fixed_packet["must_fix_before_continuing"].as_bool(),
+            Some(false),
+            "{fixed_packet}"
+        );
+        assert!(
+            fixed_packet["validation_packet"]["unresolved_references"]["resolved_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2,
+            "{fixed_packet}"
         );
 
         fs::remove_dir_all(repo).expect("cleanup repo");
@@ -12871,6 +14108,440 @@ mod tests {
         assert!(text.contains("\"destructiveHint\": false"));
         assert!(text.contains("recommended_workflow"));
         assert!(text.contains("codegraph.plan_context"));
+
+        let languages = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "resources/read",
+                "params": {"uri": "codegraph://languages"}
+            }))
+            .expect("languages resource read response");
+        let language_text = languages["result"]["contents"][0]["text"]
+            .as_str()
+            .expect("languages resource text");
+        let language_json: Value =
+            serde_json::from_str(language_text).expect("valid languages resource json");
+        assert_eq!(
+            language_json["capability_model"]["old_tier_alone_drives_proof"].as_bool(),
+            Some(false)
+        );
+        assert!(language_json["capability_flags"]
+            .as_array()
+            .expect("mcp capability flags")
+            .iter()
+            .any(|flag| flag.as_str() == Some("local_flow_packet_supported")));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(
+                |frontend| frontend["language_id"].as_str() == Some("typescript")
+                    && frontend["project_resolver_interface_version"].as_str()
+                        == Some("project_resolver_interface_v1")
+                    && frontend["project_resolver"].as_str() == Some("null_project_resolver")
+                    && frontend["project_resolver_status"].as_str() == Some("unsupported")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("typescript capabilities")
+                        .iter()
+                        .any(|capability| capability["flag"].as_str()
+                            == Some("local_flow_packet_supported")
+                            && capability["status"].as_str() == Some("supported_exact")
+                            && capability["scope"].as_str()
+                                == Some("type_script_production_ts_only"))
+            ));
+        let mcp_typescript = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("typescript"))
+            .expect("mcp typescript frontend");
+        for flag in [
+            "local_binding_resolved",
+            "read_write_extracted",
+            "local_dataflow_derived",
+            "local_flow_packet_supported",
+        ] {
+            assert!(
+                mcp_typescript["capabilities"]
+                    .as_array()
+                    .expect("mcp typescript capabilities")
+                    .iter()
+                    .any(|capability| capability["flag"].as_str() == Some(flag)
+                        && capability["scope"].as_str() == Some("type_script_production_ts_only")),
+                "{flag} must stay scoped to authorized TypeScript .ts production support"
+            );
+        }
+        assert!(mcp_typescript["known_limitations"]
+            .as_array()
+            .expect("mcp typescript limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains("actually runs and records provenance"))));
+        let mcp_tsx = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("tsx"))
+            .expect("mcp tsx frontend");
+        for (flag, status) in [
+            ("compiler_verified", "requires_compiler"),
+            ("caller_callee_exact", "requires_compiler"),
+            ("local_binding_resolved", "requires_compiler"),
+            ("read_write_extracted", "supported_parser_only"),
+            ("local_dataflow_derived", "supported_heuristic"),
+            ("local_flow_packet_supported", "not_implemented"),
+        ] {
+            assert!(
+                mcp_tsx["capabilities"]
+                    .as_array()
+                    .expect("mcp tsx capabilities")
+                    .iter()
+                    .any(|capability| capability["flag"].as_str() == Some(flag)
+                        && capability["status"].as_str() == Some(status)
+                        && capability["scope"].as_str() == Some("language_frontend")),
+                "TSX capability {flag} must stay {status} at language_frontend scope"
+            );
+        }
+        assert!(mcp_tsx["known_limitations"]
+            .as_array()
+            .expect("mcp tsx limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains("not_implemented for TSX"))));
+        let mcp_javascript = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("javascript"))
+            .expect("mcp javascript frontend");
+        for (flag, status) in [
+            ("package_or_module_resolved", "diagnostic_only"),
+            ("require_resolved", "diagnostic_only"),
+            ("project_config_resolved", "diagnostic_only"),
+            ("compiler_verified", "not_implemented"),
+            ("lsp_verified", "not_implemented"),
+            ("caller_callee_exact", "requires_runtime"),
+            ("call_extracted", "supported_parser_only"),
+            ("local_flow_packet_supported", "not_implemented"),
+        ] {
+            assert!(
+                mcp_javascript["capabilities"]
+                    .as_array()
+                    .expect("mcp javascript capabilities")
+                    .iter()
+                    .any(|capability| capability["flag"].as_str() == Some(flag)
+                        && capability["status"].as_str() == Some(status)
+                        && capability["scope"].as_str() == Some("language_frontend")),
+                "JavaScript capability {flag} must stay {status} at language_frontend scope"
+            );
+        }
+        assert!(mcp_javascript["known_limitations"]
+            .as_array()
+            .expect("mcp javascript limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains("diagnostic evidence"))));
+        assert!(mcp_javascript["known_limitations"]
+            .as_array()
+            .expect("mcp javascript limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains("not_implemented for JavaScript"))));
+        let mcp_jsx = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("jsx"))
+            .expect("mcp jsx frontend");
+        for (flag, status) in [
+            ("package_or_module_resolved", "diagnostic_only"),
+            ("require_resolved", "diagnostic_only"),
+            ("project_config_resolved", "diagnostic_only"),
+            ("compiler_verified", "not_implemented"),
+            ("lsp_verified", "not_implemented"),
+            ("caller_callee_exact", "requires_runtime"),
+            ("call_extracted", "supported_parser_only"),
+            ("local_flow_packet_supported", "not_implemented"),
+        ] {
+            assert!(
+                mcp_jsx["capabilities"]
+                    .as_array()
+                    .expect("mcp jsx capabilities")
+                    .iter()
+                    .any(|capability| capability["flag"].as_str() == Some(flag)
+                        && capability["status"].as_str() == Some(status)
+                        && capability["scope"].as_str() == Some("language_frontend")),
+                "JSX capability {flag} must stay {status} at language_frontend scope"
+            );
+        }
+        assert!(mcp_jsx["known_limitations"]
+            .as_array()
+            .expect("mcp jsx limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains("dynamic props"))));
+        assert!(mcp_jsx["known_limitations"]
+            .as_array()
+            .expect("mcp jsx limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains("not_implemented for JSX"))));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("go")
+                    && frontend["support_tier"].as_str() == Some("tier3_calls_caller_callee")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("go capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("project_config_resolved")
+                                && capability["status"].as_str() == Some("diagnostic_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("go capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_compiler")
+                        })
+            }));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("rust")
+                    && frontend["support_tier"].as_str() == Some("tier3_calls_caller_callee")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("rust capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("project_config_resolved")
+                                && capability["status"].as_str() == Some("diagnostic_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("rust capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("package_or_module_resolved")
+                                && capability["status"].as_str() == Some("diagnostic_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("rust capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_compiler")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("rust capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("macro_unknown")
+                                && capability["status"].as_str() == Some("requires_macro_expansion")
+                        })
+            }));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("java")
+                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("java capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("call_extracted")
+                                && capability["status"].as_str() == Some("supported_parser_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("java capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_compiler")
+                        })
+            }));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("csharp")
+                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("csharp capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("call_extracted")
+                                && capability["status"].as_str() == Some("supported_parser_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("csharp capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_compiler")
+                        })
+            }));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("c")
+                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("c capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("call_extracted")
+                                && capability["status"].as_str() == Some("supported_parser_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("c capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_compiler")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("c capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("include_resolved")
+                                && capability["status"].as_str() == Some("requires_preprocessor")
+                        })
+            }));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("cpp")
+                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("cpp capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("call_extracted")
+                                && capability["status"].as_str() == Some("supported_parser_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("cpp capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_compiler")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("cpp capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("include_resolved")
+                                && capability["status"].as_str() == Some("requires_preprocessor")
+                        })
+            }));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("ruby")
+                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("ruby capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("call_extracted")
+                                && capability["status"].as_str() == Some("supported_parser_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("ruby capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_runtime")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("ruby capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("require_resolved")
+                                && capability["status"].as_str() == Some("requires_runtime")
+                        })
+            }));
+        assert!(language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .any(|frontend| {
+                frontend["language_id"].as_str() == Some("php")
+                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("php capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("call_extracted")
+                                && capability["status"].as_str() == Some("supported_parser_only")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("php capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("caller_callee_exact")
+                                && capability["status"].as_str() == Some("requires_runtime")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("php capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("include_resolved")
+                                && capability["status"].as_str() == Some("requires_runtime")
+                        })
+                    && frontend["capabilities"]
+                        .as_array()
+                        .expect("php capabilities")
+                        .iter()
+                        .any(|capability| {
+                            capability["flag"].as_str() == Some("require_resolved")
+                                && capability["status"].as_str() == Some("requires_runtime")
+                        })
+            }));
 
         let prompts = server
             .handle_jsonrpc(&json!({"jsonrpc": "2.0", "id": 3, "method": "prompts/list"}))
@@ -13418,12 +15089,18 @@ mod tests {
             }),
         ));
         assert_eq!(text["status"].as_str(), Some("ok"));
+        assert_eq!(text["capability_metadata"]["status"].as_str(), Some("ok"));
+        assert_eq!(text["graph_proof"].as_bool(), Some(false));
         assert!(!text["hits"].as_array().expect("hits").is_empty());
         assert!(text["hits"]
             .as_array()
             .expect("hits")
             .iter()
             .any(|hit| hit["match"].as_str() == Some("source_scan")));
+        assert_eq!(
+            text["hits"][0]["language_capability"]["proof_strength"].as_str(),
+            Some("text_evidence_non_graph")
+        );
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -13485,6 +15162,8 @@ mod tests {
         assert!(symbol["hits"][0]["entity"]["resource_links"]["source_span"]
             .as_str()
             .is_some_and(|uri| uri.starts_with("codegraph://source-span/")));
+        assert_eq!(symbol["capability_metadata"]["status"].as_str(), Some("ok"));
+        assert!(symbol["hits"][0]["entity"]["language_capability"].is_object());
 
         fs::remove_dir_all(repo).expect("cleanup");
     }
@@ -13955,6 +15634,27 @@ mod tests {
         assert_eq!(
             compact["read_path_metrics"]["limits_apply_before_hydration"].as_bool(),
             Some(true)
+        );
+        let language_capability_context = &compact["language_capability_context"];
+        let non_ts_packet_overclaim = language_capability_context["local_flow_packet_boundary"]
+            ["non_typescript_packet_overclaim_count"]
+            .as_u64()
+            .or_else(|| {
+                language_capability_context["non_typescript_packet_overclaim_count"].as_u64()
+            });
+        assert_eq!(non_ts_packet_overclaim, Some(0));
+        assert!(
+            language_capability_context["proof_boundary"]
+                ["capability_metadata_does_not_create_graph_proof"]
+                .as_bool()
+                == Some(true)
+                || language_capability_context["compact_output_contract"]
+                    ["capability_metadata_does_not_create_graph_proof"]
+                    .as_bool()
+                    == Some(true)
+                || language_capability_context["capability_metadata_does_not_create_graph_proof"]
+                    .as_bool()
+                    == Some(true)
         );
 
         let encoded = serde_json::to_vec(&compact).expect("compact json");

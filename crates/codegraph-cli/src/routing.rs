@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use codegraph_core::ContextPacket;
+use codegraph_core::{mvp4_3_local_micro_flow_packet_active_languages, ContextPacket};
 use serde_json::{json, Value};
 
 use crate::*;
@@ -83,6 +83,7 @@ pub(crate) fn context_pack_routing_packet_json(
     candidate_set: &ContextAgentCandidateSet,
     paths: &[Value],
     fallback_evidence: &[Value],
+    language_capability_fallback_evidence: &[Value],
     snippets: &[Value],
     lifecycle_claimable: bool,
     proof_status: &str,
@@ -101,6 +102,16 @@ pub(crate) fn context_pack_routing_packet_json(
         fallback_evidence,
         snippets,
     );
+    let mut language_capability_evidence = ranked_evidence.clone();
+    let mut language_capability_evidence_ids = language_capability_evidence
+        .iter()
+        .map(routing_evidence_id)
+        .collect::<BTreeSet<_>>();
+    for item in language_capability_fallback_evidence {
+        if language_capability_evidence_ids.insert(routing_evidence_id(item)) {
+            language_capability_evidence.push(item.clone());
+        }
+    }
     let (critical_files, omitted_critical_files) =
         routing_critical_files(&ranked_evidence, budgets.critical_files_budget);
     let (critical_symbols, omitted_critical_symbols) =
@@ -126,7 +137,7 @@ pub(crate) fn context_pack_routing_packet_json(
         );
     let (fallback_snippets, omitted_fallback_snippets) =
         routing_fallback_snippets(snippets, &text_evidence, budgets.fallback_snippets_budget);
-    let (follow_up_queries, omitted_follow_up_queries) = routing_follow_up_queries(
+    let (mut follow_up_queries, omitted_follow_up_queries) = routing_follow_up_queries(
         planning_packet,
         &retrieval_plan,
         budgets.follow_up_queries_budget,
@@ -172,31 +183,13 @@ pub(crate) fn context_pack_routing_packet_json(
         }
     }
     risks.truncate(budgets.risks_budget);
-    let unknowns = routing_unknowns(
+    let mut unknowns = routing_unknowns(
         task_kind,
         graph_proof,
         evidence_status,
         &artifact_inspection_requirements,
         &db_inspection_requirements,
     );
-    let validation_steps = routing_validation_steps(
-        task_kind,
-        &critical_files,
-        &ranked_evidence,
-        &artifact_inspection_requirements,
-        &formulas_or_accounting_notes,
-        budgets.validation_steps_budget,
-    );
-    let edit_plan = routing_edit_plan(
-        task_kind,
-        &critical_files,
-        &ranked_evidence,
-        &artifact_inspection_requirements,
-        &formulas_or_accounting_notes,
-        budgets.edit_plan_budget,
-    );
-    let expansion_handles =
-        routing_expansion_handles(&ranked_evidence, budgets.expansion_handles_budget);
     let all_micro_flow_handles = packet
         .metadata
         .get("micro_flow_handles")
@@ -216,6 +209,39 @@ pub(crate) fn context_pack_routing_packet_json(
         .get("micro_flow_packet_summary")
         .cloned()
         .unwrap_or_else(|| context_pack_micro_flow_handle_summary_json(&[]));
+    let language_capability_plan = routing_language_capability_plan(
+        task_kind,
+        &language_capability_evidence,
+        &micro_flow_packet_summary,
+        graph_proof,
+    );
+    unknowns.extend(routing_language_boundary_unknowns(
+        &language_capability_plan,
+    ));
+    routing_annotate_follow_up_queries(&mut follow_up_queries, &language_capability_plan);
+    let mut validation_steps = routing_validation_steps(
+        task_kind,
+        &critical_files,
+        &ranked_evidence,
+        &artifact_inspection_requirements,
+        &formulas_or_accounting_notes,
+        budgets.validation_steps_budget,
+    );
+    routing_annotate_validation_steps(&mut validation_steps, &language_capability_plan);
+    let language_validation_steps = routing_language_validation_steps(
+        &language_capability_plan,
+        budgets.validation_steps_budget,
+    );
+    let edit_plan = routing_edit_plan(
+        task_kind,
+        &critical_files,
+        &ranked_evidence,
+        &artifact_inspection_requirements,
+        &formulas_or_accounting_notes,
+        budgets.edit_plan_budget,
+    );
+    let expansion_handles =
+        routing_expansion_handles(&ranked_evidence, budgets.expansion_handles_budget);
     let implementation_trace_handles = matches!(
         task_kind,
         "implementation_trace"
@@ -231,6 +257,7 @@ pub(crate) fn context_pack_routing_packet_json(
         task_kind,
         &micro_flow_handles,
         &micro_flow_packet_summary,
+        &language_capability_plan,
         graph_proof,
     );
     let retrieval_plan_summary =
@@ -327,6 +354,7 @@ pub(crate) fn context_pack_routing_packet_json(
         "micro_flow_packet_summary": micro_flow_packet_summary,
         "implementation_trace_micro_flow_handles": implementation_trace_handles,
         "agent_investigation_layer": agent_investigation_layer,
+        "language_capability_plan": language_capability_plan,
         "micro_flow_handle_policy": {
             "packet_handles_do_not_create_proof": true,
             "compact_default_full_packet_body_inline": false,
@@ -337,6 +365,8 @@ pub(crate) fn context_pack_routing_packet_json(
         "unknowns": unknowns,
         "risks": risks,
         "validation_steps": validation_steps,
+        "language_validation_steps": language_validation_steps,
+        "validation_steps_language_aware": true,
         "follow_up_queries": follow_up_queries,
         "expansion_command_available": false,
         "expansion_handles": expansion_handles,
@@ -476,6 +506,9 @@ pub(crate) fn routing_evidence_from_candidate(
     });
     if let Some(object) = evidence.as_object_mut() {
         if let Some(candidate) = object.get("candidate").cloned() {
+            if let Some(capability) = candidate.get("language_capability").cloned() {
+                object.insert("language_capability".to_string(), capability);
+            }
             copy_context_candidate_degradation_fields(&candidate, object);
         }
     }
@@ -515,6 +548,7 @@ pub(crate) fn routing_evidence_from_proof_path(
         },
         "matched_signal": path.get("classification_reason").and_then(Value::as_str).unwrap_or("verified graph path"),
         "reason": path.get("classification_reason").cloned().unwrap_or_else(|| json!("verified graph path")),
+        "language_capability": path.get("language_capability").cloned().unwrap_or(Value::Null),
         "source_navigation_is_graph_proof": false,
         "path": path,
     }))
@@ -567,6 +601,7 @@ pub(crate) fn routing_evidence_from_fallback(
         },
         "matched_signal": evidence.get("classification_reason").and_then(Value::as_str).unwrap_or("source text fallback"),
         "reason": evidence.get("classification_reason").cloned().unwrap_or_else(|| json!("source text fallback")),
+        "language_capability": evidence.get("language_capability").cloned().unwrap_or(Value::Null),
         "source_navigation_is_graph_proof": false,
         "fallback": evidence,
     });
@@ -606,6 +641,7 @@ pub(crate) fn routing_evidence_from_snippet(
         },
         "matched_signal": snippet.get("reason").and_then(Value::as_str).unwrap_or("fallback snippet"),
         "reason": snippet.get("reason").cloned().unwrap_or_else(|| json!("fallback snippet")),
+        "language_capability": snippet.get("language_capability").cloned().unwrap_or(Value::Null),
         "source_navigation_is_graph_proof": false,
         "snippet": snippet,
     });
@@ -613,6 +649,596 @@ pub(crate) fn routing_evidence_from_snippet(
         copy_context_candidate_degradation_fields(snippet, object);
     }
     Some(value)
+}
+
+pub(crate) fn routing_language_capability_for_item(item: &Value, evidence_kind: &str) -> Value {
+    if let Some(capability) = item
+        .get("language_capability")
+        .filter(|capability| capability.is_object())
+    {
+        return capability.clone();
+    }
+    let file = item.get("file").and_then(Value::as_str);
+    let graph_proof = item
+        .get("graph_proof")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let proof_status = item
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or(if graph_proof {
+            "proof_path_found"
+        } else {
+            "not_graph_proof"
+        });
+    let source_role = item
+        .get("evidence_role")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("source_role").and_then(Value::as_str))
+        .unwrap_or(if evidence_kind == "text_evidence" {
+            "text_evidence"
+        } else {
+            "unknown"
+        });
+    let exactness = if graph_proof {
+        "exact"
+    } else if evidence_kind == "text_evidence" {
+        "textual_exact_match"
+    } else {
+        "source_navigation"
+    };
+    context_pack_source_language_capability_json(
+        file,
+        evidence_kind,
+        proof_status,
+        graph_proof,
+        exactness,
+        source_role,
+    )
+}
+
+pub(crate) fn routing_compact_language_capability_for_item(
+    item: &Value,
+    evidence_kind: &str,
+) -> Value {
+    let capability = routing_language_capability_for_item(item, evidence_kind);
+    json!({
+        "language": capability.get("language").cloned().unwrap_or_else(|| json!("unknown")),
+        "frontend": capability.get("frontend").cloned().unwrap_or_else(|| json!("unknown")),
+        "source_role": capability.get("source_role").cloned().unwrap_or_else(|| json!("unknown")),
+        "capability_status": capability.get("capability_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "exactness": capability.get("exactness").cloned().unwrap_or_else(|| json!("unknown")),
+        "resolver_status": capability.get("resolver_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_strength": capability.get("proof_strength").cloned().unwrap_or_else(|| json!("unknown")),
+        "not_graph_proof": capability.get("not_graph_proof").cloned().unwrap_or_else(|| json!(true)),
+    })
+}
+
+pub(crate) fn routing_language_capability_plan(
+    task_kind: &str,
+    evidence: &[Value],
+    micro_flow_packet_summary: &Value,
+    graph_proof: bool,
+) -> Value {
+    let mut languages = BTreeMap::<String, usize>::new();
+    let mut frontends = BTreeSet::<String>::new();
+    let mut source_roles = BTreeMap::<String, usize>::new();
+    let mut capability_status_values = BTreeSet::<String>::new();
+    let mut exactness_values = BTreeSet::<String>::new();
+    let mut resolver_status_values = BTreeSet::<String>::new();
+    let mut proof_strength_values = BTreeSet::<String>::new();
+    let mut evidence_rows = Vec::new();
+    let mut exact_or_parser_rows = 0usize;
+    let mut unsupported_or_unknown_rows = 0usize;
+    let mut resolver_claim_rows = 0usize;
+    let mut resolver_claims_missing_provenance = 0usize;
+
+    for item in evidence {
+        let capability = routing_language_capability_for_item(item, "source_navigation_evidence");
+        let language = routing_capability_string(&capability, "language", "unknown");
+        let frontend = routing_capability_string(&capability, "frontend", language.as_str());
+        let source_role = routing_capability_string(&capability, "source_role", "unknown");
+        let status = routing_capability_string(&capability, "capability_status", "unknown");
+        let exactness = routing_capability_string(&capability, "exactness", "unknown");
+        let resolver_status = routing_capability_string(&capability, "resolver_status", "unknown");
+        let proof_strength = routing_capability_string(&capability, "proof_strength", "unknown");
+        *languages.entry(language.clone()).or_insert(0) += 1;
+        frontends.insert(frontend.clone());
+        *source_roles.entry(source_role.clone()).or_insert(0) += 1;
+        capability_status_values.insert(status.clone());
+        exactness_values.insert(exactness.clone());
+        resolver_status_values.insert(resolver_status.clone());
+        proof_strength_values.insert(proof_strength.clone());
+        if matches!(
+            exactness.as_str(),
+            "exact" | "parser_verified" | "textual_exact_match" | "source_navigation"
+        ) {
+            exact_or_parser_rows += 1;
+        }
+        if routing_status_is_unknown_or_unsupported(&status)
+            || capability.get("unknown_boundary_reason").is_some()
+            || capability.get("unsupported_reason").is_some()
+        {
+            unsupported_or_unknown_rows += 1;
+        }
+        if matches!(
+            exactness.as_str(),
+            "compiler_verified" | "lsp_verified" | "resolver_verified"
+        ) || routing_resolver_status_claims_exactness(&resolver_status)
+        {
+            resolver_claim_rows += 1;
+            if capability
+                .get("provenance_ref")
+                .and_then(Value::as_str)
+                .is_none()
+            {
+                resolver_claims_missing_provenance += 1;
+            }
+        }
+        if evidence_rows.len() < 8 {
+            evidence_rows.push(json!({
+                "evidence_id": routing_evidence_id(item),
+                "file": item.get("file").cloned().unwrap_or(Value::Null),
+                "language": language,
+                "frontend": frontend,
+                "source_role": source_role,
+                "capability_status": status,
+                "exactness": exactness,
+                "resolver_status": resolver_status,
+                "proof_strength": proof_strength,
+                "graph_proof": item.get("graph_proof").and_then(Value::as_bool).unwrap_or(false),
+                "not_graph_proof": !item.get("graph_proof").and_then(Value::as_bool).unwrap_or(false),
+            }));
+        }
+    }
+
+    let language_names = languages.keys().cloned().collect::<Vec<_>>();
+    let active_packet_languages = mvp4_3_local_micro_flow_packet_active_languages();
+    let non_typescript_packet_languages = language_names
+        .iter()
+        .filter(|language| {
+            language.as_str() != "unknown"
+                && !active_packet_languages
+                    .iter()
+                    .any(|active| active.eq_ignore_ascii_case(language))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let unknown_dynamic_risks = routing_language_dynamic_risks(task_kind, evidence);
+    let unsupported_relations = routing_language_unsupported_relations(
+        &non_typescript_packet_languages,
+        &unknown_dynamic_risks,
+    );
+
+    json!({
+        "status": if evidence.is_empty() { "no_language_scoped_evidence" } else { "language_capability_aware" },
+        "task_kind": task_kind,
+        "usable_for": [
+            "plan_change",
+            "explain_behavior",
+            "verify_claim",
+            "trace_boundary",
+            "validate_change"
+        ],
+        "languages": language_names,
+        "frontends": frontends.into_iter().collect::<Vec<_>>(),
+        "evidence_rows": evidence_rows,
+        "evidence_language_counts": languages,
+        "source_role_counts": source_roles,
+        "capability_status_values": capability_status_values.into_iter().collect::<Vec<_>>(),
+        "exactness_values": exactness_values.into_iter().collect::<Vec<_>>(),
+        "resolver_status_values": resolver_status_values.into_iter().collect::<Vec<_>>(),
+        "proof_strength_values": proof_strength_values.into_iter().collect::<Vec<_>>(),
+        "exact_partial_unsupported_status": {
+            "exact_or_parser_source_rows": exact_or_parser_rows,
+            "unsupported_or_unknown_rows": unsupported_or_unknown_rows,
+            "graph_proof_available": graph_proof,
+            "parser_or_source_facts_are_not_caller_callee_proof": true
+        },
+        "resolver_compiler_availability": {
+            "resolver_claim_rows": resolver_claim_rows,
+            "resolver_claims_missing_provenance": resolver_claims_missing_provenance,
+            "semantic_exactness_requires_recorded_provenance": true,
+            "compiler_or_lsp_unavailable_is_unknown_not_blocker": true
+        },
+        "unknown_dynamic_risks": unknown_dynamic_risks,
+        "unsupported_relations": unsupported_relations,
+        "local_flow_packet_boundary": {
+            "active_languages": active_packet_languages,
+            "micro_flow_packet_summary": micro_flow_packet_summary,
+            "non_typescript_packet_languages_seen": non_typescript_packet_languages,
+            "non_typescript_packet_support": "not_implemented_without_explicit_exact_gate",
+            "non_typescript_packet_overclaim_count": 0,
+            "packet_handles_do_not_create_proof": true,
+            "flow_proof_not_emitted_for_unsupported_languages": true,
+            "context_entry_command_activated": false
+        },
+        "proof_boundary": {
+            "capability_metadata_does_not_create_graph_proof": true,
+            "candidate_or_text_evidence_not_graph_proof": true,
+            "unsupported_relations_are_not_blockers": true,
+            "route_bridge_context_entry_activated": false,
+            "mutation_proof_activated": false
+        }
+    })
+}
+
+fn routing_capability_string(capability: &Value, key: &str, default: &str) -> String {
+    capability
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn routing_status_is_unknown_or_unsupported(status: &str) -> bool {
+    matches!(
+        status,
+        "unknown"
+            | "unsupported"
+            | "not_implemented"
+            | "runtime_required"
+            | "compiler_required"
+            | "lsp_required"
+            | "macro_required"
+            | "preprocessor_required"
+            | "requires_runtime"
+            | "requires_compiler"
+            | "requires_lsp"
+            | "requires_macro_expansion"
+            | "requires_preprocessor"
+    )
+}
+
+fn routing_resolver_status_claims_exactness(status: &str) -> bool {
+    matches!(
+        status,
+        "compiler_verified"
+            | "lsp_verified"
+            | "resolver_verified"
+            | "resolved"
+            | "resolved_with_provenance"
+            | "implemented_with_provenance"
+            | "available_with_provenance"
+    )
+}
+
+fn routing_language_dynamic_risks(task_kind: &str, evidence: &[Value]) -> Vec<Value> {
+    let mut risks = BTreeMap::<String, Value>::new();
+    for item in evidence {
+        let capability = routing_language_capability_for_item(item, "source_navigation_evidence");
+        let language = routing_capability_string(&capability, "language", "unknown");
+        let source_role = routing_capability_string(&capability, "source_role", "unknown");
+        let text = routing_value_text(item).to_ascii_lowercase();
+        let file = item
+            .get("file")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let evidence_id = routing_evidence_id(item);
+        let mut add_risk = |risk_id: &str, reason: &str, boundary: &str| {
+            risks.entry(risk_id.to_string()).or_insert_with(|| {
+                json!({
+                    "risk_id": risk_id,
+                    "language": language.clone(),
+                    "source_role": source_role.clone(),
+                    "file": file,
+                    "evidence_ids": [evidence_id.clone()],
+                    "reason": reason,
+                    "boundary": boundary,
+                    "proof_status": "unknown",
+                    "blocking": false,
+                    "not_graph_proof": true
+                })
+            });
+        };
+        match language.as_str() {
+            "typescript" | "tsx" => {
+                if text.contains("decorator")
+                    || text.contains("dynamic import")
+                    || text.contains("computed")
+                    || text.contains("react")
+                    || text.contains("jsx")
+                    || text.contains("props")
+                {
+                    add_risk(
+                        "ts_tsx_framework_or_dynamic_runtime_unknown",
+                        "decorator, JSX/component, computed, or dynamic TypeScript behavior is runtime/framework-sensitive unless resolver evidence proves it",
+                        "framework_heuristic_or_runtime_unknown",
+                    );
+                }
+            }
+            "javascript" | "jsx" => {
+                if text.contains("dynamic import")
+                    || text.contains("computed")
+                    || text.contains("prototype")
+                    || text.contains("monkeypatch")
+                    || text.contains("react")
+                    || text.contains("event handler")
+                {
+                    add_risk(
+                        "js_jsx_dynamic_framework_unknown",
+                        "JavaScript dynamic import, computed property, prototype mutation, or framework callback behavior is not graph proof",
+                        "runtime_unknown_or_framework_heuristic",
+                    );
+                }
+            }
+            "python" => {
+                if text.contains("importlib")
+                    || text.contains("__import__")
+                    || text.contains("getattr")
+                    || text.contains("setattr")
+                    || text.contains("monkeypatch")
+                {
+                    add_risk(
+                        "python_dynamic_runtime_unknown",
+                        "Python importlib/getattr/setattr/monkeypatch behavior is runtime-dynamic unless separately modeled",
+                        "runtime_unknown",
+                    );
+                }
+            }
+            "go" => {
+                if text.contains("interface")
+                    || text.contains("build tag")
+                    || text.contains("go:build")
+                    || text.contains("goroutine")
+                    || text.contains("channel")
+                {
+                    add_risk(
+                        "go_interface_build_tag_unknown",
+                        "Go interface dispatch, build tags, goroutine, and channel behavior require compiler/runtime-aware handling before exact targets are claimable",
+                        "compiler_required_or_runtime_unknown",
+                    );
+                }
+            }
+            "rust" => {
+                if text.contains("macro")
+                    || text.contains("cfg")
+                    || text.contains("feature")
+                    || text.contains("unsafe")
+                    || text.contains("trait")
+                {
+                    add_risk(
+                        "rust_macro_cfg_trait_unknown",
+                        "Rust macro expansion, cfg/feature gating, unsafe, and trait target behavior are unknown without exact compiler/resolver evidence",
+                        "macro_required_or_compiler_required",
+                    );
+                }
+            }
+            "java" => {
+                if text.contains("reflection")
+                    || text.contains("class.forname")
+                    || text.contains("getmethod")
+                    || text.contains("annotation")
+                    || text.contains("di")
+                {
+                    add_risk(
+                        "java_reflection_annotation_runtime_unknown",
+                        "Java reflection, annotation processors, and DI are runtime/compiler-generated boundaries unless explicitly modeled",
+                        "runtime_unknown_or_compiler_required",
+                    );
+                }
+            }
+            "c" => {
+                if text.contains("#define")
+                    || text.contains("#if")
+                    || text.contains("macro")
+                    || text.contains("function pointer")
+                    || text.contains("preprocessor")
+                {
+                    add_risk(
+                        "c_macro_preprocessor_unknown",
+                        "C macros, inactive branches, and function pointers are preprocessor/runtime target boundaries",
+                        "preprocessor_required_or_macro_required",
+                    );
+                }
+            }
+            "cpp" => {
+                if text.contains("template")
+                    || text.contains("macro")
+                    || text.contains("operator")
+                    || text.contains("virtual")
+                    || text.contains("function pointer")
+                {
+                    add_risk(
+                        "cpp_template_macro_dispatch_unknown",
+                        "C++ templates, macros, overloads/ADL, virtual dispatch, and function pointers require compiler proof before exact target claims",
+                        "compiler_required_or_macro_required",
+                    );
+                }
+            }
+            "ruby" => {
+                if text.contains("rails")
+                    || text.contains("route")
+                    || text.contains("send")
+                    || text.contains("method_missing")
+                    || text.contains("monkeypatch")
+                    || text.contains("open class")
+                {
+                    add_risk(
+                        "ruby_runtime_framework_unknown",
+                        "Ruby send/method_missing/open classes and Rails conventions are runtime/framework boundaries unless exact source facts prove them",
+                        "runtime_unknown_or_framework_heuristic",
+                    );
+                }
+            }
+            "php" => {
+                if text.contains("dynamic include")
+                    || text.contains("include")
+                    || text.contains("require")
+                    || text.contains("magic")
+                    || text.contains("composer")
+                    || text.contains("autoload")
+                {
+                    add_risk(
+                        "php_dynamic_include_magic_unknown",
+                        "PHP dynamic includes, magic methods, globals, and Composer/framework autoload behavior require resolver/runtime evidence before exact target claims",
+                        "runtime_unknown_or_resolver_required",
+                    );
+                }
+            }
+            _ => {}
+        }
+        if matches!(
+            task_kind,
+            "dataflow_trace" | "security_review" | "implementation_trace"
+        ) && text.contains("dynamic")
+        {
+            add_risk(
+                "task_dynamic_boundary_unknown",
+                "The task asks for behavior that may cross dynamic/runtime boundaries; keep it unknown until exact evidence exists",
+                "runtime_unknown",
+            );
+        }
+    }
+    risks.into_values().take(8).collect()
+}
+
+fn routing_language_unsupported_relations(
+    non_typescript_packet_languages: &[String],
+    dynamic_risks: &[Value],
+) -> Vec<Value> {
+    let mut relations = Vec::new();
+    if !non_typescript_packet_languages.is_empty() {
+        relations.push(json!({
+            "relation": "local_flow_packets",
+            "status": "not_implemented_without_explicit_exact_gate",
+            "languages": non_typescript_packet_languages,
+            "proof_boundary": "Only verified TypeScript .ts production local-flow packet handles may carry flow_proof; other languages do not emit packet proof.",
+            "blocking": false
+        }));
+    }
+    if !dynamic_risks.is_empty() {
+        relations.push(json!({
+            "relation": "dynamic_runtime_macro_framework_targets",
+            "status": "unknown_or_requires_exact_resolver",
+            "proof_boundary": "Dynamic, runtime, macro, preprocessor, framework, and compiler-required targets stay unknown/non-proof unless exact evidence is recorded.",
+            "blocking": false
+        }));
+    }
+    relations.push(json!({
+        "relation": "ROUTES_TO_MOUNTS_ROUTER_BRIDGES_TO_context_entry",
+        "status": "inactive_in_this_lane",
+        "proof_boundary": "Route, bridge, and context-entry activation is not part of this pre-MVP4.4 lane.",
+        "blocking": false
+    }));
+    relations
+}
+
+fn routing_language_boundary_unknowns(language_plan: &Value) -> Vec<Value> {
+    let mut unknowns = Vec::new();
+    if language_plan
+        .get("unknown_dynamic_risks")
+        .and_then(Value::as_array)
+        .is_some_and(|risks| !risks.is_empty())
+    {
+        unknowns.push(json!({
+            "claim": "dynamic/runtime/macro/framework target proof",
+            "reason": "language_capability_boundary_unknown",
+            "sentence": "Language capability metadata found dynamic/runtime/macro/framework boundaries; treat those targets as unknown unless exact graph/resolver evidence later proves them.",
+        }));
+    }
+    if language_plan
+        .pointer("/local_flow_packet_boundary/non_typescript_packet_languages_seen")
+        .and_then(Value::as_array)
+        .is_some_and(|languages| !languages.is_empty())
+    {
+        unknowns.push(json!({
+            "claim": "non-TypeScript local-flow packet proof",
+            "reason": "unsupported_language_packet_boundary",
+            "sentence": "Non-TypeScript evidence can orient the plan, but it does not carry local-flow packet proof in this lane.",
+        }));
+    }
+    unknowns
+}
+
+fn routing_annotate_follow_up_queries(queries: &mut [Value], language_plan: &Value) {
+    let language_scope = language_plan
+        .get("languages")
+        .cloned()
+        .unwrap_or_else(|| json!(["unknown"]));
+    for query in queries {
+        let Some(object) = query.as_object_mut() else {
+            continue;
+        };
+        object.insert("shell_ready".to_string(), json!(false));
+        object.insert("language_scope".to_string(), language_scope.clone());
+        object.insert(
+            "capability_boundary".to_string(),
+            json!("follow-up query results remain candidate/source evidence until graph/source/resolver verification proves the relation"),
+        );
+        object.insert(
+            "unsupported_relations_are_not_blockers".to_string(),
+            json!(true),
+        );
+    }
+}
+
+fn routing_annotate_validation_steps(steps: &mut [Value], language_plan: &Value) {
+    let language_scope = language_plan
+        .get("languages")
+        .cloned()
+        .unwrap_or_else(|| json!(["unknown"]));
+    for step in steps {
+        let Some(object) = step.as_object_mut() else {
+            continue;
+        };
+        object.insert("language_aware".to_string(), json!(true));
+        object.insert("language_scope".to_string(), language_scope.clone());
+        object.insert(
+            "capability_boundary".to_string(),
+            json!("Block only on exact current source-spanned graph/resolver evidence; warn or keep unknown for unsupported/dynamic/compiler-required facts."),
+        );
+    }
+}
+
+fn routing_language_validation_steps(language_plan: &Value, limit: usize) -> Vec<Value> {
+    let mut steps = Vec::new();
+    if let Some(risks) = language_plan
+        .get("unknown_dynamic_risks")
+        .and_then(Value::as_array)
+    {
+        for risk in risks.iter().take(limit) {
+            steps.push(json!({
+                "description": format!(
+                    "Inspect {} boundary in {} before claiming exact behavior.",
+                    risk.get("boundary").and_then(Value::as_str).unwrap_or("language capability"),
+                    risk.get("language").and_then(Value::as_str).unwrap_or("unknown language")
+                ),
+                "evidence_ids": risk.get("evidence_ids").cloned().unwrap_or_else(|| json!([])),
+                "language": risk.get("language").cloned().unwrap_or_else(|| json!("unknown")),
+                "source_role": risk.get("source_role").cloned().unwrap_or_else(|| json!("unknown")),
+                "risk": risk.get("reason").cloned().unwrap_or_else(|| json!("language capability boundary")),
+                "recommendation_kind": "language_capability_boundary_check",
+                "blocking": false,
+            }));
+        }
+    }
+    if steps.len() < limit
+        && language_plan
+            .pointer("/local_flow_packet_boundary/non_typescript_packet_languages_seen")
+            .and_then(Value::as_array)
+            .is_some_and(|languages| !languages.is_empty())
+    {
+        steps.push(json!({
+            "description": "Do not request or rely on local-flow packet proof for non-TypeScript evidence in this lane.",
+            "language": "non_typescript",
+            "risk": "packet support is unsupported/not_implemented without a future exact gate",
+            "recommendation_kind": "packet_boundary_check",
+            "blocking": false,
+        }));
+    }
+    if steps.is_empty() {
+        steps.push(json!({
+            "description": "Use source spans and exactness labels before promoting language facts to proof.",
+            "language": "all",
+            "risk": "capability metadata is planning context, not graph proof by itself",
+            "recommendation_kind": "language_capability_boundary_check",
+            "blocking": false,
+        }));
+    }
+    steps.truncate(limit);
+    steps
 }
 
 pub(crate) fn routing_candidate_file(candidate: &Value) -> Option<String> {
@@ -956,6 +1582,9 @@ pub(crate) fn routing_evidence_dedup_key(item: &Value) -> String {
 pub(crate) fn routing_evidence_id(item: &Value) -> String {
     item.get("evidence_id")
         .and_then(Value::as_str)
+        .or_else(|| item.get("id").and_then(Value::as_str))
+        .or_else(|| item.get("candidate_id").and_then(Value::as_str))
+        .or_else(|| item.get("path_id").and_then(Value::as_str))
         .unwrap_or("unknown")
         .to_string()
 }
@@ -1131,6 +1760,7 @@ pub(crate) fn routing_critical_files(evidence: &[Value], limit: usize) -> (Vec<V
         let mut file_entry = json!({
             "file": file,
             "role": item.get("role").cloned().unwrap_or_else(|| json!("unknown")),
+            "language_capability": routing_compact_language_capability_for_item(item, "source_navigation_evidence"),
             "evidence_ids": [routing_evidence_id(item)],
             "why": format!(
                 "selected as {} for this task",
@@ -1167,9 +1797,26 @@ pub(crate) fn routing_critical_symbols(
                 .map(routing_evidence_id)
                 .take(3)
                 .collect::<Vec<_>>();
+            let language_capability = evidence
+                .iter()
+                .find(|item| routing_value_text(item).contains(symbol))
+                .map(|item| {
+                    routing_compact_language_capability_for_item(item, "source_navigation_evidence")
+                })
+                .unwrap_or_else(|| {
+                    context_pack_source_language_capability_json(
+                        None,
+                        "symbol_candidate",
+                        "candidate_or_source_navigation",
+                        false,
+                        "unknown",
+                        "unknown",
+                    )
+                });
             symbols.push(json!({
                 "symbol": symbol,
                 "evidence_ids": evidence_ids,
+                "language_capability": language_capability,
                 "proof_status": "candidate_or_source_navigation",
                 "graph_proof": false,
             }));
@@ -1294,6 +1941,7 @@ pub(crate) fn routing_compact_evidence_json(
         },
         "matched_signal": item.get("matched_signal").cloned().unwrap_or_else(|| json!("source signal")),
         "reason": item.get("reason").cloned().unwrap_or_else(|| json!("source evidence")),
+        "language_capability": routing_compact_language_capability_for_item(item, evidence_type),
     });
     if let Some(object) = value.as_object_mut() {
         copy_context_candidate_degradation_fields(item, object);
@@ -1939,6 +2587,7 @@ pub(crate) fn routing_agent_investigation_layer_json(
     task_kind: &str,
     micro_flow_handles: &[Value],
     micro_flow_packet_summary: &Value,
+    language_capability_plan: &Value,
     graph_proof: bool,
 ) -> Value {
     let handle_refs = micro_flow_handles
@@ -1964,6 +2613,17 @@ pub(crate) fn routing_agent_investigation_layer_json(
         "micro_flow_handles": handle_refs,
         "micro_flow_handle_count": micro_flow_handles.len(),
         "micro_flow_packet_summary": micro_flow_packet_summary,
+        "language_capability_plan": {
+            "status": language_capability_plan.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "languages": language_capability_plan.get("languages").cloned().unwrap_or_else(|| json!([])),
+            "source_role_counts": language_capability_plan.get("source_role_counts").cloned().unwrap_or_else(|| json!({})),
+            "capability_status_values": language_capability_plan.get("capability_status_values").cloned().unwrap_or_else(|| json!([])),
+            "resolver_compiler_availability": language_capability_plan.get("resolver_compiler_availability").cloned().unwrap_or(Value::Null),
+            "unknown_dynamic_risks": language_capability_plan.get("unknown_dynamic_risks").cloned().unwrap_or_else(|| json!([])),
+            "unsupported_relations": language_capability_plan.get("unsupported_relations").cloned().unwrap_or_else(|| json!([])),
+            "local_flow_packet_boundary": language_capability_plan.get("local_flow_packet_boundary").cloned().unwrap_or(Value::Null),
+            "proof_boundary": language_capability_plan.get("proof_boundary").cloned().unwrap_or(Value::Null),
+        },
         "usable_for": [
             "trace_boundary",
             "explain_behavior",
@@ -1977,6 +2637,9 @@ pub(crate) fn routing_agent_investigation_layer_json(
             "graph_proof_available": graph_proof,
             "packet_proof_cannot_prove_runtime_or_external_behavior": true,
             "candidate_evidence_not_raised_to_proof": true,
+            "capability_metadata_does_not_create_graph_proof": true,
+            "unsupported_relations_are_not_blockers": true,
+            "non_typescript_packet_handles_are_not_proof": true,
         },
         "expansion_required_for_dict_v1_body": true,
         "ordered_steps_audit_only": true,

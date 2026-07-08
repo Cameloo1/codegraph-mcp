@@ -8,16 +8,17 @@ use std::{
 };
 
 use codegraph_core::{
-    build_local_micro_flow_packet_candidates_from_persisted_facts,
-    mvp4_3_local_micro_flow_packet_source_supported, mvp4_micro_edge_language_capability,
-    normalize_edge_classification, normalize_repo_relative_path, stable_edge_id,
-    stable_entity_id_for_kind, validate_local_micro_flow_agent_json_contract, DerivedClosureEdge,
-    Edge, EdgeClass, EdgeContext, Entity, EntityKind, Exactness, FileRecord,
+    build_local_micro_flow_packet_candidates_from_persisted_facts, classify_edge_evidence_role,
+    classify_entity_source_role, mvp4_3_local_micro_flow_packet_source_supported,
+    mvp4_micro_edge_language_capability, normalize_edge_classification,
+    normalize_repo_relative_path, stable_edge_id, stable_entity_id_for_kind,
+    validate_local_micro_flow_agent_json_contract, DerivedClosureEdge, Edge, EdgeClass,
+    EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord,
     LocalMicroFlowPacketCandidate, LocalMicroFlowPacketCandidateSet, LocalMicroFlowPacketStatus,
     LocalMicroFlowPersistedEdgeFact, LocalMicroFlowPersistedFactInput,
     LocalMicroFlowPersistedNodeFact, MicroEdgeKind, MicroEdgeSupportStatus, MicroExactness,
-    MicroNodeKind, MicroSourceRole, PathEvidence, ProofLadderLevel, RelationKind, RepoIndexState,
-    SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_ENCODING,
+    MicroNodeKind, MicroSourceRole, NormalizedCapabilityMetadataFact, PathEvidence,
+    ProofLadderLevel, RelationKind, RepoIndexState, SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_ENCODING,
     MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
     MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
 };
@@ -201,6 +202,39 @@ pub struct UnresolvedReferenceRecord {
     pub exactness: Exactness,
     pub extractor: String,
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityMetadataQueryOptions {
+    pub repo_relative_path: Option<String>,
+    pub capability_flag: Option<String>,
+    pub fact_kind: Option<String>,
+    pub limit: usize,
+}
+
+impl Default for CapabilityMetadataQueryOptions {
+    fn default() -> Self {
+        Self {
+            repo_relative_path: None,
+            capability_flag: None,
+            fact_kind: None,
+            limit: 256,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CapabilityMetadataSummary {
+    pub total_rows: u64,
+    pub rows_by_fact_kind: BTreeMap<String, u64>,
+    pub rows_by_capability_flag: BTreeMap<String, u64>,
+    pub rows_by_capability_status: BTreeMap<String, u64>,
+    pub rows_by_language: BTreeMap<String, u64>,
+    pub unknown_boundary_rows: u64,
+    pub resolver_metadata_rows: u64,
+    pub exact_or_derived_rows_missing_provenance: u64,
+    pub metadata_payload_bytes: u64,
+    pub full_source_body_storage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1657,6 +1691,27 @@ impl SqliteGraphStore {
             "DELETE FROM edge_debug_metadata WHERE edge_id = ?1",
             [edge_id],
         )?;
+        if !edge.metadata.is_empty() {
+            // The edges_compat view materializes flag-derived markers (e.g.
+            // `heuristic: true`) only when NO debug metadata row exists; a
+            // persisted row wins the COALESCE, so it must carry the same
+            // markers itself or readers lose the downgrade signal.
+            let mut metadata_for_storage = edge.metadata.clone();
+            if flags_bitset & EDGE_FLAG_HEURISTIC != 0 {
+                metadata_for_storage
+                    .entry("heuristic".to_string())
+                    .or_insert(serde_json::Value::Bool(true));
+            }
+            self.connection.execute(
+                "
+                INSERT INTO edge_debug_metadata (edge_id, metadata_json)
+                VALUES (?1, ?2)
+                ON CONFLICT(edge_id) DO UPDATE SET
+                    metadata_json = excluded.metadata_json
+                ",
+                params![edge_id, to_json(&metadata_for_storage)?],
+            )?;
+        }
         if storage == EdgeIdStorage::Compact {
             insert_edge_file_map_after_file_delete(
                 &self.connection,
@@ -2001,6 +2056,279 @@ impl SqliteGraphStore {
                 ))
             })?;
         collect_rows(rows)
+    }
+
+    pub fn query_capability_metadata(
+        &self,
+        options: &CapabilityMetadataQueryOptions,
+    ) -> StoreResult<Vec<NormalizedCapabilityMetadataFact>> {
+        let limit = options.limit;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let path_filter = options
+            .repo_relative_path
+            .as_deref()
+            .map(normalize_repo_relative_path);
+        let fact_kind_filter = options
+            .fact_kind
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase());
+        let capability_filter = options
+            .capability_flag
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase());
+        let scan_limit = limit.saturating_mul(4).max(limit);
+        let mut rows = Vec::new();
+        let mut language_by_path = BTreeMap::<String, Option<String>>::new();
+
+        if self.table_exists("files")? {
+            if matches_fact_kind(&fact_kind_filter, "file") {
+                let files = if let Some(path) = path_filter.as_deref() {
+                    self.get_file(path)?.into_iter().collect::<Vec<_>>()
+                } else {
+                    self.list_files(scan_limit)?
+                };
+                for file in &files {
+                    language_by_path.insert(
+                        normalize_repo_relative_path(&file.repo_relative_path),
+                        file.language.clone(),
+                    );
+                }
+                for file in files {
+                    push_capability_metadata_from_record(
+                        &mut rows,
+                        "file",
+                        &file.repo_relative_path,
+                        &file.repo_relative_path,
+                        file.language.clone(),
+                        metadata_string(&file.metadata, "parser_fact_bundle_frontend"),
+                        metadata_evidence_role(
+                            &file.metadata,
+                            "parser_fact_bundle_source_role",
+                            EvidenceRole::Unknown,
+                        ),
+                        &file.metadata,
+                    );
+                }
+            } else {
+                for file in self.list_files(scan_limit)? {
+                    language_by_path.insert(
+                        normalize_repo_relative_path(&file.repo_relative_path),
+                        file.language.clone(),
+                    );
+                }
+            }
+        }
+
+        if self.table_exists("entities")? && matches_fact_kind(&fact_kind_filter, "entity") {
+            let entities = if let Some(path) = path_filter.as_deref() {
+                self.list_entities_by_file(path)?
+            } else {
+                self.list_entities(scan_limit)?
+            };
+            for entity in entities {
+                let path = normalize_repo_relative_path(&entity.repo_relative_path);
+                let language = metadata_string(&entity.metadata, "parser_fact_language")
+                    .or_else(|| language_by_path.get(&path).cloned().flatten());
+                push_capability_metadata_from_record(
+                    &mut rows,
+                    "entity",
+                    &entity.id,
+                    &entity.repo_relative_path,
+                    language,
+                    metadata_string(&entity.metadata, "parser_fact_frontend"),
+                    classify_entity_source_role(&entity).role,
+                    &entity.metadata,
+                );
+            }
+        }
+
+        if self.table_exists("edges")? && matches_fact_kind(&fact_kind_filter, "edge") {
+            let edges = if let Some(path) = path_filter.as_deref() {
+                self.list_edges_by_file(path)?
+            } else {
+                self.list_edges(scan_limit)?
+            };
+            for edge in edges {
+                let path = normalize_repo_relative_path(&edge.source_span.repo_relative_path);
+                let language = metadata_string(&edge.metadata, "parser_fact_language")
+                    .or_else(|| language_by_path.get(&path).cloned().flatten());
+                push_capability_metadata_from_record(
+                    &mut rows,
+                    "edge",
+                    &edge.id,
+                    &edge.source_span.repo_relative_path,
+                    language,
+                    metadata_string(&edge.metadata, "parser_fact_frontend"),
+                    classify_edge_evidence_role(&edge).role,
+                    &edge.metadata,
+                );
+            }
+        }
+
+        if self.table_exists("unresolved_references")?
+            && matches_fact_kind(&fact_kind_filter, "unresolved_reference")
+        {
+            let paths = if let Some(path) = path_filter.as_deref() {
+                vec![path.to_string()]
+            } else {
+                language_by_path.keys().take(scan_limit).cloned().collect()
+            };
+            for path in paths {
+                let language = language_by_path.get(&path).cloned().flatten();
+                for record in self.list_unresolved_references_by_file(&path)? {
+                    let mut metadata = metadata_object_from_value(&record.metadata);
+                    metadata
+                        .entry("parser_fact_family".to_string())
+                        .or_insert_with(|| json!("unresolved_reference"));
+                    metadata
+                        .entry("parser_fact_exactness".to_string())
+                        .or_insert_with(|| json!(record.exactness.to_string()));
+                    let capability_flag = capability_flag_for_reference_class(&metadata);
+                    metadata
+                        .entry("parser_capability_flag".to_string())
+                        .or_insert_with(|| json!(capability_flag));
+                    metadata
+                        .entry("parser_capability_status".to_string())
+                        .or_insert_with(|| json!("unknown"));
+                    push_capability_metadata_from_record(
+                        &mut rows,
+                        "unresolved_reference",
+                        &record.reference_id,
+                        &record.source_span.repo_relative_path,
+                        language.clone(),
+                        metadata_string(&metadata, "parser_fact_frontend"),
+                        metadata_evidence_role(&metadata, "source_role", EvidenceRole::Unknown),
+                        &metadata,
+                    );
+                }
+            }
+        }
+
+        if self.table_exists("extraction_warnings")?
+            && matches_fact_kind(&fact_kind_filter, "extraction_warning")
+        {
+            let paths = if let Some(path) = path_filter.as_deref() {
+                vec![path.to_string()]
+            } else {
+                language_by_path.keys().take(scan_limit).cloned().collect()
+            };
+            for path in paths {
+                let language = language_by_path.get(&path).cloned().flatten();
+                for (warning, metadata_value) in self.list_extraction_warnings_by_file(&path)? {
+                    let mut metadata = metadata_object_from_value(&metadata_value);
+                    metadata
+                        .entry("parser_fact_family".to_string())
+                        .or_insert_with(|| json!("diagnostic_only"));
+                    metadata
+                        .entry("parser_capability_flag".to_string())
+                        .or_insert_with(|| json!("unsupported"));
+                    metadata
+                        .entry("parser_capability_status".to_string())
+                        .or_insert_with(|| json!("diagnostic_only"));
+                    metadata
+                        .entry("parser_unknown_boundary_reason".to_string())
+                        .or_insert_with(|| json!(warning));
+                    push_capability_metadata_from_record(
+                        &mut rows,
+                        "extraction_warning",
+                        &format!("{path}:{warning}"),
+                        &path,
+                        language.clone(),
+                        metadata_string(&metadata, "parser_fact_frontend"),
+                        metadata_evidence_role(&metadata, "source_role", EvidenceRole::Unknown),
+                        &metadata,
+                    );
+                }
+            }
+        }
+
+        rows.retain(|row| match capability_filter.as_deref() {
+            Some(filter) => row.capability_flag.eq_ignore_ascii_case(filter),
+            None => true,
+        });
+        rows.sort_by(|left, right| {
+            left.repo_relative_path
+                .cmp(&right.repo_relative_path)
+                .then_with(|| left.owner_fact_kind.cmp(&right.owner_fact_kind))
+                .then_with(|| left.owner_fact_id.cmp(&right.owner_fact_id))
+                .then_with(|| left.capability_flag.cmp(&right.capability_flag))
+        });
+        rows.truncate(limit);
+        Ok(rows)
+    }
+
+    pub fn query_unknown_boundary_metadata(
+        &self,
+        options: &CapabilityMetadataQueryOptions,
+    ) -> StoreResult<Vec<NormalizedCapabilityMetadataFact>> {
+        let mut expanded = options.clone();
+        expanded.capability_flag = None;
+        expanded.limit = options.limit.saturating_mul(4).max(options.limit);
+        let mut rows = self.query_capability_metadata(&expanded)?;
+        rows.retain(|row| capability_metadata_fact_is_unknown_boundary(row));
+        rows.truncate(options.limit);
+        Ok(rows)
+    }
+
+    pub fn capability_metadata_summary(
+        &self,
+        options: &CapabilityMetadataQueryOptions,
+    ) -> StoreResult<CapabilityMetadataSummary> {
+        let rows = self.query_capability_metadata(options)?;
+        let mut rows_by_fact_kind = BTreeMap::new();
+        let mut rows_by_capability_flag = BTreeMap::new();
+        let mut rows_by_capability_status = BTreeMap::new();
+        let mut rows_by_language = BTreeMap::new();
+        let mut unknown_boundary_rows = 0u64;
+        let mut resolver_metadata_rows = 0u64;
+        let mut exact_or_derived_rows_missing_provenance = 0u64;
+        let mut metadata_payload_bytes = 0u64;
+
+        for row in &rows {
+            increment_count(&mut rows_by_fact_kind, &row.owner_fact_kind);
+            increment_count(&mut rows_by_capability_flag, &row.capability_flag);
+            if let Some(status) = &row.capability_status {
+                increment_count(&mut rows_by_capability_status, status);
+            }
+            if let Some(language) = &row.language {
+                increment_count(&mut rows_by_language, language);
+            }
+            if capability_metadata_fact_is_unknown_boundary(row) {
+                unknown_boundary_rows += 1;
+            }
+            if row.resolver.is_some()
+                || row.resolver_version.is_some()
+                || row.resolver_status.is_some()
+                || row.resolver_provenance.is_some()
+            {
+                resolver_metadata_rows += 1;
+            }
+            if row
+                .fact_exactness
+                .as_deref()
+                .is_some_and(exactness_requires_provenance)
+                && row.resolver_provenance.is_none()
+                && row.project_config_source.is_none()
+            {
+                exact_or_derived_rows_missing_provenance += 1;
+            }
+            metadata_payload_bytes = metadata_payload_bytes.saturating_add(row.metadata_bytes);
+        }
+
+        Ok(CapabilityMetadataSummary {
+            total_rows: rows.len() as u64,
+            rows_by_fact_kind,
+            rows_by_capability_flag,
+            rows_by_capability_status,
+            rows_by_language,
+            unknown_boundary_rows,
+            resolver_metadata_rows,
+            exact_or_derived_rows_missing_provenance,
+            metadata_payload_bytes,
+            full_source_body_storage: false,
+        })
     }
 
     pub fn insert_source_span_after_file_delete(
@@ -10725,6 +11053,250 @@ fn collect_rows<T>(
     Ok(values)
 }
 
+fn matches_fact_kind(filter: &Option<String>, fact_kind: &str) -> bool {
+    match filter.as_deref() {
+        Some(value) => value == "all" || value == fact_kind,
+        None => true,
+    }
+}
+
+fn metadata_object_from_value(value: &Value) -> BTreeMap<String, Value> {
+    value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn metadata_string(metadata: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn metadata_string_vec(metadata: &BTreeMap<String, Value>, key: &str) -> Vec<String> {
+    match metadata.get(key) {
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToString::to_string)
+            .collect(),
+        Some(Value::String(value)) if !value.trim().is_empty() => vec![value.clone()],
+        _ => Vec::new(),
+    }
+}
+
+fn metadata_evidence_role(
+    metadata: &BTreeMap<String, Value>,
+    key: &str,
+    fallback: EvidenceRole,
+) -> EvidenceRole {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .map(EvidenceRole::from_source_role_label)
+        .unwrap_or(fallback)
+}
+
+fn metadata_bytes(metadata: &BTreeMap<String, Value>) -> u64 {
+    serde_json::to_vec(metadata)
+        .map(|bytes| bytes.len() as u64)
+        .unwrap_or(0)
+}
+
+fn metadata_capability_flags(metadata: &BTreeMap<String, Value>) -> Vec<String> {
+    let mut flags = metadata_string(metadata, "parser_capability_flag")
+        .into_iter()
+        .chain(metadata_string_vec(
+            metadata,
+            "parser_fact_bundle_capability_flags",
+        ))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if flags.is_empty() && metadata.contains_key("parser_unknown_boundary_reason") {
+        flags.push("unknown_boundary".to_string());
+    }
+    if flags.is_empty()
+        && (metadata.contains_key("parser_resolver")
+            || metadata.contains_key("parser_resolver_version")
+            || metadata.contains_key("parser_resolver_status"))
+    {
+        flags.push("project_resolver_metadata".to_string());
+    }
+    if flags.is_empty() && metadata.contains_key("reference_class") {
+        flags.push(capability_flag_for_reference_class(metadata));
+    }
+    flags
+}
+
+fn capability_flag_for_reference_class(metadata: &BTreeMap<String, Value>) -> String {
+    match metadata_string(metadata, "reference_class").as_deref() {
+        Some("macro_or_codegen") => "macro_unknown".to_string(),
+        Some("dynamic_or_computed") => "dynamic_unknown".to_string(),
+        Some("compiler_required") => "compiler_required".to_string(),
+        Some("lsp_required") => "lsp_required".to_string(),
+        Some("runtime_required") => "runtime_required".to_string(),
+        Some("unsupported_language_or_relation") => "unsupported_relation".to_string(),
+        Some("unknown") => "unknown_boundary".to_string(),
+        Some("builtin_or_std") => "package_or_module_resolved".to_string(),
+        Some("external_dependency") => "package_or_module_resolved".to_string(),
+        Some("repo_local_candidate") => "call_extracted".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn metadata_unknown_boundary_kind(metadata: &BTreeMap<String, Value>) -> Option<String> {
+    let kinds = metadata_string_vec(metadata, "parser_fact_bundle_unknown_boundary_kinds");
+    if !kinds.is_empty() {
+        return Some(kinds.join(","));
+    }
+    metadata_string(metadata, "unknown_boundary_kind").or_else(|| {
+        metadata
+            .get("warning_kind")
+            .and_then(Value::as_str)
+            .filter(|value| value.contains("unknown") || value.contains("diagnostic"))
+            .map(ToString::to_string)
+    })
+}
+
+fn metadata_requirement(
+    capability_flag: &str,
+    capability_status: Option<&str>,
+    unknown_boundary_reason: Option<&str>,
+    reference_class: Option<&str>,
+) -> Option<String> {
+    let haystack = [
+        capability_flag,
+        capability_status.unwrap_or_default(),
+        unknown_boundary_reason.unwrap_or_default(),
+        reference_class.unwrap_or_default(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase();
+    for requirement in [
+        "compiler_required",
+        "lsp_required",
+        "runtime_required",
+        "macro_required",
+        "preprocessor_required",
+        "build_database_required",
+    ] {
+        if haystack.contains(requirement)
+            || (requirement == "macro_required" && haystack.contains("macro"))
+            || (requirement == "runtime_required" && haystack.contains("dynamic"))
+            || (requirement == "preprocessor_required" && haystack.contains("preprocessor"))
+        {
+            return Some(requirement.to_string());
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_capability_metadata_from_record(
+    rows: &mut Vec<NormalizedCapabilityMetadataFact>,
+    owner_fact_kind: &str,
+    owner_fact_id: &str,
+    repo_relative_path: &str,
+    language: Option<String>,
+    frontend: Option<String>,
+    source_role: EvidenceRole,
+    metadata: &BTreeMap<String, Value>,
+) {
+    for capability_flag in metadata_capability_flags(metadata) {
+        let capability_status = metadata_string(metadata, "parser_capability_status");
+        let fact_family = metadata_string(metadata, "parser_fact_family");
+        let fact_exactness = metadata_string(metadata, "parser_fact_exactness");
+        let evidence_role = metadata_string(metadata, "evidence_role");
+        let extractor_version = metadata_string(metadata, "parser_fact_bundle_extractor_version");
+        let resolver = metadata_string(metadata, "parser_resolver");
+        let resolver_version = metadata_string(metadata, "parser_resolver_version");
+        let resolver_status = metadata_string(metadata, "parser_resolver_status");
+        let resolver_provenance = metadata_string(metadata, "parser_resolver_provenance");
+        let project_config_source =
+            metadata_string(metadata, "parser_resolver_project_config_source");
+        let unknown_boundary_reason = metadata_string(metadata, "parser_unknown_boundary_reason");
+        let unknown_boundary_kind = metadata_unknown_boundary_kind(metadata);
+        let reference_class = metadata_string(metadata, "reference_class");
+        let requirement = metadata_requirement(
+            &capability_flag,
+            capability_status.as_deref(),
+            unknown_boundary_reason.as_deref(),
+            reference_class.as_deref(),
+        );
+        rows.push(NormalizedCapabilityMetadataFact::new(
+            repo_relative_path,
+            owner_fact_kind,
+            owner_fact_id,
+            language.clone(),
+            frontend.clone(),
+            capability_flag,
+            capability_status,
+            fact_family,
+            fact_exactness,
+            source_role,
+            evidence_role,
+            extractor_version,
+            resolver,
+            resolver_version,
+            resolver_status,
+            resolver_provenance,
+            project_config_source,
+            unknown_boundary_reason,
+            unknown_boundary_kind,
+            reference_class,
+            requirement,
+            metadata_bytes(metadata),
+            "normalized_capability_metadata_fact_v1",
+        ));
+    }
+}
+
+fn capability_metadata_fact_is_unknown_boundary(fact: &NormalizedCapabilityMetadataFact) -> bool {
+    fact.unknown_boundary_reason.is_some()
+        || fact.unknown_boundary_kind.is_some()
+        || fact
+            .requirement
+            .as_deref()
+            .is_some_and(|requirement| requirement != "build_database_required")
+        || fact.reference_class.as_deref().is_some_and(|class| {
+            matches!(
+                class,
+                "dynamic_or_computed"
+                    | "macro_or_codegen"
+                    | "compiler_required"
+                    | "lsp_required"
+                    | "runtime_required"
+                    | "unsupported_language_or_relation"
+                    | "unknown"
+            )
+        })
+        || fact.capability_flag.ends_with("_unknown")
+        || fact.capability_flag == "unknown_boundary"
+}
+
+fn exactness_requires_provenance(exactness: &str) -> bool {
+    matches!(
+        exactness,
+        "derived_from_verified_edges"
+            | "derived_with_provenance"
+            | "compiler_verified"
+            | "lsp_verified"
+    )
+}
+
+fn increment_count(map: &mut BTreeMap<String, u64>, key: &str) {
+    *map.entry(key.to_string()).or_default() += 1;
+}
+
 fn query_edges<P>(connection: &Connection, sql: &str, params: P) -> StoreResult<Vec<Edge>>
 where
     P: rusqlite::Params,
@@ -13930,12 +14502,12 @@ mod tests {
         inspect_db_preflight, intern_object_id, intern_qualified_name, local_flow_packet_body_hash,
         lookup_object_id, lookup_qualified_name, migrate_dictionary_compaction,
         register_sqlite_functions, stable_text_hash_key, stable_text_len, table_has_column,
-        AstMicroEdgeRow, AstMicroNodeRow, DbPassport, EdgeFeatureRow, EntityFeatureRow,
-        EvidenceFeatureRow, ExpectedDbPassport, GraphStore, LocalFlowPacketQueryOptions,
-        LocalFlowPacketRow, RetrievalTraceRecord, RoutingPacketHandleRow, SqliteGraphStore,
-        StoreError, TextSearchKind, ValidationFindingRow, DB_PASSPORT_VERSION,
-        MAX_QNAME_PREFIX_BYTES, MAX_QUALIFIED_NAME_BYTES, MAX_SPARSE_SIDECAR_PAYLOAD_BYTES,
-        SCHEMA_SQL, SCHEMA_VERSION, SPARSE_SIDECAR_TABLES,
+        AstMicroEdgeRow, AstMicroNodeRow, CapabilityMetadataQueryOptions, DbPassport,
+        EdgeFeatureRow, EntityFeatureRow, EvidenceFeatureRow, ExpectedDbPassport, GraphStore,
+        LocalFlowPacketQueryOptions, LocalFlowPacketRow, RetrievalTraceRecord,
+        RoutingPacketHandleRow, SqliteGraphStore, StoreError, TextSearchKind, ValidationFindingRow,
+        DB_PASSPORT_VERSION, MAX_QNAME_PREFIX_BYTES, MAX_QUALIFIED_NAME_BYTES,
+        MAX_SPARSE_SIDECAR_PAYLOAD_BYTES, SCHEMA_SQL, SCHEMA_VERSION, SPARSE_SIDECAR_TABLES,
     };
 
     fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
@@ -15825,6 +16397,227 @@ mod tests {
         assert_eq!(
             before, after,
             "read-only inspection must not migrate or rewrite old DBs"
+        );
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn capability_metadata_query_reads_current_rows_without_source_bodies() {
+        let path = temp_db_path();
+        remove_temp_db_family(&path);
+        {
+            let store = ok(SqliteGraphStore::open(&path));
+            let file = FileRecord {
+                repo_relative_path: "src/auth.ts".to_string(),
+                file_hash: "sha256:file".to_string(),
+                language: Some("typescript".to_string()),
+                size_bytes: 1234,
+                indexed_at_unix_ms: Some(10),
+                metadata: BTreeMap::from([
+                    (
+                        "parser_fact_bundle_version".to_string(),
+                        json!("parser_fact_bundle_v1"),
+                    ),
+                    (
+                        "parser_fact_bundle_extractor_version".to_string(),
+                        json!("parser-fact-bundle-v1"),
+                    ),
+                    (
+                        "parser_fact_bundle_source_role".to_string(),
+                        json!("production"),
+                    ),
+                    (
+                        "parser_fact_bundle_language".to_string(),
+                        json!("typescript"),
+                    ),
+                    (
+                        "parser_fact_bundle_frontend".to_string(),
+                        json!("typescript"),
+                    ),
+                    (
+                        "parser_fact_bundle_capability_flags".to_string(),
+                        json!(["syntax_exact", "dynamic_unknown"]),
+                    ),
+                    (
+                        "parser_fact_bundle_unknown_boundary_kinds".to_string(),
+                        json!(["dynamic_import"]),
+                    ),
+                    (
+                        "parser_resolver".to_string(),
+                        json!("null_project_resolver"),
+                    ),
+                    (
+                        "parser_resolver_version".to_string(),
+                        json!("null_project_resolver_v1"),
+                    ),
+                    ("parser_resolver_status".to_string(), json!("unsupported")),
+                ]),
+            };
+            let mut entity = entity("login");
+            entity
+                .metadata
+                .insert("parser_capability_flag".to_string(), json!("syntax_exact"));
+            entity.metadata.insert(
+                "parser_capability_status".to_string(),
+                json!("supported_parser_only"),
+            );
+            entity.metadata.insert(
+                "parser_fact_family".to_string(),
+                json!("entity_declaration"),
+            );
+            entity.metadata.insert(
+                "parser_fact_exactness".to_string(),
+                json!("parser_verified"),
+            );
+            entity
+                .metadata
+                .insert("parser_fact_language".to_string(), json!("typescript"));
+            entity
+                .metadata
+                .insert("parser_fact_frontend".to_string(), json!("typescript"));
+            entity
+                .metadata
+                .insert("parser_fact_source_role".to_string(), json!("production"));
+            entity.metadata.insert(
+                "parser_resolver".to_string(),
+                json!("null_project_resolver"),
+            );
+            entity.metadata.insert(
+                "parser_resolver_version".to_string(),
+                json!("null_project_resolver_v1"),
+            );
+            entity
+                .metadata
+                .insert("parser_resolver_status".to_string(), json!("unsupported"));
+
+            let mut edge = sample_edge(
+                "edge-login-self",
+                &entity.id,
+                RelationKind::Calls,
+                &entity.id,
+            );
+            edge.metadata.insert(
+                "parser_capability_flag".to_string(),
+                json!("call_extracted"),
+            );
+            edge.metadata.insert(
+                "parser_capability_status".to_string(),
+                json!("supported_parser_only"),
+            );
+            edge.metadata.insert(
+                "parser_fact_family".to_string(),
+                json!("direct_call_syntax"),
+            );
+            edge.metadata.insert(
+                "parser_fact_exactness".to_string(),
+                json!("parser_verified"),
+            );
+            edge.metadata
+                .insert("parser_fact_language".to_string(), json!("typescript"));
+            edge.metadata
+                .insert("parser_fact_frontend".to_string(), json!("typescript"));
+            edge.metadata
+                .insert("parser_fact_source_role".to_string(), json!("production"));
+            edge.metadata.insert(
+                "parser_unknown_boundary_reason".to_string(),
+                json!("caller_callee_exactness_not_proven_by_parser_syntax"),
+            );
+            edge.metadata.insert(
+                "parser_resolver".to_string(),
+                json!("null_project_resolver"),
+            );
+            edge.metadata.insert(
+                "parser_resolver_version".to_string(),
+                json!("null_project_resolver_v1"),
+            );
+            edge.metadata
+                .insert("parser_resolver_status".to_string(), json!("unsupported"));
+
+            ok(store.upsert_file(&file));
+            ok(store.upsert_entity(&entity));
+            ok(store.upsert_edge(&edge));
+        }
+        {
+            let store = ok(SqliteGraphStore::open_read_only(&path));
+            let rows = ok(
+                store.query_capability_metadata(&CapabilityMetadataQueryOptions {
+                    repo_relative_path: Some("src/auth.ts".to_string()),
+                    limit: 32,
+                    ..CapabilityMetadataQueryOptions::default()
+                }),
+            );
+            assert!(rows.iter().any(|row| {
+                row.owner_fact_kind == "file"
+                    && row.capability_flag == "dynamic_unknown"
+                    && row.unknown_boundary_kind.as_deref() == Some("dynamic_import")
+            }));
+            assert!(rows.iter().any(|row| {
+                row.owner_fact_kind == "edge"
+                    && row.capability_flag == "call_extracted"
+                    && row.unknown_boundary_reason.as_deref()
+                        == Some("caller_callee_exactness_not_proven_by_parser_syntax")
+                    && row.not_graph_proof
+            }));
+            assert!(rows
+                .iter()
+                .all(|row| row.language.as_deref() == Some("typescript")));
+            let serialized = serde_json::to_string(&rows).expect("rows json");
+            assert!(!serialized.contains("return secret_runtime_body_marker"));
+
+            let unknowns = ok(store.query_unknown_boundary_metadata(
+                &CapabilityMetadataQueryOptions {
+                    repo_relative_path: Some("src/auth.ts".to_string()),
+                    limit: 32,
+                    ..CapabilityMetadataQueryOptions::default()
+                },
+            ));
+            assert!(unknowns.len() >= 2, "{unknowns:?}");
+
+            let summary = ok(
+                store.capability_metadata_summary(&CapabilityMetadataQueryOptions {
+                    repo_relative_path: Some("src/auth.ts".to_string()),
+                    limit: 32,
+                    ..CapabilityMetadataQueryOptions::default()
+                }),
+            );
+            assert_eq!(summary.full_source_body_storage, false);
+            assert!(summary.resolver_metadata_rows >= 3, "{summary:?}");
+            assert!(summary.unknown_boundary_rows >= 2, "{summary:?}");
+        }
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn capability_metadata_query_is_read_only_safe_on_old_db() {
+        let path = temp_db_path();
+        {
+            let connection = Connection::open(&path).expect("legacy DB");
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA user_version = 1;
+                    CREATE TABLE legacy_marker(id INTEGER PRIMARY KEY);
+                    INSERT INTO legacy_marker(id) VALUES (1);
+                    ",
+                )
+                .expect("create old schema");
+        }
+        let before = file_fingerprint(&path);
+        {
+            let store = ok(SqliteGraphStore::open_read_only(&path));
+            assert_eq!(
+                ok(store.query_capability_metadata(&CapabilityMetadataQueryOptions::default())),
+                Vec::new()
+            );
+            let summary =
+                ok(store.capability_metadata_summary(&CapabilityMetadataQueryOptions::default()));
+            assert_eq!(summary.total_rows, 0);
+            assert_eq!(summary.full_source_body_storage, false);
+        }
+        let after = file_fingerprint(&path);
+        assert_eq!(
+            before, after,
+            "capability metadata read path must not migrate or rewrite old DBs"
         );
         remove_temp_db_family(&path);
     }

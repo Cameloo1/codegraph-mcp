@@ -568,15 +568,506 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
 
     let json = stdout_json(&run_codegraph(&["languages", "--json"]));
     assert_eq!(json["status"].as_str(), Some("ok"));
+    assert_eq!(
+        json["capability_model"]["old_tier_alone_drives_proof"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        json["capability_model"]["old_tier_alone_drives_linter_blocking"].as_bool(),
+        Some(false)
+    );
+    assert!(json["capability_flags"]
+        .as_array()
+        .expect("capability flags")
+        .iter()
+        .any(|flag| flag.as_str() == Some("local_flow_packet_supported")));
+    assert!(json["capability_status_values"]
+        .as_array()
+        .expect("capability status values")
+        .iter()
+        .any(|status| status.as_str() == Some("supported_exact")));
     let frontends = json["frontends"].as_array().expect("frontends");
     assert!(frontends.iter().any(
         |frontend| frontend["language_id"].as_str() == Some("python")
             && frontend["support_tier"].as_str() == Some("tier3_calls_caller_callee")
     ));
-    assert!(frontends.iter().any(|frontend| {
-        frontend["language_id"].as_str() == Some("typescript")
-            && frontend["compiler_resolver_available"].as_bool() == Some(true)
-    }));
+    let typescript = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("typescript"))
+        .expect("typescript frontend");
+    assert_eq!(
+        typescript["compiler_resolver_available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        typescript["project_resolver_interface_version"].as_str(),
+        Some("project_resolver_interface_v1")
+    );
+    assert_eq!(
+        typescript["project_resolver"].as_str(),
+        Some("null_project_resolver")
+    );
+    assert_eq!(
+        typescript["project_resolver_status"].as_str(),
+        Some("unsupported")
+    );
+    assert!(typescript["capabilities"]
+        .as_array()
+        .expect("typescript capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("supported_exact")
+                && capability["scope"].as_str() == Some("type_script_production_ts_only")
+        }));
+    for flag in [
+        "local_binding_resolved",
+        "read_write_extracted",
+        "local_dataflow_derived",
+        "local_flow_packet_supported",
+    ] {
+        assert!(
+            typescript["capabilities"]
+                .as_array()
+                .expect("typescript capabilities")
+                .iter()
+                .any(|capability| capability["flag"].as_str() == Some(flag)
+                    && capability["scope"].as_str() == Some("type_script_production_ts_only")),
+            "{flag} must stay scoped to authorized TypeScript .ts production support"
+        );
+    }
+    assert!(typescript["known_limitations"]
+        .as_array()
+        .expect("typescript limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("actually runs and records provenance"))));
+    let tsx = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("tsx"))
+        .expect("tsx frontend");
+    assert!(tsx["capabilities"]
+        .as_array()
+        .expect("tsx capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    for (flag, status) in [
+        ("compiler_verified", "requires_compiler"),
+        ("caller_callee_exact", "requires_compiler"),
+        ("local_binding_resolved", "requires_compiler"),
+        ("read_write_extracted", "supported_parser_only"),
+        ("local_dataflow_derived", "supported_heuristic"),
+        ("local_flow_packet_supported", "not_implemented"),
+    ] {
+        assert!(
+            tsx["capabilities"]
+                .as_array()
+                .expect("tsx capabilities")
+                .iter()
+                .any(|capability| capability["flag"].as_str() == Some(flag)
+                    && capability["status"].as_str() == Some(status)
+                    && capability["scope"].as_str() == Some("language_frontend")),
+            "TSX capability {flag} must stay {status} at language_frontend scope"
+        );
+    }
+    assert!(tsx["known_limitations"]
+        .as_array()
+        .expect("tsx limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("not_implemented for TSX"))));
+    let javascript = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("javascript"))
+        .expect("javascript frontend");
+    for (flag, status) in [
+        ("package_or_module_resolved", "diagnostic_only"),
+        ("require_resolved", "diagnostic_only"),
+        ("project_config_resolved", "diagnostic_only"),
+        ("compiler_verified", "not_implemented"),
+        ("lsp_verified", "not_implemented"),
+        ("caller_callee_exact", "requires_runtime"),
+        ("call_extracted", "supported_parser_only"),
+        ("local_flow_packet_supported", "not_implemented"),
+    ] {
+        assert!(
+            javascript["capabilities"]
+                .as_array()
+                .expect("javascript capabilities")
+                .iter()
+                .any(|capability| capability["flag"].as_str() == Some(flag)
+                    && capability["status"].as_str() == Some(status)
+                    && capability["scope"].as_str() == Some("language_frontend")),
+            "JavaScript capability {flag} must stay {status} at language_frontend scope"
+        );
+    }
+    assert!(javascript["known_limitations"]
+        .as_array()
+        .expect("javascript limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("diagnostic evidence"))));
+    assert!(javascript["known_limitations"]
+        .as_array()
+        .expect("javascript limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("not_implemented for JavaScript"))));
+    let jsx = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("jsx"))
+        .expect("jsx frontend");
+    for (flag, status) in [
+        ("package_or_module_resolved", "diagnostic_only"),
+        ("require_resolved", "diagnostic_only"),
+        ("project_config_resolved", "diagnostic_only"),
+        ("compiler_verified", "not_implemented"),
+        ("lsp_verified", "not_implemented"),
+        ("caller_callee_exact", "requires_runtime"),
+        ("call_extracted", "supported_parser_only"),
+        ("local_flow_packet_supported", "not_implemented"),
+    ] {
+        assert!(
+            jsx["capabilities"]
+                .as_array()
+                .expect("jsx capabilities")
+                .iter()
+                .any(|capability| capability["flag"].as_str() == Some(flag)
+                    && capability["status"].as_str() == Some(status)
+                    && capability["scope"].as_str() == Some("language_frontend")),
+            "JSX capability {flag} must stay {status} at language_frontend scope"
+        );
+    }
+    assert!(jsx["known_limitations"]
+        .as_array()
+        .expect("jsx limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("dynamic props"))));
+    assert!(jsx["known_limitations"]
+        .as_array()
+        .expect("jsx limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("not_implemented for JSX"))));
+    let python = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("python"))
+        .expect("python frontend");
+    assert!(!python["capabilities"]
+        .as_array()
+        .expect("python capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("supported_exact")
+        }));
+    let go = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("go"))
+        .expect("go frontend");
+    assert_eq!(
+        go["support_tier"].as_str(),
+        Some("tier3_calls_caller_callee")
+    );
+    assert!(go["capabilities"]
+        .as_array()
+        .expect("go capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("project_config_resolved")
+                && capability["status"].as_str() == Some("diagnostic_only")
+        }));
+    assert!(go["capabilities"]
+        .as_array()
+        .expect("go capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_compiler")
+        }));
+    assert!(go["capabilities"]
+        .as_array()
+        .expect("go capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    let rust = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("rust"))
+        .expect("rust frontend");
+    assert_eq!(
+        rust["support_tier"].as_str(),
+        Some("tier3_calls_caller_callee")
+    );
+    assert!(rust["capabilities"]
+        .as_array()
+        .expect("rust capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("project_config_resolved")
+                && capability["status"].as_str() == Some("diagnostic_only")
+        }));
+    assert!(rust["capabilities"]
+        .as_array()
+        .expect("rust capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("package_or_module_resolved")
+                && capability["status"].as_str() == Some("diagnostic_only")
+        }));
+    assert!(rust["capabilities"]
+        .as_array()
+        .expect("rust capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_compiler")
+        }));
+    assert!(rust["capabilities"]
+        .as_array()
+        .expect("rust capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("macro_unknown")
+                && capability["status"].as_str() == Some("requires_macro_expansion")
+        }));
+    assert!(rust["capabilities"]
+        .as_array()
+        .expect("rust capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    let java = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("java"))
+        .expect("java frontend");
+    assert_eq!(java["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert!(java["capabilities"]
+        .as_array()
+        .expect("java capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("call_extracted")
+                && capability["status"].as_str() == Some("supported_parser_only")
+        }));
+    assert!(java["capabilities"]
+        .as_array()
+        .expect("java capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_compiler")
+        }));
+    assert!(java["capabilities"]
+        .as_array()
+        .expect("java capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    let csharp = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("csharp"))
+        .expect("csharp frontend");
+    assert_eq!(
+        csharp["support_tier"].as_str(),
+        Some("tier1_syntax_entities")
+    );
+    assert!(csharp["capabilities"]
+        .as_array()
+        .expect("csharp capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("call_extracted")
+                && capability["status"].as_str() == Some("supported_parser_only")
+        }));
+    assert!(csharp["capabilities"]
+        .as_array()
+        .expect("csharp capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_compiler")
+        }));
+    assert!(csharp["capabilities"]
+        .as_array()
+        .expect("csharp capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    let c = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("c"))
+        .expect("c frontend");
+    assert_eq!(c["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert!(c["capabilities"]
+        .as_array()
+        .expect("c capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("call_extracted")
+                && capability["status"].as_str() == Some("supported_parser_only")
+        }));
+    assert!(c["capabilities"]
+        .as_array()
+        .expect("c capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_compiler")
+        }));
+    assert!(c["capabilities"]
+        .as_array()
+        .expect("c capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("include_resolved")
+                && capability["status"].as_str() == Some("requires_preprocessor")
+        }));
+    assert!(c["capabilities"]
+        .as_array()
+        .expect("c capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    let cpp = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("cpp"))
+        .expect("cpp frontend");
+    assert_eq!(cpp["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert!(cpp["capabilities"]
+        .as_array()
+        .expect("cpp capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("call_extracted")
+                && capability["status"].as_str() == Some("supported_parser_only")
+        }));
+    assert!(cpp["capabilities"]
+        .as_array()
+        .expect("cpp capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_compiler")
+        }));
+    assert!(cpp["capabilities"]
+        .as_array()
+        .expect("cpp capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("include_resolved")
+                && capability["status"].as_str() == Some("requires_preprocessor")
+        }));
+    assert!(cpp["capabilities"]
+        .as_array()
+        .expect("cpp capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    let ruby = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("ruby"))
+        .expect("ruby frontend");
+    assert_eq!(ruby["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert!(ruby["capabilities"]
+        .as_array()
+        .expect("ruby capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("call_extracted")
+                && capability["status"].as_str() == Some("supported_parser_only")
+        }));
+    assert!(ruby["capabilities"]
+        .as_array()
+        .expect("ruby capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_runtime")
+        }));
+    assert!(ruby["capabilities"]
+        .as_array()
+        .expect("ruby capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("require_resolved")
+                && capability["status"].as_str() == Some("requires_runtime")
+        }));
+    assert!(ruby["capabilities"]
+        .as_array()
+        .expect("ruby capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
+    let php = frontends
+        .iter()
+        .find(|frontend| frontend["language_id"].as_str() == Some("php"))
+        .expect("php frontend");
+    assert_eq!(php["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert!(php["capabilities"]
+        .as_array()
+        .expect("php capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("call_extracted")
+                && capability["status"].as_str() == Some("supported_parser_only")
+        }));
+    assert!(php["capabilities"]
+        .as_array()
+        .expect("php capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("caller_callee_exact")
+                && capability["status"].as_str() == Some("requires_runtime")
+        }));
+    assert!(php["capabilities"]
+        .as_array()
+        .expect("php capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("include_resolved")
+                && capability["status"].as_str() == Some("requires_runtime")
+        }));
+    assert!(php["capabilities"]
+        .as_array()
+        .expect("php capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("require_resolved")
+                && capability["status"].as_str() == Some("requires_runtime")
+        }));
+    assert!(php["capabilities"]
+        .as_array()
+        .expect("php capabilities")
+        .iter()
+        .any(|capability| {
+            capability["flag"].as_str() == Some("local_flow_packet_supported")
+                && capability["status"].as_str() == Some("not_implemented")
+        }));
 }
 
 #[test]

@@ -65,6 +65,21 @@ pub(crate) fn enforce_agent_use_context_pack_max_output_bytes(
         if let Some(truncation) = object.get_mut("truncation").and_then(Value::as_object_mut) {
             truncation.insert("output_bytes".to_string(), json!(output_bytes));
         }
+        // The inner builder may have stamped the transient over-budget state
+        // (`status: "warning"` + the max_output_bytes_exceeded warning row)
+        // before this wrapper compaction shrank the envelope. Reconcile once the
+        // final size fits: the budget stamp is the only "warning" writer on the
+        // context-pack status, and advisory sidecar notes must not degrade it.
+        if output_bytes <= max_output_bytes {
+            if object.get("status").and_then(Value::as_str) == Some("warning") {
+                object.insert("status".to_string(), json!("ok"));
+            }
+            if let Some(warnings) = object.get_mut("warnings").and_then(Value::as_array_mut) {
+                warnings.retain(|warning| {
+                    warning.get("code").and_then(Value::as_str) != Some("max_output_bytes_exceeded")
+                });
+            }
+        }
     }
 }
 
@@ -274,9 +289,9 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
         }
     }
 
-    // Evidence-first budgeting (MVP_3.md section 14): reduce the large MVP4.3
-    // micro-flow handle bodies, each recoverable via its audit/explain
-    // expansion handle and already summarized in micro_flow_packet_summary,
+    // Evidence-first budgeting (MVP_3.md §14): reduce the large MVP4.3
+    // micro-flow handle bodies — each recoverable via its audit/explain
+    // expansion handle, and already summarized in micro_flow_packet_summary —
     // BEFORE the budget enforcers shed small, contract-required agent-state
     // (staged_availability / read_path_metrics / sidecar_statuses). Otherwise a
     // context-pack packet carrying two full handles crowds that state out of
@@ -1026,6 +1041,8 @@ pub(crate) fn agent_use_compact_query_results_field(
     truncated_sections: &mut Vec<String>,
     omitted_count: &mut u64,
 ) {
+    agent_use_compact_unresolved_reference_query(value, truncated_sections, omitted_count);
+
     let Some(results) = value.get_mut("results").and_then(Value::as_array_mut) else {
         return;
     };
@@ -1041,11 +1058,239 @@ pub(crate) fn agent_use_compact_query_results_field(
         if object.contains_key("source_span") {
             changed |= object.remove("span").is_some();
         }
+        if let Some(capability) = object.get("language_capability").cloned() {
+            let compact_capability = json!({
+                "language": object
+                    .get("language")
+                    .or_else(|| capability.get("language"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "frontend": object
+                    .get("frontend")
+                    .or_else(|| capability.get("frontend"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "source_role": object
+                    .get("source_role")
+                    .or_else(|| capability.get("source_role"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "capability_status": capability
+                    .get("capability_status")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "capability_flags": capability
+                    .get("capability_flags")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "proof_strength": object
+                    .get("proof_strength")
+                    .or_else(|| capability.get("proof_strength"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "proof_status": object
+                    .get("proof_status")
+                    .or_else(|| capability.get("proof_status"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "exactness": object
+                    .get("exactness")
+                    .or_else(|| capability.get("exactness"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "resolver_status": capability
+                    .get("resolver_status")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "source_span_available": capability
+                    .pointer("/source_span/available")
+                    .cloned()
+                    .unwrap_or_else(|| json!(object.get("span").is_some() || object.get("source_span").is_some())),
+                "not_graph_proof": capability
+                    .get("not_graph_proof")
+                    .cloned()
+                    .unwrap_or_else(|| json!(true)),
+                "agent_json_compacted": true,
+            });
+            object.insert("language_capability".to_string(), compact_capability);
+            changed = true;
+        }
+        if let Some(entity) = object.get("entity").and_then(Value::as_object) {
+            let compact_entity = json!({
+                "id": entity
+                    .get("id")
+                    .or_else(|| entity.get("entity_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "entity_id": entity
+                    .get("entity_id")
+                    .or_else(|| entity.get("id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "name": entity.get("name").cloned().unwrap_or(Value::Null),
+                "symbol": entity.get("symbol").cloned().unwrap_or(Value::Null),
+                "kind": entity.get("kind").cloned().unwrap_or(Value::Null),
+                "file": entity
+                    .get("file")
+                    .or_else(|| entity.get("path"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "source_span": entity
+                    .get("source_span")
+                    .or_else(|| entity.get("span"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "language": object
+                    .get("language")
+                    .or_else(|| entity.get("language"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "frontend": object
+                    .get("frontend")
+                    .or_else(|| entity.get("frontend"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "source_role": object
+                    .get("source_role")
+                    .or_else(|| entity.get("evidence_role"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "agent_json_compacted": true,
+            });
+            object.insert("entity".to_string(), compact_entity);
+            changed = true;
+        }
     }
     if changed {
         truncated_sections.push("results".to_string());
         *omitted_count = omitted_count.saturating_add(1);
     }
+}
+
+fn agent_use_compact_unresolved_reference_query(
+    value: &mut Value,
+    truncated_sections: &mut Vec<String>,
+    omitted_count: &mut u64,
+) {
+    let mut changed = false;
+    let mut removed_items = 0_u64;
+    {
+        let Some(unresolved) = value
+            .get_mut("unresolved_references")
+            .and_then(Value::as_object_mut)
+        else {
+            return;
+        };
+
+        if let Some(items) = unresolved.get_mut("items").and_then(Value::as_array_mut) {
+            for item in items.iter_mut() {
+                let Some(object) = item.as_object() else {
+                    continue;
+                };
+                let capability = object.get("language_capability").cloned();
+                let compact_capability = capability.as_ref().map(|capability| {
+                    json!({
+                        "language": capability.get("language").cloned().unwrap_or(Value::Null),
+                        "frontend": capability.get("frontend").cloned().unwrap_or(Value::Null),
+                        "source_role": capability.get("source_role").cloned().unwrap_or(Value::Null),
+                        "capability_status": capability.get("capability_status").cloned().unwrap_or(Value::Null),
+                        "capability_flags": capability.get("capability_flags").cloned().unwrap_or(Value::Null),
+                        "proof_strength": capability.get("proof_strength").cloned().unwrap_or(Value::Null),
+                        "exactness": capability.get("exactness").cloned().unwrap_or(Value::Null),
+                        "resolver_status": capability.get("resolver_status").cloned().unwrap_or(Value::Null),
+                        "not_graph_proof": capability.get("not_graph_proof").cloned().unwrap_or_else(|| json!(true)),
+                        "agent_json_compacted": true,
+                    })
+                });
+                *item = json!({
+                    "reference_id": object.get("reference_id").cloned().unwrap_or(Value::Null),
+                    "name": object.get("name").cloned().unwrap_or(Value::Null),
+                    "relation": object.get("relation").cloned().unwrap_or(Value::Null),
+                    "reference_class": object.get("reference_class").cloned().unwrap_or(Value::Null),
+                    "source_span": object.get("source_span").cloned().unwrap_or(Value::Null),
+                    "exactness": object.get("exactness").cloned().unwrap_or(Value::Null),
+                    "definition_candidate_count": object.get("definition_candidate_count").cloned().unwrap_or(Value::Null),
+                    "repo_graph_lookup": object.get("repo_graph_lookup").cloned().unwrap_or(Value::Null),
+                    "not_graph_proof": object.get("not_graph_proof").cloned().unwrap_or_else(|| json!(true)),
+                    "language_capability": compact_capability.unwrap_or(Value::Null),
+                    "agent_json_compacted": true,
+                });
+                changed = true;
+            }
+            if items.len() > 3 {
+                removed_items = items.len().saturating_sub(3) as u64;
+                items.truncate(3);
+                unresolved.insert("item_omitted_count".to_string(), json!(removed_items));
+                changed = true;
+            }
+        }
+        if changed {
+            unresolved.insert("agent_json_compacted".to_string(), json!(true));
+            unresolved.insert(
+                "full_detail_handle".to_string(),
+                json!("query:unresolved_references:full"),
+            );
+        }
+    }
+
+    if changed {
+        truncated_sections.push("unresolved_references".to_string());
+        *omitted_count = omitted_count.saturating_add(removed_items.max(1));
+        if let Some(object) = value.as_object_mut() {
+            let handle = json!("query:unresolved_references:full");
+            match object.get_mut("expansion_handles") {
+                Some(Value::Array(handles)) => {
+                    if !handles.iter().any(|item| item == &handle) {
+                        handles.push(handle);
+                    }
+                }
+                Some(_) | None => {
+                    object.insert(
+                        "expansion_handles".to_string(),
+                        json!(["query:unresolved_references:full"]),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn agent_use_shrink_query_results_preserve_one(value: &mut Value) -> bool {
+    {
+        let Some(results) = value.get_mut("results").and_then(Value::as_array_mut) else {
+            return false;
+        };
+        if results.len() <= 1 {
+            return false;
+        }
+        results.pop();
+    }
+
+    if let Some(object) = value.as_object_mut() {
+        let prior = object
+            .get("result_omitted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        object.insert(
+            "result_omitted_count".to_string(),
+            json!(prior.saturating_add(1)),
+        );
+        let handle = json!("query:results:full");
+        match object.get_mut("expansion_handles") {
+            Some(Value::Array(handles)) => {
+                if !handles.iter().any(|item| item == &handle) {
+                    handles.push(handle);
+                }
+            }
+            Some(_) | None => {
+                object.insert(
+                    "expansion_handles".to_string(),
+                    json!(["query:results:full"]),
+                );
+            }
+        }
+    }
+    true
 }
 
 pub(crate) fn agent_use_enforce_total_output_budget(
@@ -1085,6 +1330,11 @@ pub(crate) fn agent_use_enforce_total_output_budget(
         }
         if pop_context_agent_array_item(value, "candidates") {
             truncated_sections.push("candidates".to_string());
+            *omitted_count = omitted_count.saturating_add(1);
+            continue;
+        }
+        if agent_use_shrink_query_results_preserve_one(value) {
+            truncated_sections.push("results".to_string());
             *omitted_count = omitted_count.saturating_add(1);
             continue;
         }
@@ -1405,7 +1655,11 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
             if preserve_context_pack_required_state
                 && matches!(
                     key,
-                    "staged_availability" | "read_path_metrics" | "sidecar_statuses"
+                    "staged_availability"
+                        | "read_path_metrics"
+                        | "sidecar_statuses"
+                        | "db_lifecycle_read"
+                        | "patch_assist_packet"
                 )
             {
                 continue;
@@ -1499,6 +1753,13 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
                 json!(truncated_section_count),
             );
         }
+        if settled_output_bytes <= max_output_bytes {
+            if let Some(warnings) = object.get_mut("warnings").and_then(Value::as_array_mut) {
+                warnings.retain(|warning| {
+                    warning.get("code").and_then(Value::as_str) != Some("max_output_bytes_exceeded")
+                });
+            }
+        }
     }
 }
 
@@ -1539,4 +1800,137 @@ pub(crate) fn agent_use_remove_field(value: &mut Value, key: &str) -> bool {
         return false;
     };
     object.remove(key).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn test_profile() -> AgentUseProfile {
+        let repo = PathBuf::from("C:/tmp/codegraph-envelope-test/repo");
+        let profile_root = PathBuf::from("C:/tmp/codegraph-envelope-test/profile");
+        AgentUseProfile {
+            profile_name: PRODUCTION_AGENT_USE_PROFILE_NAME.to_string(),
+            repo_root: repo,
+            repo_identity_label: "repo".to_string(),
+            repo_identity_hash: "0123456789abcdef".to_string(),
+            db_path: profile_root.join("production-agent-use.sqlite"),
+            candidate_spool_path: profile_root.join("codegraph-candidate-spool.jsonl"),
+            candidate_spool_query_index_path: profile_root
+                .join("codegraph-candidate-spool.query-index.json"),
+            vector_runtime_path: profile_root.join(CONTEXT_PACK_VECTOR_INDEX_FILE_NAME),
+            vector_audit_path: profile_root.join(CONTEXT_PACK_VECTOR_AUDIT_FILE_NAME),
+            lock_or_publish_state_path: profile_root
+                .join("production-agent-use.publish-state.json"),
+            delta_state_path: profile_root.join(PRODUCTION_AGENT_USE_DELTA_STATE_FILE_NAME),
+            profile_root,
+            lifecycle_expectations: Vec::new(),
+            recovery_commands: Vec::new(),
+            mcp_args: Vec::new(),
+            binary_profile: PRODUCTION_AGENT_USE_PROFILE_NAME.to_string(),
+            scope_policy: IndexScopeOptions::default(),
+        }
+    }
+
+    #[test]
+    fn unresolved_reference_query_compaction_preserves_evidence_under_budget() {
+        let long_text = "x".repeat(768);
+        let items = (0..8)
+            .map(|index| {
+                json!({
+                    "reference_id": format!("repo://edge/{index}"),
+                    "name": format!("missingSymbol{index}"),
+                    "relation": "CALLS",
+                    "reference_class": "repo_local_candidate",
+                    "source_span": {
+                        "repo_relative_path": "src/app.ts",
+                        "start_line": index + 1,
+                        "start_column": 3,
+                        "end_line": index + 1,
+                        "end_column": 24
+                    },
+                    "exactness": "static_heuristic",
+                    "definition_candidate_count": 0,
+                    "repo_graph_lookup": format!("no_defining_entity_named_missingSymbol{index}"),
+                    "not_graph_proof": true,
+                    "metadata": {
+                        "fact_class": "unresolved_reference",
+                        "payload": long_text,
+                    },
+                    "language_capability": {
+                        "language": "typescript",
+                        "frontend": "typescript",
+                        "source_role": "production",
+                        "capability_status": "unknown",
+                        "capability_flags": ["unresolved_reference"],
+                        "proof_strength": "unresolved_reference_non_graph",
+                        "exactness": "static_heuristic",
+                        "resolver_status": "unsupported",
+                        "not_graph_proof": true,
+                        "claimability": {
+                            "reason": long_text,
+                            "not_claimable_as": ["typed_graph_relation", "caller_callee_proof", "linter_blocker"]
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut packet = json!({
+            "command": "query unresolved-calls",
+            "unresolved_references": {
+                "items": items,
+                "rows": 8,
+                "raw_rows_considered": 8,
+                "not_graph_proof": true,
+                "pagination": {"limit": 50, "offset": 0}
+            },
+            "read_path_metrics": {"surface": "agent-use query unresolved-calls", "payload": long_text},
+            "recovery_commands": {"commands": {"index": "codegraph-mcp agent-use index --repo <repo> --json"}},
+            "warnings": []
+        });
+
+        compact_agent_use_agent_json_envelope(
+            &mut packet,
+            &test_profile(),
+            AgentUseDetailMode::Compact,
+            DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            None,
+        );
+
+        assert!(
+            serialized_json_len(&packet) <= DEFAULT_AGENT_USE_AGENT_JSON_MAX_OUTPUT_BYTES,
+            "{}",
+            packet
+        );
+        assert_eq!(
+            packet["agent_json_budget"]["max_output_bytes_exceeded"].as_bool(),
+            Some(false),
+            "{}",
+            packet
+        );
+        assert_eq!(packet["unresolved_references"]["rows"].as_u64(), Some(8));
+        assert_eq!(
+            packet["unresolved_references"]["full_detail_handle"].as_str(),
+            Some("query:unresolved_references:full")
+        );
+        assert_eq!(
+            packet["expansion_handles"][0].as_str(),
+            Some("query:unresolved_references:full")
+        );
+        let items = packet["unresolved_references"]["items"]
+            .as_array()
+            .expect("items remain queryable");
+        assert_eq!(items.len(), 3);
+        let first = &items[0];
+        assert_eq!(first["name"].as_str(), Some("missingSymbol0"));
+        assert_eq!(first["relation"].as_str(), Some("CALLS"));
+        assert_eq!(first["source_span"]["start_line"].as_u64(), Some(1));
+        assert_eq!(
+            first["language_capability"]["capability_status"].as_str(),
+            Some("unknown")
+        );
+        assert!(first.get("metadata").is_none(), "{first}");
+        assert!(first["language_capability"].get("claimability").is_none());
+    }
 }

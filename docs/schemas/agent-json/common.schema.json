@@ -302,7 +302,12 @@
         "external_dependency",
         "builtin_or_std",
         "macro_or_codegen",
-        "dynamic_or_computed"
+        "dynamic_or_computed",
+        "compiler_required",
+        "lsp_required",
+        "runtime_required",
+        "unsupported_language_or_relation",
+        "unknown"
       ]
     },
     "unresolved_reference_item": {

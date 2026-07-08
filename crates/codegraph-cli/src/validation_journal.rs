@@ -1064,6 +1064,8 @@ mod validation_stage_tracker_tests {
             relation_kind: Some(codegraph_core::RelationKind::AliasedBy),
             exactness: None,
             provenance: json!({}),
+            rule_capability_contract: codegraph_core::ValidationRuleCapabilityContract::default(),
+            capability_evaluation: codegraph_core::ValidationCapabilityEvaluation::default(),
             old_fact_claim_state: "unknown".to_string(),
             new_fact_claim_state: "claimable_current".to_string(),
             lifecycle: ValidationLifecycleState::claimable_current(),
