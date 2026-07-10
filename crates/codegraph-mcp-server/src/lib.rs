@@ -24,9 +24,8 @@ use codegraph_core::{
     mvp4_micro_edge_language_capability, normalize_repo_relative_path, ContextPacket,
     ContextSnippet, DictV1PacketBody, Edge, Entity, EvidenceRole, Exactness, MicroEdgeKind,
     MicroEdgeSupportStatus, MicroExactness, MicroSourceRole, PathEvidence, RelationKind,
-    RetrievalCandidate, SourceSpan,
-    SupportedRelationStatus, ValidationBlockingLevel, ValidationClassification,
-    ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
+    RetrievalCandidate, SourceSpan, SupportedRelationStatus, ValidationBlockingLevel,
+    ValidationClassification, ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
     ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
     ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
     ValidationReverificationInput, ValidationRule, ValidationRuleKind,
@@ -39,11 +38,10 @@ use codegraph_index::{
     candidate_spool_index_status_for_repo, compute_entity_source_role_delta, default_db_path,
     index_repo_to_db_with_options, inspect_db_lifecycle_preflight, load_vector_chunk_index_json,
     mvp4_2_micro_edge_endpoint_kinds, query_candidate_spool_index_for_repo,
-    rtds_dependency_closure_for_changed_paths_to_db,
-    snapshot_normalized_facts_for_paths_to_db, update_changed_files_to_db,
-    validate_edit_changed_files_preflight_with_scope, validate_vector_chunk_source_bindings,
-    vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
-    CandidateSpoolIndexQueryResult, DbLifecyclePreflight, EdgeDeltaEntry,
+    rtds_dependency_closure_for_changed_paths_to_db, snapshot_normalized_facts_for_paths_to_db,
+    update_changed_files_to_db, validate_edit_changed_files_preflight_with_scope,
+    validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
+    CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, DbLifecyclePreflight, EdgeDeltaEntry,
     EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport, IndexOptions, IndexScopeOptions,
     NormalizedFactSnapshotOptions, UnresolvedReferenceDeltaEntry,
     ValidateEditChangedFilesPreflight, VectorChunkIndexBuildOptions,
@@ -5374,7 +5372,9 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     if !relation_span_present {
         push(
             CG_MVP4_2_MICRO_EDGE_MISSING_SOURCE_SPAN,
-            &format!("persisted claimable {relation_label} edge is missing its relation source span"),
+            &format!(
+                "persisted claimable {relation_label} edge is missing its relation source span"
+            ),
             false,
             provenance_present,
         )?;
@@ -13001,6 +13001,83 @@ mod tests {
                         .as_array()
                         .is_some_and(|steps| !steps.is_empty())
             }),
+            "{packet}"
+        );
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false)
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+    }
+
+    #[test]
+    fn mcp_validate_edit_ignores_deleted_callee_mentions_in_comments_and_strings() {
+        let repo = fixture_repo();
+        fs::write(
+            repo.join("src").join("service.js"),
+            "export function removedTarget() {\n  return 1;\n}\n\nexport function keptTarget() {\n  return 2;\n}\n",
+        )
+        .expect("write service source");
+        fs::write(
+            repo.join("src").join("consumer.js"),
+            "import { removedTarget, keptTarget } from './service';\n\nexport function caller() {\n  // removedTarget();\n  /* removedTarget(); */\n  const quoted = \"removedTarget()\";\n  const templated = `removedTarget()`;\n  return keptTarget();\n}\n",
+        )
+        .expect("write consumer source");
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo
+            .parent()
+            .expect("repo parent")
+            .join(format!("app-validate-edit-masked-hard-{profile_id}"));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        fs::write(
+            repo.join("src").join("service.js"),
+            "export function keptTarget() {\n  return 3;\n}\n",
+        )
+        .expect("remove target source");
+        fs::write(
+            repo.join("src").join("consumer.js"),
+            "                                                        \n\nfunction keptTarget() {\n  return 3;\n}\n\nexport function caller() {\n  // removedTarget();\n  /* removedTarget(); */\n  const quoted = \"removedTarget()\";\n  const templated = `removedTarget()`;\n  return keptTarget();\n}\n",
+        )
+        .expect("remove target import");
+
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": ["src/service.js", "src/consumer.js"],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        let result = &response["result"];
+        assert_eq!(result["isError"].as_bool(), Some(false));
+        let packet = &result["structuredContent"];
+        assert_eq!(packet["status"].as_str(), Some("ok"), "{packet}");
+        assert_eq!(packet["hard_interrupt_available"].as_bool(), Some(false));
+        assert_eq!(packet["must_fix_before_continuing"].as_bool(), Some(false));
+        assert_eq!(
+            packet["validation_blocking_error_count"].as_u64(),
+            Some(0),
             "{packet}"
         );
         assert_eq!(

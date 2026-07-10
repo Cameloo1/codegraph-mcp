@@ -80,7 +80,10 @@ by symbol before demoting, so deletions that shift line numbers still block
 when a call-shaped reference to the removed callee remains in the file.
 Resolution never guesses: a reference that does not resolve to an indexed
 file and a genuine declared name emits no exact edge, so these interrupts
-have no false-positive path from fuzzy matching.
+have no false-positive path from fuzzy matching. The cross-file call scanners
+also consult a language-aware code/comment/string boundary before producing
+exact CALLS edges; the hard interrupt is armed only by call syntax classified
+as code under the supported scopes above.
 
 Forward unresolved-reference findings (new calls to names that resolve
 nowhere) are warning-only in every language by design:

@@ -7942,6 +7942,27 @@ fn agent_use_watch_outputs_hard_interrupt_when_blocking() {
 }
 
 #[test]
+fn agent_use_watch_ignores_deleted_callee_mentions_in_comments_and_strings() {
+    let _guard = lock_env_test();
+    let watch = run_agent_use_masked_hard_interrupt_watch();
+
+    assert_eq!(watch["status"].as_str(), Some("updated"), "{watch:?}");
+    assert_eq!(
+        watch["validation_must_fix_before_continuing"].as_bool(),
+        Some(false),
+        "{watch:?}"
+    );
+    assert_eq!(watch["validation_blocking_error_count"].as_u64(), Some(0));
+    assert_eq!(watch["hard_interrupt_available"].as_bool(), Some(false));
+    assert!(watch["hard_interrupt"].is_null(), "{watch:?}");
+    assert_eq!(
+        watch["validation_packet"]["hard_interrupt_available"].as_bool(),
+        Some(false)
+    );
+    assert!(watch["validation_packet"]["hard_interrupt"].is_null());
+}
+
+#[test]
 fn agent_use_watch_no_interrupt_when_only_warnings() {
     let _guard = lock_env_test();
     let watch = run_agent_use_warning_only_watch();
@@ -20233,11 +20254,38 @@ fn write_agent_use_hard_interrupt_fixture(root: &Path, target_count: usize) {
     );
 }
 
+fn write_agent_use_masked_hard_interrupt_fixture(root: &Path) {
+    write_cli_fixture_file(root, "package.json", "{\n  \"type\": \"module\"\n}\n");
+    write_cli_fixture_file(
+        root,
+        "src/service.js",
+        "export function hardInterruptTarget0() {\n  return \"legacy\";\n}\n\nexport function hardInterruptStillHere() {\n  return \"still-here\";\n}\n",
+    );
+    write_cli_fixture_file(
+        root,
+        "src/consumer.js",
+        "import { hardInterruptTarget0, hardInterruptStillHere } from './service';\n\nexport function runHardInterruptConsumer() {\n  const outputs = [];\n  // hardInterruptTarget0();\n  /* hardInterruptTarget0(); */\n  const quoted = \"hardInterruptTarget0()\";\n  const templated = `hardInterruptTarget0()`;\n  outputs.push(hardInterruptStillHere());\n  return outputs.join(',');\n}\n",
+    );
+}
+
 fn remove_agent_use_hard_interrupt_targets(root: &Path) {
     write_cli_fixture_file(
         root,
         "src/service.js",
         "export function hardInterruptStillHere() {\n  return \"changed\";\n}\n",
+    );
+}
+
+fn remove_agent_use_masked_hard_interrupt_target(root: &Path) {
+    write_cli_fixture_file(
+        root,
+        "src/service.js",
+        "export function hardInterruptStillHere() {\n  return \"changed\";\n}\n",
+    );
+    write_cli_fixture_file(
+        root,
+        "src/consumer.js",
+        "import { hardInterruptStillHere } from './service';\n\nexport function runHardInterruptConsumer() {\n  const outputs = [];\n  // hardInterruptTarget0();\n  /* hardInterruptTarget0(); */\n  const quoted = \"hardInterruptTarget0()\";\n  const templated = `hardInterruptTarget0()`;\n  outputs.push(hardInterruptStillHere());\n  return outputs.join(',');\n}\n",
     );
 }
 
@@ -20287,6 +20335,57 @@ fn run_agent_use_hard_interrupt_watch(target_count: usize, extra_args: &[&str]) 
 
     remove_dir_all_with_retry(&repo, "cleanup hard interrupt repo");
     remove_dir_all_with_retry(&data_root, "cleanup hard interrupt data root");
+    watch
+}
+
+fn run_agent_use_masked_hard_interrupt_watch() -> Value {
+    let data_root = temp_repo();
+    let repo = temp_repo();
+    write_agent_use_masked_hard_interrupt_fixture(&repo);
+    let profile =
+        super::resolve_agent_use_profile_with_data_root(&repo, &data_root).expect("profile");
+    with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "index".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use index for masked hard interrupt fixture");
+
+    remove_agent_use_masked_hard_interrupt_target(&repo);
+    let watch = with_agent_use_data_root(&data_root, || {
+        super::run_agent_use_command(&[
+            "watch".to_string(),
+            "--repo".to_string(),
+            path_string(&repo),
+            "--once".to_string(),
+            "--changed".to_string(),
+            "src/service.js".to_string(),
+            "--changed".to_string(),
+            "src/consumer.js".to_string(),
+            "--json".to_string(),
+        ])
+    })
+    .expect("agent-use watch masked hard interrupt fixture");
+
+    assert_eq!(watch["external_db_used"].as_bool(), Some(true), "{watch:?}");
+    assert_eq!(
+        watch["db_path"].as_str(),
+        Some(path_string(&profile.db_path).as_str()),
+        "{watch:?}"
+    );
+    assert_eq!(
+        watch["watch_db"]["actual_db_path_opened"].as_str(),
+        Some(path_string(&profile.db_path).as_str()),
+        "{watch:?}"
+    );
+    assert_eq!(watch["normal_dot_codegraph_mutated"].as_bool(), Some(false));
+    assert_no_dot_codegraph_sqlite(&repo);
+
+    remove_dir_all_with_retry(&repo, "cleanup masked hard interrupt repo");
+    remove_dir_all_with_retry(&data_root, "cleanup masked hard interrupt data root");
     watch
 }
 
