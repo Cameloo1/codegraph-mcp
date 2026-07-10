@@ -285,19 +285,12 @@ The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
 coding-agent context, not public metric verdicts by themselves.
 
-For a local packet gallery and DB-footprint view of the validate-edit loop, see
-[linter-experience-lab.md](linter-experience-lab.md).
-
-For local diagnostic measurement of the same edit-time guardrail loop, use the
-Agent Guard Playground guide in
-[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md#agent-guard-playground).
-It measures bad edits caught, clean edits passed, repairs cleared, proof/trust
-ledger discipline, stale-evidence safety, packet usability, and same-agent A/B
-scaffold invariants. The current verified local gate is
-`reports/final/agent_guard_release_e2e_three_run_gate.json`; dashboard evidence
-comes from that gate's per-run `dashboard.html` artifacts. It does not create a
-public benchmark claim, a CodeGraph-over-`rg` claim, a real-agent patch-quality
-claim, or an MVP4 readiness claim.
+For local diagnostic evaluation of edit-time guardrails, see the
+[Agent Reliability Benchmark Lab](agent-reliability-benchmark-lab.md). It covers
+proof-discipline scoring, hallucination traps, and patch-outcome tests. Its
+results remain local diagnostic evidence; they do not create a public benchmark
+claim, a CodeGraph-over-`rg` claim, a real-agent patch-quality claim, or an
+MVP4 readiness claim.
 
 Optional candidate recall for harder tasks:
 
