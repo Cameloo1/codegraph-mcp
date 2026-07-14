@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">CodeGraph verified signal field</title>
+  <desc id="desc">Candidate evidence paths converge at graph and source verification. Supported proof paths continue toward a compact context packet while unsupported paths remain visibly incomplete.</desc>
+  <defs>
+    <linearGradient id="blueCyan" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#1769ff"/><stop offset=".55" stop-color="#22a7ff"/><stop offset="1" stop-color="#24d7df"/></linearGradient>
+    <linearGradient id="violetMint" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#a06cf5"/><stop offset=".5" stop-color="#2cc5e8"/><stop offset="1" stop-color="#20d49b"/></linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <pattern id="grain" width="140" height="140" patternUnits="userSpaceOnUse"><filter id="noise"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="2" stitchTiles="stitch"/></filter><rect width="140" height="140" filter="url(#noise)" opacity=".035"/></pattern>
+    <style>
+      .display{font-family:Arial,Helvetica,sans-serif;fill:#f4f6f8;font-weight:600;letter-spacing:-2.4px}.body{font-family:Arial,Helvetica,sans-serif;fill:#aeb7c4}.mono{font-family:Consolas,Menlo,monospace;fill:#768292;font-size:13px}.guide{fill:none;stroke:#586272;stroke-width:1;stroke-dasharray:5 8;opacity:.28}.candidate{fill:none;stroke:#53677f;stroke-width:1.15;stroke-dasharray:4 6;opacity:.44}.verified{fill:none;stroke:url(#blueCyan);stroke-width:1.55;opacity:.9}.derived{fill:none;stroke:url(#violetMint);stroke-width:1.35;opacity:.76}.node{fill:#dffcff}.bead{fill:#4fe1c1}.rule{stroke:#242b35;stroke-width:1}
+    </style>
+  </defs>
+  <rect width="1600" height="720" fill="#030508"/>
+  <rect width="1600" height="720" fill="url(#grain)" opacity=".22"/>
+  <line class="rule" x1="396" y1="58" x2="396" y2="662"/>
+  <g transform="translate(72 88)">
+    <text class="display" font-size="66" x="0" y="66">A verified map</text>
+    <text class="display" font-size="66" x="0" y="128">for coding agents.</text>
+    <text class="body" font-size="18" x="0" y="185">Local typed graph context, checked against</text>
+    <text class="body" font-size="18" x="0" y="211">source spans before it becomes proof.</text>
+    <text class="mono" x="0" y="498">vectors suggest</text>
+    <text class="mono" x="0" y="524">graph verifies</text>
+    <text class="mono" x="0" y="550">source spans support the packet</text>
+  </g>
+  <g aria-hidden="true">
+    <circle class="guide" cx="1040" cy="358" r="94"/><circle class="guide" cx="1040" cy="358" r="178"/><circle class="guide" cx="1040" cy="358" r="270"/>
+    <line class="guide" x1="1040" y1="74" x2="1040" y2="646"/><line class="guide" x1="760" y1="358" x2="1322" y2="358"/>
+    <path class="candidate" d="M420 118 C620 110 772 126 894 260 C955 327 994 344 1040 358"/>
+    <path class="candidate" d="M420 154 C655 158 780 180 904 278 C958 322 1004 347 1040 358"/>
+    <path class="candidate" d="M420 198 C640 206 798 228 916 296 C968 326 1008 349 1040 358"/>
+    <path class="candidate" d="M420 254 C632 244 800 266 930 314 C982 333 1012 351 1040 358"/>
+    <path class="candidate" d="M420 602 C635 590 786 550 916 430 C980 372 1008 364 1040 358"/>
+    <path class="candidate" d="M420 558 C640 548 808 510 930 414 C984 371 1010 363 1040 358"/>
+    <path class="candidate" d="M420 512 C650 498 820 470 944 400 C990 373 1014 365 1040 358"/>
+    <path class="candidate" d="M420 462 C668 446 830 430 956 386 C998 371 1018 364 1040 358"/>
+    <path class="verified" d="M420 92 C652 92 816 110 930 246 C985 312 1018 344 1040 358 C1090 390 1142 412 1214 420 C1332 434 1426 404 1568 302"/>
+    <path class="verified" d="M420 138 C664 140 828 164 942 268 C994 316 1020 346 1040 358 C1092 388 1156 390 1236 362 C1360 318 1450 222 1572 126"/>
+    <path class="verified" d="M420 214 C680 216 842 238 958 302 C1002 326 1024 350 1040 358 C1100 384 1168 424 1250 484 C1370 572 1462 614 1570 636"/>
+    <path class="derived" d="M420 644 C660 622 834 566 956 442 C1002 395 1024 370 1040 358 C1098 316 1172 274 1262 238 C1370 194 1464 172 1572 180"/>
+    <path class="derived" d="M420 418 C656 414 840 408 964 382 C1008 373 1026 364 1040 358 C1108 332 1182 318 1272 324 C1384 332 1466 366 1570 446"/>
+    <path class="candidate" d="M420 318 C684 322 858 330 976 344 C1012 348 1028 354 1040 358"/>
+    <path class="candidate" d="M420 362 C692 362 866 360 982 358 C1016 358 1030 358 1040 358"/>
+    <circle class="node" cx="1040" cy="358" r="4" filter="url(#softGlow)"/>
+    <circle class="bead" cx="1214" cy="420" r="3"/><circle class="bead" cx="1236" cy="362" r="3"/><circle class="bead" cx="1250" cy="484" r="3"/><circle class="bead" cx="1262" cy="238" r="3"/>
+    <text class="mono" x="968" y="330">graph/source verify</text><text class="mono" x="1192" y="344">CALLS</text><text class="mono" x="1264" y="222">parser_verified</text><text class="mono" x="1270" y="504">src/auth.ts:82-101</text><text class="mono" x="1432" y="274">compact packet</text>
+  </g>
+</svg>
