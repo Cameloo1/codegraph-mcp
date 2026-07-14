@@ -73,6 +73,15 @@ jobs:
       - name: Markdown link check
         run: python scripts\check_markdown_links.py
 
+      - name: Visual system checks
+        shell: pwsh
+        run: |
+          node --check codegraph-ui\static\app.js
+          node --check site\proof-field.js
+          node --check site\app.js
+          python scripts\brand\generate_proof_field.py --all
+          git diff --exit-code -- docs/assets/readme
+
   linux-build-test-smoke:
     name: linux build test smoke
     runs-on: ubuntu-latest
@@ -124,6 +133,15 @@ jobs:
 
       - name: Markdown link check
         run: python scripts/check_markdown_links.py
+
+      - name: Visual system checks
+        shell: bash
+        run: |
+          node --check codegraph-ui/static/app.js
+          node --check site/proof-field.js
+          node --check site/app.js
+          python scripts/brand/generate_proof_field.py --all
+          git diff --exit-code -- docs/assets/readme
 
   docker-smoke:
     name: docker smoke
