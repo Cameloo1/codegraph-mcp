@@ -1,0 +1,26 @@
+{
+  "title": {
+    "width": 1600,
+    "height": 720,
+    "seed": "codegraph-readme-title-v1",
+    "attractor": [0.58, 0.54],
+    "packet": [0.82, 0.47],
+    "paths": 74
+  },
+  "taxonomy": {
+    "width": 1600,
+    "height": 680,
+    "seed": "codegraph-proof-taxonomy-v1",
+    "paths_per_panel": 30
+  },
+  "agent_loop": {
+    "width": 1600,
+    "height": 760,
+    "seed": "codegraph-agent-loop-v2"
+  },
+  "terminal": {
+    "width": 1480,
+    "height": 760,
+    "seed": "codegraph-terminal-v2"
+  }
+}
