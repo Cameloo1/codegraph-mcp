@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Validate README public assets and stable report references.
+"""Validate README public assets and deterministic visual-system references.
 
-The README should explain product behavior with stable public assets. It should
-not link generated DBs, raw run directories, or diagnostic-only artifacts.
+The README should explain current product behavior with stable public assets. It
+must not link generated DBs, raw run directories, diagnostic-only artifacts, or
+machine-local content. Promoted SVGs are also checked for accessible metadata
+and unsupported command shapes.
 """
 
 from __future__ import annotations
 
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -16,12 +19,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
 
 REQUIRED_README_ASSETS = [
-    "docs/assets/readme/title-pic.jpeg",
+    "docs/assets/readme/title-pic.svg",
     "docs/assets/readme/agent_use_loop.svg",
+    "docs/assets/readme/proof_taxonomy.svg",
     "docs/assets/readme/codegraph_terminal.svg",
 ]
 
+REQUIRED_VISUAL_SYSTEM_FILES = [
+    "docs/design/VISUAL_SYSTEM.md",
+    "docs/design/GRAPH_VISUAL_GRAMMAR.md",
+    "docs/design/CLAIMS_AND_COPY.md",
+    "scripts/brand/generate_proof_field.py",
+    "scripts/brand/proof_field_presets.json",
+    "site/index.html",
+    "site/styles.css",
+    "site/proof-field.js",
+    "site/app.js",
+]
+
 DISALLOWED_README_TARGETS = [
+    "docs/assets/readme/title-pic.jpeg",
     "docs/assets/readme/agent_readiness_manifest.json",
     "docs/assets/readme/evidence_safety.png",
     "docs/assets/readme/evidence_boundary_ladder.svg",
@@ -34,11 +51,12 @@ REPORT_PATH_RE = re.compile(
     r"reports[\\/](?:final|comparison)[\\/][A-Za-z0-9_.\\/\-]+(?:\.md|\.json|\.jsonl)"
 )
 PUBLIC_ASSET_TEXT_PATTERNS = [
-    (re.compile(r"C:\\Users\\wamin", re.IGNORECASE), "machine-local user path"),
-    (re.compile(r"/mnt/host/c/Users/wamin", re.IGNORECASE), "machine-local host path"),
+    (re.compile(r"(?:[A-Za-z]:\\Users\\|/Users/|/home/|/mnt/(?:c|host)/Users/)", re.IGNORECASE), "machine-local user path"),
     (re.compile(r"\bcodegraph-mcp\s+--query\b", re.IGNORECASE), "unsupported top-level --query command"),
     (re.compile(r"\bcargo\s+run\s+--release\s+--bin\s+codegraph-mcp\s+--\s+--query\b", re.IGNORECASE), "unsupported cargo -- --query command"),
 ]
+
+SVG_NS = "{http://www.w3.org/2000/svg}"
 
 
 def split_target(raw: str) -> str:
@@ -88,21 +106,52 @@ def readme_report_paths(text: str) -> set[str]:
     return paths
 
 
+def validate_svg(path: Path, errors: list[str]) -> None:
+    rel = path.relative_to(REPO_ROOT).as_posix()
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError) as error:
+        errors.append(f"README public asset `{rel}` is not valid SVG XML: {error}")
+        return
+
+    if root.tag not in {"svg", f"{SVG_NS}svg"}:
+        errors.append(f"README public asset `{rel}` does not have an SVG root element")
+        return
+
+    title = root.find(f"{SVG_NS}title")
+    if title is None:
+        title = root.find("title")
+    desc = root.find(f"{SVG_NS}desc")
+    if desc is None:
+        desc = root.find("desc")
+    if title is None or not "".join(title.itertext()).strip():
+        errors.append(f"README public asset `{rel}` is missing a non-empty SVG title")
+    if desc is None or not "".join(desc.itertext()).strip():
+        errors.append(f"README public asset `{rel}` is missing a non-empty SVG description")
+
+
 def validate() -> int:
     text = README.read_text(encoding="utf-8")
     paths = readme_report_paths(text)
     errors: list[str] = []
 
     for required in REQUIRED_README_ASSETS:
-        if required not in text.replace("\\", "/"):
+        normalized_readme = text.replace("\\", "/")
+        target = REPO_ROOT / required
+        if required not in normalized_readme:
             errors.append(f"README does not reference required public asset `{required}`")
-        elif not case_sensitive_exists(REPO_ROOT / required):
+        elif not case_sensitive_exists(target):
             errors.append(f"README public asset is missing or case-mismatched: `{required}`")
-        elif required.endswith(".svg"):
-            asset_text = (REPO_ROOT / required).read_text(encoding="utf-8", errors="replace")
+        else:
+            asset_text = target.read_text(encoding="utf-8", errors="replace")
             for pattern, label in PUBLIC_ASSET_TEXT_PATTERNS:
                 if pattern.search(asset_text):
                     errors.append(f"README public asset `{required}` contains {label}")
+            validate_svg(target, errors)
+
+    for required in REQUIRED_VISUAL_SYSTEM_FILES:
+        if not case_sensitive_exists(REPO_ROOT / required):
+            errors.append(f"visual-system file is missing or case-mismatched: `{required}`")
 
     for disallowed in DISALLOWED_README_TARGETS:
         if disallowed in text.replace("\\", "/"):
@@ -126,7 +175,9 @@ def validate() -> int:
 
     print(
         "README artifact check passed: "
-        f"{len(REQUIRED_README_ASSETS)} public assets and {len(paths)} report paths checked"
+        f"{len(REQUIRED_README_ASSETS)} public SVGs, "
+        f"{len(REQUIRED_VISUAL_SYSTEM_FILES)} visual-system files, "
+        f"and {len(paths)} report paths checked"
     )
     return 0
 
