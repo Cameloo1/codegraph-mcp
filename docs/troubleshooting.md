@@ -127,15 +127,33 @@ treat it as optional layer state unless a reverified proof-integrity finding is
 also present. Normal `LOCAL_RETURNS_TO` add/remove/change deltas are not source
 errors. A persisted micro-edge integrity contradiction should recommend
 reindexing or repairing CodeGraph state before rerunning validation; it does not
-by itself prove that the source must be edited. Micro-edge visibility does not
-activate local-flow packets, `flow_proof`, `mutation_proof`, or route/auth
-semantics.
+by itself prove that the source must be edited. Micro-edge visibility or a
+micro-edge delta alone does not create `flow_proof`, `mutation_proof`, or
+route/auth semantics; packet proof also requires a current, complete,
+source-spanned, provenance-safe production packet.
 
 When MVP4.3 packet handles are present, a missing inline packet body is expected
 on context/routing surfaces. Open the handle through the explicit packet
 expansion path to inspect the compact `dict_v1` `packet_body`; request
 explain/audit expansion only when verbose `ordered_steps` are needed. A stale,
 truncated, unavailable, or unopened packet handle is not flow proof.
+
+For MCP, resolve the handle with `codegraph.open_local_flow_packet` and its
+exact `packet_id`; set `include_ordered_steps: true` only for explicit verbose
+inspection. For CLI diagnostics, use:
+
+```powershell
+codegraph-mcp audit local-flow-packets --db <path> --packet-id <id>
+codegraph-mcp audit local-flow-packets --db <path> --packet-id <id> --expand
+```
+
+Querying or opening a packet does not create proof. The scoped production
+contract covers representative canonical JavaScript, JSX, TypeScript, TSX,
+Python, Go, Rust, C, C++, Java, C#, Ruby, and PHP paths for same-file
+intraprocedural local flow. It does not claim all extension variants, dynamic
+dispatch, runtime behavior, framework conventions, compiler-dependent
+relations, cross-file flow, or project-wide resolution. Unsupported paths are
+conservative and are not source-code validation failures.
 
 ## Windows Application Control Blocks A Fresh Build Or Test
 

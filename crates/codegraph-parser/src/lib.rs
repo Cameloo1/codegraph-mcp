@@ -37,6 +37,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tree_sitter::{Node, Parser, Point, Tree};
 
+mod parser_facts_v1;
+pub use parser_facts_v1::{ParserFactsV1, ParserFactsV1Gap, ParserFactsV1Report};
+
 const MAX_EXTRACTED_LABEL_CHARS: usize = 64;
 const MAX_IDENTITY_HASH_CHARS: usize = 16;
 
@@ -309,6 +312,12 @@ pub const LANGUAGE_CAPABILITY_STATUS_VALUES: &[LanguageCapabilityStatus] = &[
 pub enum LanguageCapabilityScope {
     LanguageFrontend,
     TypeScriptProductionTsOnly,
+    SameFileIntraprocedural,
+    SameFileDirectCalls,
+    JavaScriptFamilyStaticImports,
+    PythonRepoLocalIndexedImports,
+    GoSamePackageIndexedFiles,
+    RustCrateLocalIndexedModules,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -316,6 +325,19 @@ pub struct LanguageCapability {
     pub flag: LanguageCapabilityFlag,
     pub status: LanguageCapabilityStatus,
     pub scope: LanguageCapabilityScope,
+}
+
+/// A narrower readiness row for behavior whose proof boundary is smaller than
+/// a whole language frontend. These rows supplement the compatibility
+/// capability matrix: exact CALLS support can coexist with broader
+/// compiler/runtime requirements, and parser-local flow facts imply production
+/// packet support only when an accepted scoped row names that proof boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LanguageScopedReadiness {
+    pub flag: LanguageCapabilityFlag,
+    pub status: LanguageCapabilityStatus,
+    pub scope: LanguageCapabilityScope,
+    pub proof_boundary: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -342,6 +364,7 @@ pub struct LanguageFrontendInfo {
     pub supported_relation_kinds: &'static [RelationKind],
     pub extractors: &'static [ExtractorCapability],
     pub capabilities: &'static [LanguageCapability],
+    pub scoped_readiness: &'static [LanguageScopedReadiness],
     pub known_limitations: &'static [&'static str],
 }
 
@@ -354,6 +377,15 @@ impl LanguageFrontendInfo {
             .iter()
             .find(|capability| capability.flag == flag)
             .map(|capability| capability.status)
+    }
+
+    pub fn scoped_readiness_for(
+        &self,
+        flag: LanguageCapabilityFlag,
+    ) -> impl Iterator<Item = &LanguageScopedReadiness> {
+        self.scoped_readiness
+            .iter()
+            .filter(move |readiness| readiness.flag == flag)
     }
 }
 
@@ -1900,31 +1932,6 @@ const TS_EXTRACTORS: &[ExtractorCapability] = &[
     },
 ];
 
-const GENERIC_TIER3_EXTRACTORS: &[ExtractorCapability] = &[
-    ExtractorCapability {
-        name: "tree-sitter-language-frontend",
-        exactness: Exactness::ParserVerified,
-        supported_relations: STRUCTURAL_RELATIONS,
-        known_limitations: &["imports/exports are syntax facts, not resolved package graph facts"],
-    },
-    ExtractorCapability {
-        name: "tree-sitter-conservative-call-extractor",
-        exactness: Exactness::ParserVerified,
-        supported_relations: &[
-            RelationKind::Calls,
-            RelationKind::Callee,
-            RelationKind::Argument0,
-            RelationKind::Argument1,
-            RelationKind::ArgumentN,
-            RelationKind::FlowsTo,
-        ],
-        known_limitations: &[
-            "same-scope calls are parser verified",
-            "unresolved or cross-file calls are retained as static_heuristic placeholders",
-        ],
-    },
-];
-
 const PYTHON_EXTRACTORS: &[ExtractorCapability] = &[
     ExtractorCapability {
         name: "tree-sitter-python-frontend",
@@ -2195,97 +2202,92 @@ const PHP_EXTRACTORS: &[ExtractorCapability] = &[
 const JS_LIMITATIONS: &[&str] = &[
     "ESM imports/exports, CommonJS require/module.exports, direct calls, read/write syntax, and local dataflow hints are parser or heuristic facts unless resolver provenance proves stronger semantics",
     "package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence, not resolved package/module graph proof",
-    "compiler_verified, lsp_verified, caller/callee exactness, and local binding exactness are unavailable for JavaScript until a resolver/runtime model runs and records provenance",
+    "caller/callee exactness is limited to same-file direct calls and indexed JavaScript-family static-import resolution; dynamic dispatch and broader runtime targets remain unproved",
+    "at broad language_frontend scope, compiler_verified, lsp_verified, and general JavaScript local-binding exactness remain unavailable until a resolver/runtime model runs and records provenance; the accepted same-file intraprocedural scoped_readiness rows are the bounded exception",
     "dynamic import, computed property/call, prototype mutation, monkeypatching, eval/reflection, framework conventions, and bundler/runtime aliases remain unknown or heuristic",
-    "MVP4 local-flow packet support and flow_proof remain not_implemented for JavaScript; the active packet slice is TypeScript .ts production only",
+    "production local-flow packets are supported only for same-file intraprocedural .js/.mjs/.cjs ParserFactsV1 facts; cross-file, dynamic, and runtime flow remain unsupported",
 ];
 const JSX_LIMITATIONS: &[&str] = &[
     "JSX component declarations/usages, imports, exports, direct calls, event-handler syntax, and props syntax are parser or heuristic facts unless resolver provenance proves stronger semantics",
     "package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence, not resolved package/module graph proof",
-    "compiler_verified, lsp_verified, caller/callee exactness, and local binding exactness are unavailable for JSX until a resolver/runtime model runs and records provenance",
+    "caller/callee exactness is limited to same-file direct calls and indexed JavaScript-family static-import resolution; at broad language_frontend scope compiler_verified, lsp_verified, general local-binding exactness, dynamic dispatch, and broader runtime targets remain unavailable, while accepted same-file intraprocedural scoped_readiness rows stay bounded",
     "dynamic props, event handlers, component resolution, framework conventions, dynamic import, computed property/call, prototype mutation, monkeypatching, eval/reflection, and bundler/runtime aliases remain unknown or heuristic",
-    "MVP4 local-flow packet support and flow_proof remain not_implemented for JSX; the active packet slice is TypeScript .ts production only",
+    "production local-flow packets are supported only for same-file intraprocedural .jsx ParserFactsV1 facts; cross-file, component-runtime, and dynamic flow remain unsupported",
 ];
 const TS_LIMITATIONS: &[&str] = &[
-    "tsconfig, path aliases, module resolution, symbol resolution, and call target resolution are compiler facts only when the optional TypeScript helper actually runs and records provenance",
+    "same-file direct calls and indexed JavaScript-family static imports have scoped exact CALLS support; tsconfig, path aliases, broader module resolution, symbol resolution, and dynamic call targets are compiler facts only when the optional TypeScript helper actually runs and records provenance",
     ".d.ts, decorator, dynamic import, computed property, and framework/component runtime behavior remain unsupported, unknown, or heuristic unless source-spanned compiler facts prove them",
     "parser-only fallback preserves exactness labels and does not fake compiler proof",
-    "local binding/read-write/dataflow and local-flow packet support are claimable only for the current TypeScript .ts production slice",
+    "local binding/read-write/dataflow and local-flow packets are claimable only for production exact .ts legacy v1 and .mts/.cts ParserFactsV1 same-file intraprocedural facts; .d.ts is excluded",
 ];
 const TSX_LIMITATIONS: &[&str] = &[
     "TSX component declarations, JSX element references, imports, exports, props syntax, and local calls are parser facts unless compiler provenance proves stronger semantics",
-    "tsconfig, path aliases, module resolution, symbol resolution, and call target resolution are compiler facts only when the optional TypeScript helper actually runs and records provenance",
+    "same-file direct calls and indexed JavaScript-family static imports have scoped exact CALLS support; tsconfig, path aliases, broader module resolution, symbol resolution, and dynamic call targets require compiler provenance",
     "event handlers, React/framework runtime behavior, dynamic import, computed property, and component resolution remain unknown or heuristic unless source-spanned compiler/runtime facts prove them",
-    "local binding exactness requires compiler evidence; read/write facts are parser-only and local dataflow remains heuristic for TSX",
-    "MVP4 local-flow packet support and flow_proof remain not_implemented for TSX; the active packet slice is TypeScript .ts production only",
+    "at broad language_frontend scope, general TSX local-binding exactness requires compiler evidence, read/write facts are parser-only, and local dataflow remains heuristic; accepted same-file intraprocedural scoped_readiness rows are a separate bounded ParserFactsV1 contract",
+    "production local-flow packets are supported only for same-file intraprocedural .tsx ParserFactsV1 facts; cross-file, component-runtime, and dynamic flow remain unsupported",
 ];
-const TIER3_LIMITATIONS: &[&str] = &[
-    "caller/callee extraction is conservative and parser-level only",
-    "cross-file calls are not compiler verified",
-    "dataflow, security, and test impact remain explicitly unsupported",
-];
-
 const PYTHON_LIMITATIONS: &[&str] = &[
-    "syntax/entity/import/from-import/decorator/type-hint/direct-call extraction is parser-only unless a local parser-scope declaration is proven",
+    "same-file direct calls and supported repo-local indexed imports have scoped exact CALLS support; other syntax/entity/import/from-import/decorator/type-hint/direct-call extraction remains parser-only",
     "pyproject/setup.cfg/setup.py dependency and sibling-module classification is diagnostic evidence, not resolved package/module graph proof",
     "importlib, __import__, getattr/setattr, monkeypatch/open runtime mutation, and dynamic dispatch remain unknown/runtime boundaries",
-    "read/write/dataflow and local-flow packets remain unsupported for Python",
+    "production .py ParserFactsV1 local-flow packets are supported only for the same-file intraprocedural scoped contract; Test/Generated sources remain nonclaimable, and cross-file modules, dynamic attributes/imports/dispatch, and runtime flow remain unsupported",
 ];
 
 const GO_LIMITATIONS: &[&str] = &[
-    "syntax/entity/package/import/function/method/struct/interface/direct-call/goroutine extraction is parser-only unless a local parser-scope declaration is proven",
+    "same-file direct calls and same-package indexed sibling calls have scoped exact CALLS support; other syntax/entity/package/import/function/method/struct/interface/direct-call/goroutine extraction remains parser-only",
     "go.mod module/require and sibling-file classification is diagnostic evidence, not resolved package/module graph proof",
     "selector dispatch, interface targets, build tags, cgo, channel behavior, and imported package targets require future go list/go/types/build/runtime support",
-    "local-flow packets remain unsupported for Go",
+    "production .go ParserFactsV1 local-flow packets are supported only for the same-file intraprocedural scoped contract; Test/Generated sources remain nonclaimable, and cross-file packages, selector/interface dispatch, build tags, cgo, compiler, and runtime flow remain unsupported",
 ];
 
 const RUST_LIMITATIONS: &[&str] = &[
-    "syntax/entity/module/use/function/method/impl/trait/type/direct-call extraction is parser-only unless a same-file parser-scope declaration is proven",
+    "same-file direct calls and supported crate-local indexed use/mod paths have scoped exact CALLS support; other syntax/entity/module/use/function/method/impl/trait/type/direct-call extraction remains parser-only",
     "Cargo.toml package/dependency and sibling-module classification is diagnostic evidence, not resolved crate/module graph proof",
     "trait dispatch, macro expansion, cfg/feature-gated code, unsafe semantics, cross-crate targets, and rust-analyzer/cargo metadata resolution require future compiler/build/macro/runtime support",
-    "local-flow packets remain unsupported for Rust",
+    "production .rs ParserFactsV1 local-flow packets are supported only for the same-file intraprocedural scoped contract; Test/Generated sources remain nonclaimable, and cross-file/cross-crate paths, macro expansion, trait dispatch, cfg/features, compiler, and runtime flow remain unsupported",
 ];
 
 const JAVA_LIMITATIONS: &[&str] = &[
     "syntax/entity/package/import/static-import extraction is parser-only",
-    "direct method call and object creation syntax is recorded without caller/callee proof",
+    "general direct method-call and object-creation syntax is recorded without broad or cross-file caller/callee proof; accepted same-file method-local scoped_readiness is the bounded static exception",
     "classpath, overload, virtual dispatch, reflection, annotation processing, and DI require future compiler/build or runtime support",
-    "read/write/dataflow and local-flow packets remain unsupported for Java",
+    "production .java ParserFactsV1 local-flow packets are supported only for the same-file method-local intraprocedural scoped contract; Test/Generated sources remain nonclaimable, and cross-file/classpath, overload, virtual/reflection/DI, generated, compiler, and runtime flow remain unsupported",
 ];
 
 const CSHARP_LIMITATIONS: &[&str] = &[
     "syntax/entity/namespace/using extraction is parser-only",
-    "direct invocation and object creation syntax is recorded without caller/callee proof",
+    "general direct invocation and object-creation syntax is recorded without broad or cross-file caller/callee proof; accepted same-file method-local scoped_readiness is the bounded static exception",
     "Roslyn semantic model, MSBuild workspace resolution, overload dispatch, reflection, dependency injection, and source generators require future compiler/build or runtime support",
-    "read/write/dataflow and local-flow packets remain unsupported for C#",
+    "production .cs ParserFactsV1 local-flow packets are supported only for the same-file method-local intraprocedural scoped contract; Test/Generated sources remain nonclaimable, and cross-file/MSBuild, overload, virtual/reflection/DI, generated, compiler, and runtime flow remain unsupported",
 ];
 
 const C_LIMITATIONS: &[&str] = &[
     "syntax/entity/include/function/struct/typedef extraction is parser-only",
-    "direct call syntax is recorded without compiler-resolved caller/callee proof",
+    "general direct-call syntax is recorded without compiler-resolved caller/callee proof; accepted same-file function-local scoped_readiness covers only the unique simple static-call subset",
     "compile database resolution, include-path resolution, macro expansion, inactive branch proof, and function pointer targets require future compiler/preprocessor/runtime support",
-    "read/write/dataflow and local-flow packets remain unsupported for C",
+    "production .c/.h ParserFactsV1 local-flow packets are supported only for the same-file function-local intraprocedural scoped contract, with .h owned by C; Test/Generated sources remain nonclaimable, and compile databases, include resolution, macro/preprocessor expansion, function pointers, alias analysis, compiler, and runtime flow remain unsupported",
 ];
 
 const CPP_LIMITATIONS: &[&str] = &[
     "syntax/entity/include/namespace/class/struct/function/method/constructor/destructor/operator/template extraction is parser-only",
-    "direct and member call syntax is recorded without compiler-resolved caller/callee proof",
+    "general direct and member-call syntax is recorded without compiler-resolved caller/callee proof; accepted same-file function-local scoped_readiness covers only the unique simple free-function static-call subset",
     "compile database resolution, include-path resolution, overload resolution, ADL, virtual dispatch, template instantiation, macro expansion, inactive branch proof, and function pointer targets require future compiler/preprocessor/runtime support",
-    "read/write/dataflow and local-flow packets remain unsupported for C++",
+    "production .cc/.cpp/.cxx/.hpp/.hh/.hxx ParserFactsV1 local-flow packets are supported only for the same-file function-local intraprocedural scoped contract; bare .h remains C-only, Test/Generated sources remain nonclaimable, and compile databases, include resolution, overloads, ADL, templates, macros/preprocessor expansion, virtual dispatch, function pointers, alias analysis, compiler, and runtime flow remain unsupported",
 ];
 
 const RUBY_LIMITATIONS: &[&str] = &[
     "syntax/entity/module/class/method/require/load extraction is parser-only",
-    "direct method call syntax is recorded without runtime caller/callee proof",
+    "general direct method-call syntax is recorded without runtime caller/callee proof; accepted same-file scoped_readiness covers only unique plain top-level static method calls",
     "Ruby load path, Bundler, Rails autoload, method_missing, send/public_send, reflection, open classes, monkeypatching, and Rails route conventions require future runtime/framework support",
-    "read/write/dataflow and local-flow packets remain unsupported for Ruby",
+    "production .rb ParserFactsV1 local-flow packets are supported only for the same-file method-local intraprocedural static subset; extensionless shebangs and .rake/.gemspec/.ru remain inactive, Test/Generated sources remain nonclaimable, and closure capture, metaprogramming, open classes, send/public_send, method_missing, alias analysis, framework, and runtime flow remain unsupported",
 ];
 
 const PHP_LIMITATIONS: &[&str] = &[
     "syntax/entity/namespace/use/include/require/class/interface/trait/function/method extraction is parser-only",
-    "function, static, member, and object-creation call syntax is recorded without runtime caller/callee proof",
+    "general function, static, member, and object-creation call syntax is recorded without runtime caller/callee proof; accepted same-file scoped_readiness covers only unique plain named calls within the same namespace",
     "Composer autoload, include-path resolution, magic methods, variable functions, framework containers, and mixed PHP/HTML runtime behavior require future runtime/framework support",
-    "read/write/dataflow and local-flow packets remain unsupported for PHP",
+    "production .php ParserFactsV1 local-flow packets are supported only for the same-file function-local intraprocedural static subset; extensionless shebangs and .phtml/.inc/.php3 remain inactive, Test/Generated sources remain nonclaimable, and dynamic includes, variable functions, member or magic dispatch, alias analysis, framework, and runtime flow remain unsupported",
 ];
 
 macro_rules! cap {
@@ -2304,6 +2306,17 @@ macro_rules! scoped_cap {
             flag: LanguageCapabilityFlag::$flag,
             status: LanguageCapabilityStatus::$status,
             scope: LanguageCapabilityScope::$scope,
+        }
+    };
+}
+
+macro_rules! readiness {
+    ($flag:ident, $status:ident, $scope:ident, $proof_boundary:expr) => {
+        LanguageScopedReadiness {
+            flag: LanguageCapabilityFlag::$flag,
+            status: LanguageCapabilityStatus::$status,
+            scope: LanguageCapabilityScope::$scope,
+            proof_boundary: $proof_boundary,
         }
     };
 }
@@ -2452,38 +2465,6 @@ const TSX_CAPABILITIES: &[LanguageCapability] = &[
     cap!(Unsupported, Unsupported),
 ];
 
-const TIER3_CAPABILITIES: &[LanguageCapability] = &[
-    cap!(SyntaxExact, SupportedParserOnly),
-    cap!(SpanExact, SupportedParserOnly),
-    cap!(ImportExportExtracted, SupportedParserOnly),
-    cap!(PackageOrModuleResolved, Unsupported),
-    cap!(IncludeResolved, NotApplicable),
-    cap!(RequireResolved, NotApplicable),
-    cap!(CallExtracted, SupportedParserOnly),
-    cap!(CallerCalleeExact, Unsupported),
-    cap!(CompilerVerified, NotImplemented),
-    cap!(LspVerified, NotImplemented),
-    cap!(ProjectConfigResolved, NotImplemented),
-    cap!(LocalBindingResolved, NotImplemented),
-    cap!(ReadWriteExtracted, NotImplemented),
-    cap!(LocalDataflowDerived, NotImplemented),
-    cap!(LocalFlowPacketSupported, NotImplemented),
-    cap!(TestImpactSupported, WarningOnly),
-    cap!(TestAssertMockExtracted, WarningOnly),
-    cap!(FrameworkHeuristic, WarningOnly),
-    cap!(RouteExact, NotImplemented),
-    cap!(BridgeExact, NotImplemented),
-    cap!(SecurityPatternSupported, NotImplemented),
-    cap!(RuntimeUnknown, Unknown),
-    cap!(DynamicUnknown, Unknown),
-    cap!(MacroUnknown, Unknown),
-    cap!(PreprocessorUnknown, NotApplicable),
-    cap!(CompilerRequired, RequiresCompiler),
-    cap!(LspRequired, RequiresLsp),
-    cap!(BuildDatabaseRequired, NotApplicable),
-    cap!(Unsupported, Unsupported),
-];
-
 const PYTHON_CAPABILITIES: &[LanguageCapability] = &[
     cap!(SyntaxExact, SupportedParserOnly),
     cap!(SpanExact, SupportedParserOnly),
@@ -2497,8 +2478,8 @@ const PYTHON_CAPABILITIES: &[LanguageCapability] = &[
     cap!(LspVerified, NotImplemented),
     cap!(ProjectConfigResolved, DiagnosticOnly),
     cap!(LocalBindingResolved, SupportedParserOnly),
-    cap!(ReadWriteExtracted, NotImplemented),
-    cap!(LocalDataflowDerived, NotImplemented),
+    cap!(ReadWriteExtracted, SupportedParserOnly),
+    cap!(LocalDataflowDerived, SupportedHeuristic),
     cap!(LocalFlowPacketSupported, NotImplemented),
     cap!(TestImpactSupported, WarningOnly),
     cap!(TestAssertMockExtracted, WarningOnly),
@@ -2528,7 +2509,7 @@ const GO_CAPABILITIES: &[LanguageCapability] = &[
     cap!(CompilerVerified, RequiresCompiler),
     cap!(LspVerified, NotImplemented),
     cap!(ProjectConfigResolved, DiagnosticOnly),
-    cap!(LocalBindingResolved, RequiresCompiler),
+    cap!(LocalBindingResolved, SupportedParserOnly),
     cap!(ReadWriteExtracted, SupportedParserOnly),
     cap!(LocalDataflowDerived, SupportedHeuristic),
     cap!(LocalFlowPacketSupported, NotImplemented),
@@ -2561,7 +2542,7 @@ const RUST_CAPABILITIES: &[LanguageCapability] = &[
     cap!(LspVerified, RequiresLsp),
     cap!(ProjectConfigResolved, DiagnosticOnly),
     cap!(LocalBindingResolved, SupportedParserOnly),
-    cap!(ReadWriteExtracted, NotImplemented),
+    cap!(ReadWriteExtracted, SupportedParserOnly),
     cap!(LocalDataflowDerived, SupportedHeuristic),
     cap!(LocalFlowPacketSupported, NotImplemented),
     cap!(TestImpactSupported, WarningOnly),
@@ -2772,6 +2753,771 @@ const RUBY_CAPABILITIES: &[LanguageCapability] = &[
     cap!(Unsupported, Unsupported),
 ];
 
+const JS_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; no target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        SameFileDirectCalls,
+        "unique parser-local direct identifier calls"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        JavaScriptFamilyStaticImports,
+        "indexed static imports resolved to genuine declarations"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .js/.mjs/.cjs ParserFactsV1 resolver-proven lexical bindings within one file and function"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .js/.mjs/.cjs source-spanned reads and writes with resolved local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .js/.mjs/.cjs same-file intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .js/.mjs/.cjs local micro-flow packets; no cross-file, dynamic, or runtime flow proof"
+    ),
+];
+
+const JSX_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; no target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        SameFileDirectCalls,
+        "unique parser-local direct identifier calls"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        JavaScriptFamilyStaticImports,
+        "indexed static imports resolved to genuine declarations"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .jsx ParserFactsV1 resolver-proven lexical bindings within one file and function"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .jsx source-spanned reads and writes with resolved local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .jsx same-file intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .jsx local micro-flow packets; no cross-file, component-runtime, or dynamic flow proof"
+    ),
+];
+
+const TYPESCRIPT_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; target proof is separately scoped"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        SameFileDirectCalls,
+        "unique parser-local direct identifier calls"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        JavaScriptFamilyStaticImports,
+        "indexed static imports resolved to genuine declarations"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production exact .ts legacy v1 and .mts/.cts ParserFactsV1 local bindings; .d.ts excluded"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production exact .ts legacy v1 and .mts/.cts ParserFactsV1 local reads and writes; .d.ts excluded"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production exact .ts legacy v1 and .mts/.cts ParserFactsV1 same-file derived flow with provenance; .d.ts excluded"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production exact .ts legacy v1 and .mts/.cts ParserFactsV1 local micro-flow packets; .d.ts excluded"
+    ),
+];
+
+const TSX_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; no cross-file target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        SameFileDirectCalls,
+        "unique parser-local direct identifier calls"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        JavaScriptFamilyStaticImports,
+        "indexed static imports resolved to genuine declarations"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .tsx ParserFactsV1 resolver-proven lexical bindings within one file and function"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .tsx source-spanned reads and writes with resolved local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .tsx same-file intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .tsx local micro-flow packets; no cross-file, component-runtime, or dynamic flow proof"
+    ),
+];
+
+const PYTHON_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; target proof is separately scoped"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        SameFileDirectCalls,
+        "unique parser-local direct identifier calls"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        PythonRepoLocalIndexedImports,
+        "supported from-import and module-import forms resolved to indexed declarations"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "parser-local parameters and simple assignments"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "parser-local identifier reads and simple writes"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedHeuristic,
+        LanguageFrontend,
+        "parser-local assignment and return flow hints"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .py ParserFactsV1 resolver-proven lexical bindings within one file and function"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .py source-spanned reads and writes with resolved local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .py same-file intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .py local micro-flow packets; no cross-file, dynamic attribute, or runtime flow proof"
+    ),
+];
+
+const GO_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; target proof is separately scoped"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        SameFileDirectCalls,
+        "unique parser-local direct identifier calls"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        GoSamePackageIndexedFiles,
+        "same-directory indexed files with the same package clause"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "parser-local parameters and simple declarations"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "parser-local identifier reads and simple writes"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedHeuristic,
+        LanguageFrontend,
+        "parser-local assignment and return flow hints"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .go ParserFactsV1 resolver-proven lexical bindings within one file and function"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .go source-spanned reads and writes with resolved local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .go same-file intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .go local micro-flow packets; no cross-file, interface-dispatch, or runtime flow proof"
+    ),
+];
+
+const RUST_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; target proof is separately scoped"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        SameFileDirectCalls,
+        "unique parser-local direct identifier calls"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        SupportedExact,
+        RustCrateLocalIndexedModules,
+        "supported crate/self/super use and mod paths resolved to indexed declarations"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "parser-local parameters and simple let bindings"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "parser-local identifier reads and simple writes"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedHeuristic,
+        LanguageFrontend,
+        "parser-local assignment and return flow hints"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .rs ParserFactsV1 resolver-proven lexical bindings within one file and function"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .rs source-spanned reads and writes with resolved local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .rs same-file intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .rs local micro-flow packets; no cross-file, macro-expanded, trait-dispatch, or runtime flow proof"
+    ),
+];
+
+const JAVA_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; no caller/callee target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        RequiresCompiler,
+        LanguageFrontend,
+        "caller/callee proof requires javac or JDT classpath provenance"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        RequiresCompiler,
+        LanguageFrontend,
+        "broad Java binding proof requires compiler and classpath provenance"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad Java frontend read/write contract"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad Java frontend local-dataflow contract"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad Java production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .java ParserFactsV1 resolver-proven lexical bindings within one file and method"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .java source-spanned reads and writes with resolved method-local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .java same-file method-local intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .java local micro-flow packets; no cross-file, virtual-dispatch, compiler, or runtime flow proof"
+    ),
+];
+
+const CSHARP_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; no caller/callee target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        RequiresCompiler,
+        LanguageFrontend,
+        "caller/callee proof requires Roslyn and MSBuild workspace provenance"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        RequiresCompiler,
+        LanguageFrontend,
+        "broad C# binding proof requires Roslyn and MSBuild provenance"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C# frontend read/write contract"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C# frontend local-dataflow contract"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C# production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .cs ParserFactsV1 resolver-proven lexical bindings within one file and method"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .cs source-spanned reads and writes with resolved method-local endpoints"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .cs same-file method-local intraprocedural flow derived from exact facts with provenance"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .cs local micro-flow packets; no cross-file, dynamic-dispatch, compiler, or runtime flow proof"
+    ),
+];
+
+const C_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; no caller/callee target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        RequiresCompiler,
+        LanguageFrontend,
+        "broad C caller/callee proof requires compiler, compile-database, preprocessor, and include-path provenance"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        RequiresCompiler,
+        LanguageFrontend,
+        "broad C binding and alias proof requires compiler, compile-database, and preprocessor provenance"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C frontend read/write contract"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C frontend local-dataflow contract"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .c/.h ParserFactsV1 resolver-proven lexical bindings within one file and function; .h is selected as C"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .c/.h source-spanned scalar-local reads and writes with resolved function-local endpoints; indirect lvalues fail closed"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .c/.h same-file function-local intraprocedural flow derived from exact facts with provenance; pointer and alias sources fail closed"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .c/.h local micro-flow packets; no compile-database, include, macro, preprocessor, function-pointer, alias-analysis, compiler, or runtime flow proof"
+    ),
+];
+
+const CPP_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter source-spanned direct-call syntax; no caller/callee target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        RequiresCompiler,
+        LanguageFrontend,
+        "broad C++ caller/callee proof requires compiler, compile-database, overload, ADL, template, preprocessor, and include-path provenance"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        RequiresCompiler,
+        LanguageFrontend,
+        "broad C++ binding and alias proof requires compiler, compile-database, template, and preprocessor provenance"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C++ frontend read/write contract"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C++ frontend local-dataflow contract"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad C++ production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .cc/.cpp/.cxx/.hpp/.hh/.hxx ParserFactsV1 resolver-proven lexical bindings within one file and function; bare .h is inactive for C++"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .cc/.cpp/.cxx/.hpp/.hh/.hxx source-spanned scalar-local reads and writes with resolved function-local endpoints; indirect lvalues fail closed"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .cc/.cpp/.cxx/.hpp/.hh/.hxx same-file function-local intraprocedural flow derived from exact facts with provenance; pointer, reference, and alias sources fail closed"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .cc/.cpp/.cxx/.hpp/.hh/.hxx local micro-flow packets; no compile-database, include, macro, preprocessor, overload, ADL, template, virtual-dispatch, function-pointer, alias-analysis, compiler, or runtime flow proof"
+    ),
+];
+
+const RUBY_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter Ruby source-spanned direct-call syntax; no runtime caller/callee target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        RequiresRuntime,
+        LanguageFrontend,
+        "broad Ruby caller/callee proof requires runtime lookup provenance"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        RequiresRuntime,
+        LanguageFrontend,
+        "broad Ruby binding proof requires runtime lookup provenance"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad Ruby frontend read/write contract"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad Ruby frontend local-dataflow contract"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad Ruby production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .rb ParserFactsV1 resolver-proven lexical parameter and local bindings within one file and method; closure capture, metaprogramming, open classes, and runtime lookup fail closed"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .rb source-spanned scalar method-local reads and writes with resolved endpoints; captured, instance, class, global, member, and dynamic targets fail closed"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .rb same-file method-local intraprocedural flow derived from exact facts with provenance; closure capture, aliasing, metaprogramming, and runtime dispatch fail closed"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .rb local micro-flow packets; no extensionless/.rake/.gemspec/.ru activation, closure capture, send/public_send, method_missing, metaprogramming, open-class, alias-analysis, framework, or runtime flow proof"
+    ),
+];
+
+const PHP_SCOPED_READINESS: &[LanguageScopedReadiness] = &[
+    readiness!(
+        CallExtracted,
+        SupportedParserOnly,
+        LanguageFrontend,
+        "tree-sitter PHP source-spanned direct-call syntax; no runtime caller/callee target proof"
+    ),
+    readiness!(
+        CallerCalleeExact,
+        RequiresRuntime,
+        LanguageFrontend,
+        "broad PHP caller/callee proof requires runtime lookup provenance"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        RequiresRuntime,
+        LanguageFrontend,
+        "broad PHP binding proof requires runtime lookup provenance"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad PHP frontend read/write contract"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad PHP frontend local-dataflow contract"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        NotImplemented,
+        LanguageFrontend,
+        "no broad PHP production packet or flow_proof path"
+    ),
+    readiness!(
+        LocalBindingResolved,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .php ParserFactsV1 resolver-proven lexical parameter and local bindings within one file and named function; dynamic variables, includes, member dispatch, magic methods, and runtime lookup fail closed"
+    ),
+    readiness!(
+        ReadWriteExtracted,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .php source-spanned scalar function-local reads and writes with resolved endpoints; globals, properties, members, references, dynamic variables, and indirect targets fail closed"
+    ),
+    readiness!(
+        LocalDataflowDerived,
+        SupportedDerivedWithProvenance,
+        SameFileIntraprocedural,
+        "production .php same-file function-local intraprocedural flow derived from exact facts with provenance; references, aliasing, dynamic variables, includes, member dispatch, and runtime lookup fail closed"
+    ),
+    readiness!(
+        LocalFlowPacketSupported,
+        SupportedExact,
+        SameFileIntraprocedural,
+        "production .php local micro-flow packets; no extensionless/.phtml/.inc/.php3 activation, dynamic include, variable-function, member or magic dispatch, reference or alias analysis, framework, or runtime flow proof"
+    ),
+];
+
 static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
     &LanguageFrontendInfo {
         language_id: "javascript",
@@ -2788,6 +3534,7 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: JS_EXTRACTORS,
         capabilities: JS_CAPABILITIES,
+        scoped_readiness: JS_SCOPED_READINESS,
         known_limitations: JS_LIMITATIONS,
     },
     &LanguageFrontendInfo {
@@ -2805,6 +3552,7 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: JS_EXTRACTORS,
         capabilities: JSX_CAPABILITIES,
+        scoped_readiness: JSX_SCOPED_READINESS,
         known_limitations: JSX_LIMITATIONS,
     },
     &LanguageFrontendInfo {
@@ -2822,6 +3570,7 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: TS_EXTRACTORS,
         capabilities: TYPESCRIPT_CAPABILITIES,
+        scoped_readiness: TYPESCRIPT_SCOPED_READINESS,
         known_limitations: TS_LIMITATIONS,
     },
     &LanguageFrontendInfo {
@@ -2839,13 +3588,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: JS_TS_RELATIONS,
         extractors: TS_EXTRACTORS,
         capabilities: TSX_CAPABILITIES,
+        scoped_readiness: TSX_SCOPED_READINESS,
         known_limitations: TSX_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "python",
         display_name: "Python",
         file_extensions: &["py"],
-        support_tier: LanguageSupportTier::Tier3CallsCallerCallee,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2856,13 +3606,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: GENERIC_TIER3_RELATIONS,
         extractors: PYTHON_EXTRACTORS,
         capabilities: PYTHON_CAPABILITIES,
+        scoped_readiness: PYTHON_SCOPED_READINESS,
         known_limitations: PYTHON_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "go",
         display_name: "Go",
         file_extensions: &["go"],
-        support_tier: LanguageSupportTier::Tier3CallsCallerCallee,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2873,13 +3624,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: GO_RELATIONS,
         extractors: GO_EXTRACTORS,
         capabilities: GO_CAPABILITIES,
+        scoped_readiness: GO_SCOPED_READINESS,
         known_limitations: GO_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "rust",
         display_name: "Rust",
         file_extensions: &["rs"],
-        support_tier: LanguageSupportTier::Tier3CallsCallerCallee,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2890,13 +3642,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: RUST_RELATIONS,
         extractors: RUST_EXTRACTORS,
         capabilities: RUST_CAPABILITIES,
+        scoped_readiness: RUST_SCOPED_READINESS,
         known_limitations: RUST_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "java",
         display_name: "Java",
         file_extensions: &["java"],
-        support_tier: LanguageSupportTier::Tier1SyntaxEntities,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2907,13 +3660,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: JAVA_RELATIONS,
         extractors: JAVA_EXTRACTORS,
         capabilities: JAVA_CAPABILITIES,
+        scoped_readiness: JAVA_SCOPED_READINESS,
         known_limitations: JAVA_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "csharp",
         display_name: "C#",
         file_extensions: &["cs"],
-        support_tier: LanguageSupportTier::Tier1SyntaxEntities,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2924,13 +3678,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: CSHARP_RELATIONS,
         extractors: CSHARP_EXTRACTORS,
         capabilities: CSHARP_CAPABILITIES,
+        scoped_readiness: CSHARP_SCOPED_READINESS,
         known_limitations: CSHARP_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "c",
         display_name: "C",
         file_extensions: &["c", "h"],
-        support_tier: LanguageSupportTier::Tier1SyntaxEntities,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2941,13 +3696,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: C_RELATIONS,
         extractors: C_EXTRACTORS,
         capabilities: C_CAPABILITIES,
+        scoped_readiness: C_SCOPED_READINESS,
         known_limitations: C_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "cpp",
         display_name: "C++",
         file_extensions: &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
-        support_tier: LanguageSupportTier::Tier1SyntaxEntities,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2958,13 +3714,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: CPP_RELATIONS,
         extractors: CPP_EXTRACTORS,
         capabilities: CPP_CAPABILITIES,
+        scoped_readiness: CPP_SCOPED_READINESS,
         known_limitations: CPP_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "ruby",
         display_name: "Ruby",
         file_extensions: &["rb"],
-        support_tier: LanguageSupportTier::Tier1SyntaxEntities,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2975,13 +3732,14 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: RUBY_RELATIONS,
         extractors: RUBY_EXTRACTORS,
         capabilities: RUBY_CAPABILITIES,
+        scoped_readiness: RUBY_SCOPED_READINESS,
         known_limitations: RUBY_LIMITATIONS,
     },
     &LanguageFrontendInfo {
         language_id: "php",
         display_name: "PHP",
         file_extensions: &["php"],
-        support_tier: LanguageSupportTier::Tier1SyntaxEntities,
+        support_tier: LanguageSupportTier::Tier5DataflowSecurityTestImpact,
         tree_sitter_grammar_available: true,
         compiler_resolver_available: false,
         lsp_resolver_available: false,
@@ -2992,6 +3750,7 @@ static LANGUAGE_FRONTENDS: &[&LanguageFrontendInfo] = &[
         supported_relation_kinds: PHP_RELATIONS,
         extractors: PHP_EXTRACTORS,
         capabilities: PHP_CAPABILITIES,
+        scoped_readiness: PHP_SCOPED_READINESS,
         known_limitations: PHP_LIMITATIONS,
     },
 ];
@@ -3408,6 +4167,149 @@ pub fn detect_language_with_source(path: impl AsRef<Path>, source: &str) -> Opti
             .then(|| detect_language_from_shebang(source))
             .flatten()
     })
+}
+
+/// Returns source-spanned direct call syntax for one unqualified local callee.
+///
+/// This is an AST boundary, not caller/callee target proof: comments, strings,
+/// template/f-string text, member calls, qualified calls, constructors, and
+/// malformed trees are excluded. The helper intentionally returns an empty
+/// vector for unsupported paths, invalid callee names, or syntax-invalid input
+/// so index reducers cannot accidentally promote parser recovery into an exact
+/// CALLS edge.
+pub fn exact_direct_call_site_spans_by_local_callee(
+    repo_relative_path: &str,
+    source: &str,
+    local_callee: &str,
+) -> Vec<SourceSpan> {
+    if !looks_like_identifier(local_callee) {
+        return Vec::new();
+    }
+    let Some(language) = detect_language_with_source(repo_relative_path, source) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = TreeSitterParser.parse_source(repo_relative_path, source, language) else {
+        return Vec::new();
+    };
+    if parsed.has_syntax_errors() {
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    collect_exact_direct_call_site_spans(
+        language,
+        parsed.tree().root_node(),
+        &parsed.repo_relative_path,
+        source,
+        local_callee,
+        &mut spans,
+    );
+    spans.sort_by(|left, right| {
+        (
+            left.start_line,
+            left.start_column,
+            left.end_line,
+            left.end_column,
+        )
+            .cmp(&(
+                right.start_line,
+                right.start_column,
+                right.end_line,
+                right.end_column,
+            ))
+    });
+    spans.dedup();
+    spans
+}
+
+fn collect_exact_direct_call_site_spans(
+    language: SourceLanguage,
+    node: Node<'_>,
+    repo_relative_path: &str,
+    source: &str,
+    local_callee: &str,
+    spans: &mut Vec<SourceSpan>,
+) {
+    if node.is_error() || node.is_missing() {
+        return;
+    }
+    if direct_call_callee_name(language, node, source).as_deref() == Some(local_callee)
+        && !node_has_error_or_missing_descendant(node)
+    {
+        spans.push(source_span_for_node(repo_relative_path, node));
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_exact_direct_call_site_spans(
+            language,
+            child,
+            repo_relative_path,
+            source,
+            local_callee,
+            spans,
+        );
+    }
+}
+
+fn direct_call_callee_name(
+    language: SourceLanguage,
+    node: Node<'_>,
+    source: &str,
+) -> Option<String> {
+    let callee =
+        match language {
+            SourceLanguage::JavaScript
+            | SourceLanguage::Jsx
+            | SourceLanguage::TypeScript
+            | SourceLanguage::Tsx => (node.kind() == "call_expression")
+                .then(|| node.child_by_field_name("function"))??,
+            SourceLanguage::Python => {
+                (node.kind() == "call").then(|| node.child_by_field_name("function"))??
+            }
+            SourceLanguage::Go | SourceLanguage::C | SourceLanguage::Cpp => (node.kind()
+                == "call_expression")
+                .then(|| node.child_by_field_name("function"))??,
+            SourceLanguage::Rust => (node.kind() == "call_expression")
+                .then(|| node.child_by_field_name("function"))??,
+            SourceLanguage::Java => {
+                if node.kind() != "method_invocation"
+                    || node.child_by_field_name("object").is_some()
+                    || node.child_by_field_name("scope").is_some()
+                {
+                    return None;
+                }
+                node.child_by_field_name("name")?
+            }
+            SourceLanguage::CSharp => {
+                if node.kind() != "invocation_expression" {
+                    return None;
+                }
+                node.child_by_field_name("function")?
+            }
+            SourceLanguage::Ruby => {
+                if !matches!(node.kind(), "call" | "command")
+                    || node.child_by_field_name("receiver").is_some()
+                    || node.child_by_field_name("object").is_some()
+                {
+                    return None;
+                }
+                node.child_by_field_name("method")
+                    .or_else(|| node.child_by_field_name("name"))
+                    .or_else(|| child_by_kind(node, "identifier"))?
+            }
+            SourceLanguage::Php => {
+                if node.kind() != "function_call_expression" {
+                    return None;
+                }
+                node.child_by_field_name("function")
+                    .or_else(|| node.child_by_field_name("name"))?
+            }
+        };
+    if node_has_error_or_missing_descendant(callee) {
+        return None;
+    }
+    let name = node_text(callee, source)?.trim().to_string();
+    looks_like_identifier(&name).then_some(name)
 }
 
 fn detect_language_from_shebang(source: &str) -> Option<SourceLanguage> {
@@ -5122,6 +6024,13 @@ pub struct Mvp4TypeScriptMicroFlowExtractionContext {
     pub micro_edges: Mvp4TypeScriptLocalReturnsToInMemoryReport,
 }
 
+/// Language-neutral name for the persisted MVP4 micro-flow extraction shape.
+/// The TypeScript name remains public for compatibility while other adapters
+/// are introduced behind the behavior-neutral dispatcher.
+pub type Mvp4MicroFlowExtractionContext = Mvp4TypeScriptMicroFlowExtractionContext;
+
+pub type Mvp4MicroFlowAdapterKind = codegraph_core::Mvp4MicroFlowSourceAdapterKind;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mvp4TypeScriptMicroEdgeDiagnostic {
     pub diagnostic_kind: String,
@@ -5183,6 +6092,9 @@ pub struct Mvp4TypeScriptMicroNodeCandidate {
     pub provenance: MicroFactProvenance,
 }
 
+/// Language-neutral compatibility alias for the current micro-node row shape.
+pub type Mvp4MicroNodeCandidate = Mvp4TypeScriptMicroNodeCandidate;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mvp4TypeScriptUnsupportedDeclarationBoundary {
     pub boundary_kind: String,
@@ -5197,6 +6109,14 @@ pub struct Mvp4TypeScriptUnsupportedDeclarationBoundary {
 pub fn discover_mvp4_typescript_scopes(
     parsed: &ParsedFile,
     source: &str,
+) -> Mvp4TypeScriptScopeDiscoveryReport {
+    discover_mvp4_typescript_scopes_with_parser_fact_bundle(parsed, source, None)
+}
+
+fn discover_mvp4_typescript_scopes_with_parser_fact_bundle(
+    parsed: &ParsedFile,
+    source: &str,
+    parser_fact_bundle: Option<&ParserFactBundle>,
 ) -> Mvp4TypeScriptScopeDiscoveryReport {
     let source_role = mvp4_typescript_source_role(&parsed.repo_relative_path);
     let parser_status = if parsed.has_syntax_errors() {
@@ -5239,14 +6159,22 @@ pub fn discover_mvp4_typescript_scopes(
         return report;
     }
 
-    let extraction = extract_entities_and_relations(parsed, source);
+    let entities = parser_fact_bundle
+        .map(|bundle| {
+            bundle
+                .entity_facts
+                .iter()
+                .map(|fact| fact.entity.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| extract_entities_and_relations(parsed, source).entities);
     let mut class_stack = Vec::new();
     let mut function_stack = Vec::new();
     collect_mvp4_ts_function_scopes(
         parsed.tree().root_node(),
         parsed,
         source,
-        &extraction.entities,
+        &entities,
         &mut class_stack,
         &mut function_stack,
         &mut report.functions,
@@ -7178,12 +8106,158 @@ pub fn emit_mvp4_2_typescript_micro_edge_candidates(
     emit_mvp4_typescript_micro_flow_extraction_context(parsed, source).micro_edges
 }
 
+pub fn select_mvp4_micro_flow_adapter(parsed: &ParsedFile) -> Mvp4MicroFlowAdapterKind {
+    codegraph_core::mvp4_micro_flow_source_adapter(
+        parsed.language.as_str(),
+        &parsed.repo_relative_path,
+    )
+}
+
+/// Shared MVP4 micro-flow entrypoint. The caller supplies the parser fact
+/// bundle it already created for ordinary graph extraction, preventing the
+/// active TypeScript adapter from extracting the same entity inventory twice.
+/// Activated ParserFactsV1 sources share the same persisted context shape;
+/// inactive sources retain the frozen excluded/empty context.
+pub fn emit_mvp4_micro_flow_extraction_context(
+    parsed: &ParsedFile,
+    source: &str,
+    parser_fact_bundle: &ParserFactBundle,
+) -> Mvp4MicroFlowExtractionContext {
+    match select_mvp4_micro_flow_adapter(parsed) {
+        Mvp4MicroFlowAdapterKind::LegacyTypeScriptV1 => {
+            emit_mvp4_typescript_micro_flow_extraction_context_with_parser_fact_bundle(
+                parsed,
+                source,
+                Some(parser_fact_bundle),
+            )
+        }
+        Mvp4MicroFlowAdapterKind::ParserFactsV1 => parser_facts_v1_context(
+            ParserFactsV1::extract_active(parsed, source, parser_fact_bundle),
+        ),
+        Mvp4MicroFlowAdapterKind::Inactive => {
+            emit_mvp4_typescript_micro_flow_extraction_context_with_parser_fact_bundle(
+                parsed,
+                source,
+                Some(parser_fact_bundle),
+            )
+        }
+    }
+}
+
+fn parser_facts_v1_context(report: ParserFactsV1Report) -> Mvp4MicroFlowExtractionContext {
+    let extraction_eligible = matches!(
+        report.status.as_str(),
+        "complete_active" | "complete_inactive"
+    );
+    let production_persistence_enabled =
+        report.production_activation_enabled && report.source_role == MicroSourceRole::Production;
+    let production_micro_node_rows = if production_persistence_enabled {
+        report.nodes.len() as u64
+    } else {
+        0
+    };
+    let production_micro_edge_rows = if production_persistence_enabled {
+        report.edges.len() as u64
+    } else {
+        0
+    };
+    let completeness_label = if report.gaps.is_empty() {
+        "complete_source_spanned_parser_facts_v1"
+    } else {
+        "partial_with_explicit_parser_facts_v1_gaps"
+    }
+    .to_string();
+    let exclusion_reason = (!extraction_eligible).then(|| report.status.clone());
+    let mut inventory_candidates = Vec::new();
+    let mut persistable_value_uses = Vec::new();
+    for node in report.nodes {
+        if node.node_kind == MicroNodeKind::ValueUse {
+            persistable_value_uses.push(node);
+        } else {
+            inventory_candidates.push(node);
+        }
+    }
+    let diagnostics = report
+        .gaps
+        .iter()
+        .map(|gap| Mvp4TypeScriptMicroEdgeDiagnostic {
+            diagnostic_kind: gap.gap_kind.clone(),
+            classification: "unsupported_or_unknown".to_string(),
+            reason: gap.reason.clone(),
+            head_micro_node_id: None,
+            tail_micro_node_id: None,
+            function_identity: gap.function_identity.clone(),
+            source_span: gap.source_span.clone(),
+            missing_requirements: vec!["parser_facts_v1_gap_resolution".to_string()],
+            omitted_count: 1,
+            recommended_action_kind: "preserve_gap_or_not_applicable_state_without_source_blocker"
+                .to_string(),
+        })
+        .collect();
+    let inventory = Mvp4TypeScriptInMemoryInventoryReport {
+        status: report.status.clone(),
+        eligible: extraction_eligible,
+        exclusion_reason: exclusion_reason.clone(),
+        source_role: report.source_role,
+        parser_status: report.status.clone(),
+        candidates: inventory_candidates,
+        omitted_count: report.gaps.len() as u64,
+        cap_hits: Vec::new(),
+        completeness_label: completeness_label.clone(),
+        duplicate_candidate_count: 0,
+        stable_id_collision_count: 0,
+        claimable_node_missing_span_count: 0,
+        source_span_failures: 0,
+        binding_overclaim_count: 0,
+        semantic_overclaim_count: 0,
+        production_persistence_enabled,
+        production_micro_node_rows,
+        micro_edge_rows: production_micro_edge_rows,
+        flow_proof_activated: false,
+    };
+    let micro_edges = Mvp4TypeScriptLocalReturnsToInMemoryReport {
+        status: report.status.clone(),
+        eligible: extraction_eligible,
+        exclusion_reason,
+        source_role: report.source_role,
+        parser_status: report.status,
+        candidates: report.edges,
+        diagnostics,
+        omitted_edge_count: report.gaps.len() as u64,
+        completeness_label,
+        duplicate_candidate_count: 0,
+        cross_function_edge_count: 0,
+        cross_file_edge_count: 0,
+        claimable_edge_missing_span_count: 0,
+        claimable_edge_missing_provenance_count: 0,
+        flow_semantic_overclaim_count: 0,
+        production_micro_edge_rows,
+        local_flow_packet_rows: 0,
+        mutation_proof_activated: false,
+        flow_proof_activated: false,
+    };
+    Mvp4MicroFlowExtractionContext {
+        inventory,
+        persistable_value_uses,
+        micro_edges,
+    }
+}
+
 pub fn emit_mvp4_typescript_micro_flow_extraction_context(
     parsed: &ParsedFile,
     source: &str,
 ) -> Mvp4TypeScriptMicroFlowExtractionContext {
+    emit_mvp4_typescript_micro_flow_extraction_context_with_parser_fact_bundle(parsed, source, None)
+}
+
+fn emit_mvp4_typescript_micro_flow_extraction_context_with_parser_fact_bundle(
+    parsed: &ParsedFile,
+    source: &str,
+    parser_fact_bundle: Option<&ParserFactBundle>,
+) -> Mvp4TypeScriptMicroFlowExtractionContext {
     let policy = mvp4_typescript_first_slice_cap_policy();
-    let scope_report = discover_mvp4_typescript_scopes(parsed, source);
+    let scope_report =
+        discover_mvp4_typescript_scopes_with_parser_fact_bundle(parsed, source, parser_fact_bundle);
     let inventory = emit_mvp4_typescript_in_memory_first_slice_inventory_with_scopes_and_policy(
         parsed,
         source,
@@ -17806,7 +18880,7 @@ mod tests {
         detect_language, detect_language_with_source, discover_mvp4_typescript_scopes,
         emit_mvp4_2_typescript_micro_edge_candidates,
         emit_mvp4_2b_typescript_value_use_persistable_candidates,
-        emit_mvp4_typescript_core_declaration_candidates,
+        emit_mvp4_micro_flow_extraction_context, emit_mvp4_typescript_core_declaration_candidates,
         emit_mvp4_typescript_in_memory_first_slice_inventory,
         emit_mvp4_typescript_in_memory_first_slice_inventory_with_policy,
         emit_mvp4_typescript_local_flows_to_in_memory_candidates,
@@ -17822,7 +18896,7 @@ mod tests {
         extract_entities_and_relations, extract_parser_fact_bundle,
         mvp4_typescript_first_slice_cap_policy, normalize_repo_relative_path,
         parser_fact_bundle_from_extraction, LanguageCapabilityFlag, LanguageCapabilityScope,
-        LanguageCapabilityStatus, LanguageFrontend, LanguageParser,
+        LanguageCapabilityStatus, LanguageFrontend, LanguageParser, Mvp4MicroFlowAdapterKind,
         Mvp4TypeScriptMicroNodeCapPolicy, NullProjectResolver, ParserUnknownBoundaryKind,
         ProjectResolver, ProjectResolverContext, ProjectResolverError, ProjectResolverProvenance,
         ProjectResolverQueryKind, ProjectResolverResult, ProjectResolverStatus,
@@ -17883,6 +18957,413 @@ mod tests {
             Ok(Some(parsed)) => parsed,
             Ok(None) => panic!("expected supported parser for {path}"),
             Err(error) => panic!("expected parse success for {path}, got {error}"),
+        }
+    }
+
+    fn mvp4_dispatcher_source(language: SourceLanguage) -> &'static str {
+        match language {
+            SourceLanguage::JavaScript | SourceLanguage::Jsx => "function demo() { return 1; }\n",
+            SourceLanguage::TypeScript | SourceLanguage::Tsx => {
+                "function demo(): number { return 1; }\n"
+            }
+            SourceLanguage::Python => "def demo():\n    return 1\n",
+            SourceLanguage::Go => "package sample\nfunc demo() int { return 1 }\n",
+            SourceLanguage::Rust => {
+                "fn demo(input: i32) -> i32 { let next = input; return next; }\n"
+            }
+            SourceLanguage::Java => "class Sample { static int demo() { return 1; } }\n",
+            SourceLanguage::CSharp => "class Sample { static int demo() { return 1; } }\n",
+            SourceLanguage::C => "int demo(void) { return 1; }\n",
+            SourceLanguage::Cpp => "int demo() { return 1; }\n",
+            SourceLanguage::Ruby => "def demo\n  1\nend\n",
+            SourceLanguage::Php => "<?php\nfunction demo() { return 1; }\n",
+        }
+    }
+
+    #[test]
+    fn mvp4_micro_flow_dispatcher_selects_the_exact_extension_contract() {
+        let registry = super::default_frontend_registry();
+        let mut covered_languages = BTreeSet::new();
+        for language in SourceLanguage::ALL {
+            let frontend = registry.info_for_language(*language).expect("frontend");
+            covered_languages.insert(frontend.language_id);
+            for extension in frontend.file_extensions {
+                let path = format!("src/dispatcher/sample.{extension}");
+                let source = mvp4_dispatcher_source(*language);
+                let parsed = parser()
+                    .parse_source(&path, source, *language)
+                    .unwrap_or_else(|error| panic!("parse {path}: {error}"));
+                let expected = match (*language, *extension) {
+                    (SourceLanguage::TypeScript, "ts") => {
+                        Mvp4MicroFlowAdapterKind::LegacyTypeScriptV1
+                    }
+                    (language, _extension) if language.is_javascript_family() => {
+                        Mvp4MicroFlowAdapterKind::ParserFactsV1
+                    }
+                    (SourceLanguage::Python, "py")
+                    | (SourceLanguage::Go, "go")
+                    | (SourceLanguage::Rust, "rs")
+                    | (SourceLanguage::Java, "java")
+                    | (SourceLanguage::CSharp, "cs")
+                    | (SourceLanguage::C, "c")
+                    | (SourceLanguage::C, "h")
+                    | (SourceLanguage::Cpp, "cc")
+                    | (SourceLanguage::Cpp, "cpp")
+                    | (SourceLanguage::Cpp, "cxx")
+                    | (SourceLanguage::Cpp, "hpp")
+                    | (SourceLanguage::Cpp, "hh")
+                    | (SourceLanguage::Cpp, "hxx")
+                    | (SourceLanguage::Ruby, "rb")
+                    | (SourceLanguage::Php, "php") => Mvp4MicroFlowAdapterKind::ParserFactsV1,
+                    _ => Mvp4MicroFlowAdapterKind::Inactive,
+                };
+                assert_eq!(
+                    super::select_mvp4_micro_flow_adapter(&parsed),
+                    expected,
+                    "{path}"
+                );
+            }
+        }
+        assert_eq!(covered_languages.len(), 13);
+
+        let declaration = parser()
+            .parse_source(
+                "src/types.d.ts",
+                "declare function demo(): number;\n",
+                SourceLanguage::TypeScript,
+            )
+            .expect("parse declaration file");
+        assert_eq!(
+            super::select_mvp4_micro_flow_adapter(&declaration),
+            Mvp4MicroFlowAdapterKind::Inactive
+        );
+        let declaration_bundle =
+            extract_parser_fact_bundle(&declaration, "declare function demo(): number;\n");
+        let legacy = emit_mvp4_typescript_micro_flow_extraction_context(
+            &declaration,
+            "declare function demo(): number;\n",
+        );
+        let dispatched = emit_mvp4_micro_flow_extraction_context(
+            &declaration,
+            "declare function demo(): number;\n",
+            &declaration_bundle,
+        );
+        assert_eq!(legacy, dispatched);
+        assert_eq!(
+            serde_json::to_vec(&legacy).expect("serialize legacy declaration context"),
+            serde_json::to_vec(&dispatched).expect("serialize dispatched declaration context")
+        );
+        assert!(!dispatched.inventory.eligible);
+        assert!(dispatched.inventory.candidates.is_empty());
+        assert!(dispatched.persistable_value_uses.is_empty());
+        assert!(dispatched.micro_edges.candidates.is_empty());
+
+        for (language, path, source) in [
+            (
+                SourceLanguage::C,
+                "src/dispatcher/wrong.hpp",
+                mvp4_dispatcher_source(SourceLanguage::C),
+            ),
+            (
+                SourceLanguage::C,
+                "src/dispatcher/wrong.cpp",
+                mvp4_dispatcher_source(SourceLanguage::C),
+            ),
+            (
+                SourceLanguage::Cpp,
+                "src/dispatcher/wrong.h",
+                mvp4_dispatcher_source(SourceLanguage::Cpp),
+            ),
+            (
+                SourceLanguage::Cpp,
+                "src/dispatcher/wrong.c",
+                mvp4_dispatcher_source(SourceLanguage::Cpp),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/ruby-extensionless",
+                "#!/usr/bin/env ruby\ndef demo\n  1\nend\n",
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/wrong.rake",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/wrong.gemspec",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/wrong.ru",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/wrong.php",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/php-extensionless",
+                "#!/usr/bin/env php\n<?php\nfunction demo() { return 1; }\n",
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/wrong.phtml",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/wrong.inc",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/wrong.php3",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/wrong.rb",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+        ] {
+            let parsed = parser()
+                .parse_source(path, source, language)
+                .unwrap_or_else(|error| panic!("parse {path}: {error}"));
+            assert_eq!(
+                super::select_mvp4_micro_flow_adapter(&parsed),
+                Mvp4MicroFlowAdapterKind::Inactive,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp4_micro_flow_dispatcher_preserves_legacy_ts_serialization_for_all_source_roles() {
+        let source = "export function demo(input: number): number {\n  const next = input;\n  return next;\n}\n";
+        for path in [
+            "src/handler.ts",
+            "tests/handler.spec.ts",
+            "src/generated/client.ts",
+        ] {
+            let parsed = parsed(path, source);
+            let parser_fact_bundle = extract_parser_fact_bundle(&parsed, source);
+            let legacy = emit_mvp4_typescript_micro_flow_extraction_context(&parsed, source);
+            let dispatched =
+                emit_mvp4_micro_flow_extraction_context(&parsed, source, &parser_fact_bundle);
+            assert_eq!(
+                super::select_mvp4_micro_flow_adapter(&parsed),
+                Mvp4MicroFlowAdapterKind::LegacyTypeScriptV1,
+                "{path}"
+            );
+            assert_eq!(legacy, dispatched, "{path}");
+            assert_eq!(
+                serde_json::to_vec(&legacy).expect("serialize legacy context"),
+                serde_json::to_vec(&dispatched).expect("serialize dispatched context"),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp4_micro_flow_dispatcher_populates_active_parser_facts_sources_by_role() {
+        for (language, extension) in [
+            (SourceLanguage::JavaScript, "js"),
+            (SourceLanguage::JavaScript, "mjs"),
+            (SourceLanguage::JavaScript, "cjs"),
+            (SourceLanguage::Jsx, "jsx"),
+            (SourceLanguage::TypeScript, "mts"),
+            (SourceLanguage::TypeScript, "cts"),
+            (SourceLanguage::Tsx, "tsx"),
+            (SourceLanguage::Python, "py"),
+            (SourceLanguage::Go, "go"),
+            (SourceLanguage::Rust, "rs"),
+            (SourceLanguage::Java, "java"),
+            (SourceLanguage::CSharp, "cs"),
+            (SourceLanguage::C, "c"),
+            (SourceLanguage::C, "h"),
+            (SourceLanguage::Cpp, "cc"),
+            (SourceLanguage::Cpp, "cpp"),
+            (SourceLanguage::Cpp, "cxx"),
+            (SourceLanguage::Cpp, "hpp"),
+            (SourceLanguage::Cpp, "hh"),
+            (SourceLanguage::Cpp, "hxx"),
+            (SourceLanguage::Ruby, "rb"),
+            (SourceLanguage::Php, "php"),
+        ] {
+            for (prefix, expected_role) in [
+                ("src/dispatcher", MicroSourceRole::Production),
+                ("tests/dispatcher", MicroSourceRole::Test),
+                ("src/generated/dispatcher", MicroSourceRole::Generated),
+            ] {
+                let path = format!("{prefix}/active.{extension}");
+                let source = mvp4_dispatcher_source(language);
+                let parsed = parser()
+                    .parse_source(&path, source, language)
+                    .unwrap_or_else(|error| panic!("parse {path}: {error}"));
+                let parser_fact_bundle = extract_parser_fact_bundle(&parsed, source);
+                let context =
+                    emit_mvp4_micro_flow_extraction_context(&parsed, source, &parser_fact_bundle);
+                assert_eq!(
+                    super::select_mvp4_micro_flow_adapter(&parsed),
+                    Mvp4MicroFlowAdapterKind::ParserFactsV1,
+                    "{path}"
+                );
+                assert!(context.inventory.eligible, "{path}");
+                assert_eq!(context.inventory.source_role, expected_role, "{path}");
+                assert_eq!(context.micro_edges.source_role, expected_role, "{path}");
+                assert!(
+                    !context.inventory.candidates.is_empty()
+                        || !context.persistable_value_uses.is_empty(),
+                    "{path}"
+                );
+                assert!(!context.micro_edges.candidates.is_empty(), "{path}");
+
+                let production = expected_role == MicroSourceRole::Production;
+                assert_eq!(
+                    context.inventory.status,
+                    if production {
+                        "complete_active"
+                    } else {
+                        "complete_inactive"
+                    },
+                    "{path}"
+                );
+                assert_eq!(
+                    context.inventory.production_persistence_enabled, production,
+                    "{path}"
+                );
+                assert_eq!(
+                    context.micro_edges.production_micro_edge_rows,
+                    if production {
+                        context.micro_edges.candidates.len() as u64
+                    } else {
+                        0
+                    },
+                    "{path}"
+                );
+                let expected_claimability = if production {
+                    codegraph_core::MVP4_3_PARSER_FACTS_V1_CLAIMABILITY
+                } else {
+                    "non_claimable_parser_facts_v1_inactive"
+                };
+                let expected_version = if production {
+                    codegraph_core::MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION
+                } else {
+                    "mvp4-parser-facts-v1"
+                };
+                assert!(
+                    context
+                        .inventory
+                        .candidates
+                        .iter()
+                        .chain(&context.persistable_value_uses)
+                        .all(|candidate| {
+                            candidate.source_role == expected_role
+                                && candidate.claimability == expected_claimability
+                                && candidate.extraction_version == expected_version
+                        }),
+                    "{path}"
+                );
+                assert!(
+                    context.micro_edges.candidates.iter().all(|candidate| {
+                        candidate.source_role == expected_role
+                            && candidate.claimability == expected_claimability
+                            && candidate.extraction_version == expected_version
+                    }),
+                    "{path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mvp4_micro_flow_dispatcher_keeps_unregistered_extensions_inactive_and_empty() {
+        for (language, path, source) in [
+            (
+                SourceLanguage::TypeScript,
+                "src/dispatcher/inactive.d.ts",
+                "declare function demo(): number;\n",
+            ),
+            (
+                SourceLanguage::C,
+                "src/dispatcher/inactive.cpp",
+                mvp4_dispatcher_source(SourceLanguage::C),
+            ),
+            (
+                SourceLanguage::Cpp,
+                "src/dispatcher/inactive.h",
+                mvp4_dispatcher_source(SourceLanguage::Cpp),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/ruby-extensionless",
+                "#!/usr/bin/env ruby\ndef demo\n  1\nend\n",
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/inactive.rake",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/inactive.gemspec",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/inactive.ru",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Ruby,
+                "src/dispatcher/inactive.php",
+                mvp4_dispatcher_source(SourceLanguage::Ruby),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/php-extensionless",
+                "#!/usr/bin/env php\n<?php\nfunction demo() { return 1; }\n",
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/inactive.phtml",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/inactive.inc",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/inactive.php3",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+            (
+                SourceLanguage::Php,
+                "src/dispatcher/inactive.rb",
+                mvp4_dispatcher_source(SourceLanguage::Php),
+            ),
+        ] {
+            let parsed = parser()
+                .parse_source(path, source, language)
+                .unwrap_or_else(|error| panic!("parse {path}: {error}"));
+            let parser_fact_bundle = extract_parser_fact_bundle(&parsed, source);
+            let context =
+                emit_mvp4_micro_flow_extraction_context(&parsed, source, &parser_fact_bundle);
+            assert_eq!(
+                super::select_mvp4_micro_flow_adapter(&parsed),
+                Mvp4MicroFlowAdapterKind::Inactive,
+                "{path}"
+            );
+            assert!(!context.inventory.eligible, "{path}");
+            assert!(context.inventory.candidates.is_empty(), "{path}");
+            assert!(context.persistable_value_uses.is_empty(), "{path}");
+            assert!(context.micro_edges.candidates.is_empty(), "{path}");
         }
     }
 
@@ -21320,7 +22801,7 @@ export async function proof(loader: any, value: number) {
         let python = registry
             .info_for_language(SourceLanguage::Python)
             .expect("python frontend");
-        assert_eq!(python.support_tier.number(), 3);
+        assert_eq!(python.support_tier.number(), 5);
         assert!(python.tree_sitter_grammar_available);
         assert!(!python.compiler_resolver_available);
         assert!(python
@@ -21343,7 +22824,7 @@ export async function proof(loader: any, value: number) {
         let go = registry
             .info_for_language(SourceLanguage::Go)
             .expect("go frontend");
-        assert_eq!(go.support_tier.number(), 3);
+        assert_eq!(go.support_tier.number(), 5);
         assert!(go.tree_sitter_grammar_available);
         assert!(!go.compiler_resolver_available);
         assert!(go
@@ -21372,7 +22853,7 @@ export async function proof(loader: any, value: number) {
         let rust = registry
             .info_for_language(SourceLanguage::Rust)
             .expect("rust frontend");
-        assert_eq!(rust.support_tier.number(), 3);
+        assert_eq!(rust.support_tier.number(), 5);
         assert!(rust.tree_sitter_grammar_available);
         assert!(!rust.compiler_resolver_available);
         assert!(rust
@@ -21411,11 +22892,37 @@ export async function proof(loader: any, value: number) {
         let java = registry
             .info_for_language(SourceLanguage::Java)
             .expect("java frontend");
-        assert_eq!(java.support_tier.number(), 1);
+        assert_eq!(java.support_tier.number(), 5);
         assert!(java
             .known_limitations
             .iter()
             .any(|limitation| limitation.contains("syntax/entity")));
+
+        let csharp = registry
+            .info_for_language(SourceLanguage::CSharp)
+            .expect("csharp frontend");
+        assert_eq!(csharp.support_tier.number(), 5);
+        assert!(csharp
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("syntax/entity")));
+
+        for language in [
+            SourceLanguage::C,
+            SourceLanguage::Cpp,
+            SourceLanguage::Ruby,
+            SourceLanguage::Php,
+        ] {
+            assert_eq!(
+                registry
+                    .info_for_language(language)
+                    .expect("scoped Tier 5 frontend")
+                    .support_tier
+                    .number(),
+                5,
+                "{language:?} must advertise its exact scoped Tier 5 contract"
+            );
+        }
     }
 
     #[test]
@@ -21546,8 +23053,8 @@ export async function proof(loader: any, value: number) {
         assert!(
             tsx.known_limitations
                 .iter()
-                .any(|limitation| limitation.contains("not_implemented for TSX")),
-            "TSX must state that MVP4 packet support is not implemented"
+                .any(|limitation| limitation.contains("same-file intraprocedural .tsx")),
+            "TSX must state the scoped MVP4 packet boundary"
         );
 
         let javascript = registry
@@ -21603,7 +23110,7 @@ export async function proof(loader: any, value: number) {
         assert!(javascript
             .known_limitations
             .iter()
-            .any(|limitation| limitation.contains("not_implemented for JavaScript")));
+            .any(|limitation| limitation.contains("same-file intraprocedural .js/.mjs/.cjs")));
 
         let jsx = registry
             .info_for_language(SourceLanguage::Jsx)
@@ -21658,7 +23165,7 @@ export async function proof(loader: any, value: number) {
         assert!(jsx
             .known_limitations
             .iter()
-            .any(|limitation| limitation.contains("not_implemented for JSX")));
+            .any(|limitation| limitation.contains("same-file intraprocedural .jsx")));
 
         for language in [
             SourceLanguage::JavaScript,
@@ -21681,6 +23188,11 @@ export async function proof(loader: any, value: number) {
                 "{:?} must not inherit TypeScript packet proof",
                 language
             );
+        }
+
+        for language in SourceLanguage::ALL {
+            let language = *language;
+            let frontend = registry.info_for_language(language).expect("frontend");
             assert_ne!(
                 frontend.capability_status(LanguageCapabilityFlag::CallerCalleeExact),
                 Some(LanguageCapabilityStatus::SupportedExact),
@@ -21691,13 +23203,286 @@ export async function proof(loader: any, value: number) {
     }
 
     #[test]
+    fn registry_scoped_readiness_covers_all_frontends_without_packet_promotion() {
+        let registry = super::default_frontend_registry();
+        for language in SourceLanguage::ALL {
+            let frontend = registry.info_for_language(*language).expect("frontend");
+            for flag in [
+                LanguageCapabilityFlag::CallExtracted,
+                LanguageCapabilityFlag::CallerCalleeExact,
+                LanguageCapabilityFlag::LocalBindingResolved,
+                LanguageCapabilityFlag::ReadWriteExtracted,
+                LanguageCapabilityFlag::LocalDataflowDerived,
+                LanguageCapabilityFlag::LocalFlowPacketSupported,
+            ] {
+                assert!(
+                    frontend.scoped_readiness_for(flag).next().is_some(),
+                    "missing scoped {flag:?} readiness for {}",
+                    frontend.language_id
+                );
+            }
+        }
+
+        for language in [
+            SourceLanguage::JavaScript,
+            SourceLanguage::Jsx,
+            SourceLanguage::TypeScript,
+            SourceLanguage::Tsx,
+            SourceLanguage::Python,
+            SourceLanguage::Go,
+            SourceLanguage::Rust,
+        ] {
+            let frontend = registry.info_for_language(language).expect("frontend");
+            assert!(frontend
+                .scoped_readiness_for(LanguageCapabilityFlag::CallerCalleeExact)
+                .any(
+                    |readiness| readiness.status == LanguageCapabilityStatus::SupportedExact
+                        && readiness.scope == LanguageCapabilityScope::SameFileDirectCalls
+                ));
+        }
+
+        for (language, scope) in [
+            (
+                SourceLanguage::JavaScript,
+                LanguageCapabilityScope::JavaScriptFamilyStaticImports,
+            ),
+            (
+                SourceLanguage::Jsx,
+                LanguageCapabilityScope::JavaScriptFamilyStaticImports,
+            ),
+            (
+                SourceLanguage::TypeScript,
+                LanguageCapabilityScope::JavaScriptFamilyStaticImports,
+            ),
+            (
+                SourceLanguage::Tsx,
+                LanguageCapabilityScope::JavaScriptFamilyStaticImports,
+            ),
+            (
+                SourceLanguage::Python,
+                LanguageCapabilityScope::PythonRepoLocalIndexedImports,
+            ),
+            (
+                SourceLanguage::Go,
+                LanguageCapabilityScope::GoSamePackageIndexedFiles,
+            ),
+            (
+                SourceLanguage::Rust,
+                LanguageCapabilityScope::RustCrateLocalIndexedModules,
+            ),
+        ] {
+            let frontend = registry.info_for_language(language).expect("frontend");
+            assert!(frontend
+                .scoped_readiness_for(LanguageCapabilityFlag::CallerCalleeExact)
+                .any(
+                    |readiness| readiness.status == LanguageCapabilityStatus::SupportedExact
+                        && readiness.scope == scope
+                ));
+        }
+
+        for language in [
+            SourceLanguage::Python,
+            SourceLanguage::Go,
+            SourceLanguage::Rust,
+        ] {
+            let frontend = registry.info_for_language(language).expect("frontend");
+            assert_eq!(frontend.support_tier.number(), 5);
+            assert_eq!(
+                frontend.capability_status(LanguageCapabilityFlag::LocalBindingResolved),
+                Some(LanguageCapabilityStatus::SupportedParserOnly)
+            );
+            assert_eq!(
+                frontend.capability_status(LanguageCapabilityFlag::ReadWriteExtracted),
+                Some(LanguageCapabilityStatus::SupportedParserOnly)
+            );
+            assert_eq!(
+                frontend.capability_status(LanguageCapabilityFlag::LocalDataflowDerived),
+                Some(LanguageCapabilityStatus::SupportedHeuristic)
+            );
+            assert_eq!(
+                frontend.capability_status(LanguageCapabilityFlag::LocalFlowPacketSupported),
+                Some(LanguageCapabilityStatus::NotImplemented)
+            );
+        }
+
+        for (language, proof_marker) in [
+            (SourceLanguage::JavaScript, ".js/.mjs/.cjs"),
+            (SourceLanguage::Jsx, ".jsx"),
+            (SourceLanguage::TypeScript, ".d.ts excluded"),
+            (SourceLanguage::Tsx, ".tsx"),
+            (SourceLanguage::Python, ".py"),
+            (SourceLanguage::Go, ".go"),
+            (SourceLanguage::Rust, ".rs"),
+            (SourceLanguage::Java, ".java"),
+            (SourceLanguage::CSharp, ".cs"),
+            (SourceLanguage::C, ".c/.h"),
+            (SourceLanguage::Cpp, ".cc/.cpp/.cxx/.hpp/.hh/.hxx"),
+            (SourceLanguage::Ruby, ".rb"),
+            (SourceLanguage::Php, ".php"),
+        ] {
+            let frontend = registry.info_for_language(language).expect("frontend");
+            for (flag, expected_status) in [
+                (
+                    LanguageCapabilityFlag::LocalBindingResolved,
+                    LanguageCapabilityStatus::SupportedExact,
+                ),
+                (
+                    LanguageCapabilityFlag::ReadWriteExtracted,
+                    LanguageCapabilityStatus::SupportedExact,
+                ),
+                (
+                    LanguageCapabilityFlag::LocalDataflowDerived,
+                    LanguageCapabilityStatus::SupportedDerivedWithProvenance,
+                ),
+                (
+                    LanguageCapabilityFlag::LocalFlowPacketSupported,
+                    LanguageCapabilityStatus::SupportedExact,
+                ),
+            ] {
+                let rows = frontend
+                    .scoped_readiness_for(flag)
+                    .filter(|readiness| {
+                        readiness.scope == LanguageCapabilityScope::SameFileIntraprocedural
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(rows.len(), 1, "{language:?}/{flag:?}");
+                assert_eq!(rows[0].status, expected_status, "{language:?}/{flag:?}");
+                assert!(
+                    rows[0].proof_boundary.contains(proof_marker),
+                    "{language:?}/{flag:?}: {}",
+                    rows[0].proof_boundary
+                );
+            }
+        }
+
+        for language in [SourceLanguage::Ruby, SourceLanguage::Php] {
+            let frontend = registry.info_for_language(language).expect("frontend");
+            let broad_rows = frontend
+                .scoped_readiness
+                .iter()
+                .filter(|readiness| readiness.scope == LanguageCapabilityScope::LanguageFrontend)
+                .map(|readiness| (readiness.flag, readiness.status))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                broad_rows,
+                vec![
+                    (
+                        LanguageCapabilityFlag::CallExtracted,
+                        LanguageCapabilityStatus::SupportedParserOnly,
+                    ),
+                    (
+                        LanguageCapabilityFlag::CallerCalleeExact,
+                        LanguageCapabilityStatus::RequiresRuntime,
+                    ),
+                    (
+                        LanguageCapabilityFlag::LocalBindingResolved,
+                        LanguageCapabilityStatus::RequiresRuntime,
+                    ),
+                    (
+                        LanguageCapabilityFlag::ReadWriteExtracted,
+                        LanguageCapabilityStatus::NotImplemented,
+                    ),
+                    (
+                        LanguageCapabilityFlag::LocalDataflowDerived,
+                        LanguageCapabilityStatus::NotImplemented,
+                    ),
+                    (
+                        LanguageCapabilityFlag::LocalFlowPacketSupported,
+                        LanguageCapabilityStatus::NotImplemented,
+                    ),
+                ],
+                "{language:?} must retain exactly six conservative broad rows"
+            );
+
+            let accepted_rows = frontend
+                .scoped_readiness
+                .iter()
+                .filter(|readiness| {
+                    readiness.scope == LanguageCapabilityScope::SameFileIntraprocedural
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                accepted_rows.len(),
+                4,
+                "{language:?} must expose exactly four accepted same-file rows"
+            );
+            assert_eq!(
+                accepted_rows
+                    .iter()
+                    .map(|readiness| readiness.flag)
+                    .collect::<BTreeSet<_>>(),
+                [
+                    LanguageCapabilityFlag::LocalBindingResolved,
+                    LanguageCapabilityFlag::ReadWriteExtracted,
+                    LanguageCapabilityFlag::LocalDataflowDerived,
+                    LanguageCapabilityFlag::LocalFlowPacketSupported,
+                ]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+                "{language:?} accepted scoped flags"
+            );
+        }
+
+        let packet_rows = registry
+            .frontends()
+            .iter()
+            .flat_map(|frontend| {
+                frontend
+                    .info()
+                    .scoped_readiness_for(LanguageCapabilityFlag::LocalFlowPacketSupported)
+                    .filter(|readiness| {
+                        readiness.status == LanguageCapabilityStatus::SupportedExact
+                    })
+                    .map(move |readiness| (frontend.info().language_id, readiness.scope))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            packet_rows,
+            vec![
+                (
+                    "javascript",
+                    LanguageCapabilityScope::SameFileIntraprocedural
+                ),
+                ("jsx", LanguageCapabilityScope::SameFileIntraprocedural),
+                (
+                    "typescript",
+                    LanguageCapabilityScope::SameFileIntraprocedural
+                ),
+                ("tsx", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("python", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("go", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("rust", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("java", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("csharp", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("c", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("cpp", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("ruby", LanguageCapabilityScope::SameFileIntraprocedural),
+                ("php", LanguageCapabilityScope::SameFileIntraprocedural),
+            ]
+        );
+
+        assert_eq!(
+            serde_json::to_string(&LanguageCapabilityScope::LanguageFrontend).unwrap(),
+            "\"language_frontend\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LanguageCapabilityScope::TypeScriptProductionTsOnly).unwrap(),
+            "\"type_script_production_ts_only\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LanguageCapabilityScope::SameFileIntraprocedural).unwrap(),
+            "\"same_file_intraprocedural\""
+        );
+    }
+
+    #[test]
     fn java_registry_reports_parser_call_capability_without_resolver_proof() {
         let registry = super::default_frontend_registry();
         let java = registry
             .info_for_language(SourceLanguage::Java)
             .expect("java frontend");
 
-        assert_eq!(java.support_tier.number(), 1);
+        assert_eq!(java.support_tier.number(), 5);
         assert_eq!(
             java.capability_status(LanguageCapabilityFlag::CallExtracted),
             Some(LanguageCapabilityStatus::SupportedParserOnly)
@@ -21731,7 +23516,7 @@ export async function proof(loader: any, value: number) {
             .info_for_language(SourceLanguage::CSharp)
             .expect("csharp frontend");
 
-        assert_eq!(csharp.support_tier.number(), 1);
+        assert_eq!(csharp.support_tier.number(), 5);
         assert_eq!(
             csharp.capability_status(LanguageCapabilityFlag::CallExtracted),
             Some(LanguageCapabilityStatus::SupportedParserOnly)
@@ -21771,7 +23556,7 @@ export async function proof(loader: any, value: number) {
             .info_for_language(SourceLanguage::C)
             .expect("c frontend");
 
-        assert_eq!(c.support_tier.number(), 1);
+        assert_eq!(c.support_tier.number(), 5);
         assert_eq!(
             c.capability_status(LanguageCapabilityFlag::CallExtracted),
             Some(LanguageCapabilityStatus::SupportedParserOnly)
@@ -21815,7 +23600,7 @@ export async function proof(loader: any, value: number) {
             .info_for_language(SourceLanguage::Cpp)
             .expect("cpp frontend");
 
-        assert_eq!(cpp.support_tier.number(), 1);
+        assert_eq!(cpp.support_tier.number(), 5);
         assert_eq!(
             cpp.capability_status(LanguageCapabilityFlag::CallExtracted),
             Some(LanguageCapabilityStatus::SupportedParserOnly)
@@ -21862,7 +23647,7 @@ export async function proof(loader: any, value: number) {
             .info_for_language(SourceLanguage::Ruby)
             .expect("ruby frontend");
 
-        assert_eq!(ruby.support_tier.number(), 1);
+        assert_eq!(ruby.support_tier.number(), 5);
         assert_eq!(
             ruby.capability_status(LanguageCapabilityFlag::CallExtracted),
             Some(LanguageCapabilityStatus::SupportedParserOnly)
@@ -21898,7 +23683,7 @@ export async function proof(loader: any, value: number) {
             .info_for_language(SourceLanguage::Php)
             .expect("php frontend");
 
-        assert_eq!(php.support_tier.number(), 1);
+        assert_eq!(php.support_tier.number(), 5);
         assert_eq!(
             php.capability_status(LanguageCapabilityFlag::CallExtracted),
             Some(LanguageCapabilityStatus::SupportedParserOnly)
@@ -26490,6 +28275,175 @@ export function run(registry: Record<string, (x: string) => string>, name: strin
                 extraction.edges
             );
         }
+    }
+
+    #[test]
+    fn exact_direct_call_site_spans_cover_all_frontends_and_multiline_calls() {
+        let cases = [
+            (
+                "fixtures/call_spans/direct.js",
+                "function helper() {}\nfunction run() {\n  helper(\n  );\n  other.helper();\n}\n",
+                3,
+                4,
+            ),
+            (
+                "fixtures/call_spans/direct.jsx",
+                "function helper() {}\nfunction run() {\n  helper(\n  );\n  other.helper();\n  return <div />;\n}\n",
+                3,
+                4,
+            ),
+            (
+                "fixtures/call_spans/direct.ts",
+                "function helper(): void {}\nfunction run(): void {\n  helper(\n  );\n  other.helper();\n}\n",
+                3,
+                4,
+            ),
+            (
+                "fixtures/call_spans/direct.tsx",
+                "function helper(): void {}\nfunction run(): JSX.Element {\n  helper(\n  );\n  other.helper();\n  return <div />;\n}\n",
+                3,
+                4,
+            ),
+            (
+                "fixtures/call_spans/direct.py",
+                "def helper():\n    pass\n\ndef run():\n    helper(\n    )\n    other.helper()\n",
+                5,
+                6,
+            ),
+            (
+                "fixtures/call_spans/direct.go",
+                "package sample\nfunc helper() {}\nfunc run() {\n    helper(\n    )\n    other.helper()\n}\n",
+                4,
+                5,
+            ),
+            (
+                "fixtures/call_spans/direct.rs",
+                "fn helper() {}\nfn run() {\n    helper(\n    );\n    other.helper();\n}\n",
+                3,
+                4,
+            ),
+            (
+                "fixtures/call_spans/Direct.java",
+                "class Direct {\n  static void helper() {}\n  void run() {\n    helper(\n    );\n    this.helper();\n  }\n}\n",
+                4,
+                5,
+            ),
+            (
+                "fixtures/call_spans/Direct.cs",
+                "class Direct {\n  static void helper() {}\n  void run() {\n    helper(\n    );\n    this.helper();\n  }\n}\n",
+                4,
+                5,
+            ),
+            (
+                "fixtures/call_spans/direct.c",
+                "void helper(void) {}\nvoid run(void) {\n    helper(\n    );\n}\n",
+                3,
+                4,
+            ),
+            (
+                "fixtures/call_spans/direct.cpp",
+                "void helper() {}\nvoid run() {\n    helper(\n    );\n    other::helper();\n}\n",
+                3,
+                4,
+            ),
+            (
+                "fixtures/call_spans/direct.rb",
+                "def helper\nend\ndef run\n  helper(\n  )\n  other.helper()\nend\n",
+                4,
+                5,
+            ),
+            (
+                "fixtures/call_spans/direct.php",
+                "<?php\nfunction helper() {}\nfunction run() {\n    helper(\n    );\n    $other->helper();\n}\n",
+                4,
+                5,
+            ),
+        ];
+
+        for (path, source, start_line, end_line) in cases {
+            let spans = super::exact_direct_call_site_spans_by_local_callee(path, source, "helper");
+            assert_eq!(spans.len(), 1, "{path}: {spans:?}");
+            let span = &spans[0];
+            assert_eq!(span.repo_relative_path, path);
+            assert_eq!(span.start_line, start_line, "{path}: {span:?}");
+            assert_eq!(span.end_line, end_line, "{path}: {span:?}");
+            assert!(span.start_column.is_some(), "{path}: {span:?}");
+            assert!(span.end_column.is_some(), "{path}: {span:?}");
+        }
+    }
+
+    #[test]
+    fn exact_direct_call_site_spans_ignore_comments_strings_templates_and_fstrings() {
+        let javascript_family = [
+            "fixtures/call_spans/noise.js",
+            "fixtures/call_spans/noise.jsx",
+            "fixtures/call_spans/noise.ts",
+            "fixtures/call_spans/noise.tsx",
+        ];
+        let source = "function helper() {}\nfunction run() {\n  const template = `helper(\\n)`;\n  const interpolation = `${\"helper()\"}`;\n  const quoted = \"helper()\";\n  // helper()\n}\n";
+        for path in javascript_family {
+            assert!(
+                super::exact_direct_call_site_spans_by_local_callee(path, source, "helper")
+                    .is_empty(),
+                "{path}"
+            );
+        }
+
+        let python = "def helper():\n    pass\n\ndef run():\n    text = f\"helper() {'helper()'}\"\n    # helper()\n";
+        assert!(super::exact_direct_call_site_spans_by_local_callee(
+            "fixtures/call_spans/noise.py",
+            python,
+            "helper"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn exact_direct_call_site_spans_include_executable_template_and_fstring_interpolations() {
+        let javascript_family = [
+            "fixtures/call_spans/interpolation.js",
+            "fixtures/call_spans/interpolation.jsx",
+            "fixtures/call_spans/interpolation.ts",
+            "fixtures/call_spans/interpolation.tsx",
+        ];
+        let source =
+            "function helper() { return 1; }\nfunction run() {\n  return `${helper()}`;\n}\n";
+        for path in javascript_family {
+            let spans = super::exact_direct_call_site_spans_by_local_callee(path, source, "helper");
+            assert_eq!(spans.len(), 1, "{path}: {spans:?}");
+            assert_eq!(spans[0].start_line, 3, "{path}: {spans:?}");
+        }
+
+        let python = "def helper():\n    return 1\n\ndef run():\n    return f\"{helper()}\"\n";
+        let spans = super::exact_direct_call_site_spans_by_local_callee(
+            "fixtures/call_spans/interpolation.py",
+            python,
+            "helper",
+        );
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(spans[0].start_line, 5, "{spans:?}");
+    }
+
+    #[test]
+    fn exact_direct_call_site_spans_fail_closed_for_invalid_input() {
+        assert!(super::exact_direct_call_site_spans_by_local_callee(
+            "fixtures/call_spans/direct.unknown",
+            "helper();",
+            "helper"
+        )
+        .is_empty());
+        assert!(super::exact_direct_call_site_spans_by_local_callee(
+            "fixtures/call_spans/broken.js",
+            "function run( { helper();",
+            "helper"
+        )
+        .is_empty());
+        assert!(super::exact_direct_call_site_spans_by_local_callee(
+            "fixtures/call_spans/direct.js",
+            "function run() { helper(); }",
+            "helper.member"
+        )
+        .is_empty());
     }
 
     #[test]

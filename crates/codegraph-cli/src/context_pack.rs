@@ -9,9 +9,12 @@ use std::time::{Duration, Instant};
 
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role,
-    mvp4_3_local_micro_flow_packet_active_languages, ContextPacket, Edge, Entity, EntityKind,
-    EvidenceRole, Exactness, FileRecord, Metadata, RelationKind, RetrievalCandidate, SourceSpan,
+    mvp4_3_local_micro_flow_packet_active_languages,
+    mvp4_3_local_micro_flow_packet_source_supported_for_source, ContextPacket, Edge, Entity,
+    EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, MicroSourceRole, RelationKind,
+    RetrievalCandidate, SourceSpan,
 };
+use codegraph_parser::detect_language;
 use codegraph_query::{PromptSeed, PromptSeedKind};
 use codegraph_store::{
     GraphStore, LocalFlowPacketQueryOptions, LocalFlowPacketRow, SqliteGraphStore,
@@ -6324,20 +6327,26 @@ pub(crate) fn context_pack_retrieval_explain_budget_summary(
     // lane is down" apart from "vector lane found nothing".
     if let Some(vector_trace) = retrieval_explain.get("vector_trace") {
         if let Some(object) = summary.as_object_mut() {
-            object.insert(
-                "vector_trace".to_string(),
-                json!({
-                    "diagnostic_only": true,
-                    "compacted": true,
-                    "vector_index_status": vector_trace.get("vector_index_status").cloned().unwrap_or(Value::Null),
-                    "vector_runtime_status": vector_trace.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
-                    "vector_candidate_count": vector_trace.get("vector_candidate_count").cloned().unwrap_or(Value::Null),
-                    "graph_verification_status_for_vector_candidates": vector_trace
-                        .get("graph_verification_status_for_vector_candidates")
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                }),
-            );
+            let mut compact_vector_trace = json!({
+                "diagnostic_only": true,
+                "compacted": true,
+                "vector_index_status": vector_trace.get("vector_index_status").cloned().unwrap_or(Value::Null),
+                "vector_runtime_status": vector_trace.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+                "vector_candidate_count": vector_trace.get("vector_candidate_count").cloned().unwrap_or(Value::Null),
+                "graph_verification_status_for_vector_candidates": vector_trace
+                    .get("graph_verification_status_for_vector_candidates")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            });
+            if let Some(stale_reason) = vector_trace.get("stale_missing_vector_index_reason") {
+                if let Some(compact_object) = compact_vector_trace.as_object_mut() {
+                    compact_object.insert(
+                        "stale_missing_vector_index_reason".to_string(),
+                        stale_reason.clone(),
+                    );
+                }
+            }
+            object.insert("vector_trace".to_string(), compact_vector_trace);
         }
     }
     summary
@@ -6666,6 +6675,7 @@ pub(crate) fn context_pack_language_capability_context_json(
         .get("micro_flow_packet_summary")
         .cloned()
         .unwrap_or_else(|| context_pack_micro_flow_handle_summary_json(&[]));
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
     json!({
         "status": if capability_metadata.get("status").and_then(Value::as_str) == Some("ok") {
             "available"
@@ -6712,10 +6722,42 @@ pub(crate) fn context_pack_language_capability_context_json(
             }
         ],
         "local_flow_packet_boundary": {
-            "active_languages": mvp4_3_local_micro_flow_packet_active_languages(),
-            "typescript_packet_handles_preserved": true,
-            "non_typescript_packet_support": "not_implemented_without_explicit_exact_gate",
+            "active_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "active_non_typescript_packet_languages": packet_language_registry["active_non_typescript_packet_languages"],
+            "active_non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "packet_language_registry": packet_language_registry,
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_languages_seen": [],
+            "inactive_packet_language_count": 0,
+            "inactive_packet_support": MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT,
+            "inactive_packet_overclaim_count": 0,
+            "active_non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "active_non_typescript_packet_overclaim_count": 0,
+            "non_typescript_packet_languages_seen": packet_language_registry["active_non_typescript_packet_languages"],
+            "non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
             "non_typescript_packet_overclaim_count": 0,
+            "compatibility_aliases": {
+                "non_typescript_packet_languages_seen": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_languages"
+                },
+                "non_typescript_packet_language_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_language_count"
+                },
+                "non_typescript_packet_support": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_support"
+                },
+                "non_typescript_packet_overclaim_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_overclaim_count"
+                }
+            },
             "micro_flow_packet_summary": micro_flow_summary,
             "handles_do_not_create_proof": true,
             "context_entry_command_activated": false
@@ -6785,27 +6827,13 @@ pub(crate) fn context_pack_source_language_capability_json(
 }
 
 pub(crate) fn context_pack_frontend_from_repo_relative_path(path: &str) -> Option<String> {
-    let extension = Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())?
-        .to_ascii_lowercase();
-    let language = match extension.as_str() {
-        "js" | "mjs" | "cjs" => "javascript",
-        "jsx" => "jsx",
-        "ts" | "mts" | "cts" => "typescript",
-        "tsx" => "tsx",
-        "py" => "python",
-        "go" => "go",
-        "rs" => "rust",
-        "java" => "java",
-        "cs" => "csharp",
-        "c" | "h" => "c",
-        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
-        "rb" => "ruby",
-        "php" => "php",
-        _ => return None,
-    };
-    Some(language.to_string())
+    let language = detect_language(path)?.as_str();
+    mvp4_3_local_micro_flow_packet_source_supported_for_source(
+        language,
+        path,
+        MicroSourceRole::Production,
+    )
+    .then(|| language.to_string())
 }
 
 pub(crate) const CONTEXT_PACK_MICRO_FLOW_HANDLE_LIMIT: usize = 4;
@@ -6841,6 +6869,8 @@ pub(crate) fn attach_context_pack_micro_flow_handles(
         json!({
             "compact_default_full_packet_body_inline": false,
             "compact_default_ordered_steps_inline": false,
+            "exact_function_seeds_prioritized": true,
+            "compact_first_handle_preserves_seed_priority": true,
             "packet_handles_do_not_create_proof": true,
             "context_entry_command_activated": false,
             "proof_boundary": "handles reference persisted local_flow_packets only; opening the audit handle is required for dict_v1 body or ordered_steps expansion"
@@ -6861,27 +6891,12 @@ fn load_context_pack_micro_flow_packet_rows(
     if active_languages.is_empty() {
         return Ok(Vec::new());
     }
-    let mut rows = BTreeMap::<String, LocalFlowPacketRow>::new();
-    for file in context_pack_micro_flow_relevant_files(packet) {
-        for language in &active_languages {
-            let query = LocalFlowPacketQueryOptions {
-                limit,
-                file_id: Some(file.clone()),
-                language: Some((*language).to_string()),
-                source_role: Some("production".to_string()),
-                ..LocalFlowPacketQueryOptions::default()
-            };
-            for row in store
-                .query_local_flow_packets(&query)
-                .map_err(|error| error.to_string())?
-            {
-                rows.entry(row.packet_id.clone()).or_insert(row);
-                if rows.len() >= limit {
-                    return Ok(rows.into_values().collect());
-                }
-            }
-        }
-    }
+    let mut rows = Vec::<LocalFlowPacketRow>::new();
+    let mut seen_packet_ids = BTreeSet::<String>::new();
+
+    // Exact function/entity seeds are the narrowest user-selected evidence.
+    // Preserve them ahead of broader file matches so the bounded collection and
+    // the compact one-handle envelope cannot shed the requested packet.
     for function in context_pack_micro_flow_relevant_functions(packet) {
         for language in &active_languages {
             let query = LocalFlowPacketQueryOptions {
@@ -6891,18 +6906,62 @@ fn load_context_pack_micro_flow_packet_rows(
                 source_role: Some("production".to_string()),
                 ..LocalFlowPacketQueryOptions::default()
             };
-            for row in store
+            let candidates = store
                 .query_local_flow_packets(&query)
-                .map_err(|error| error.to_string())?
-            {
-                rows.entry(row.packet_id.clone()).or_insert(row);
-                if rows.len() >= limit {
-                    return Ok(rows.into_values().collect());
-                }
+                .map_err(|error| error.to_string())?;
+            if extend_context_pack_micro_flow_packet_rows(
+                &mut rows,
+                &mut seen_packet_ids,
+                candidates,
+                limit,
+            ) {
+                return Ok(rows);
             }
         }
     }
-    Ok(rows.into_values().collect())
+    for file in context_pack_micro_flow_relevant_files(packet) {
+        for language in &active_languages {
+            let query = LocalFlowPacketQueryOptions {
+                limit,
+                file_id: Some(file.clone()),
+                language: Some((*language).to_string()),
+                source_role: Some("production".to_string()),
+                ..LocalFlowPacketQueryOptions::default()
+            };
+            let candidates = store
+                .query_local_flow_packets(&query)
+                .map_err(|error| error.to_string())?;
+            if extend_context_pack_micro_flow_packet_rows(
+                &mut rows,
+                &mut seen_packet_ids,
+                candidates,
+                limit,
+            ) {
+                return Ok(rows);
+            }
+        }
+    }
+    Ok(rows)
+}
+
+pub(crate) fn extend_context_pack_micro_flow_packet_rows(
+    rows: &mut Vec<LocalFlowPacketRow>,
+    seen_packet_ids: &mut BTreeSet<String>,
+    candidates: impl IntoIterator<Item = LocalFlowPacketRow>,
+    limit: usize,
+) -> bool {
+    if rows.len() >= limit {
+        return true;
+    }
+    for row in candidates {
+        if seen_packet_ids.insert(row.packet_id.clone()) {
+            rows.push(row);
+        }
+        if rows.len() >= limit {
+            return true;
+        }
+    }
+    false
 }
 
 fn context_pack_micro_flow_relevant_files(packet: &ContextPacket) -> Vec<String> {
@@ -8756,16 +8815,34 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.retrieval_architecture += 1;
             continue;
         }
-        // Only drop retrieval_explain if it is the full (large) explain. Once it
-        // has been reduced to the bounded budget summary (`budget_limited: true`),
-        // keep it: it is small and is the explain-mode contract surface.
-        if response
+        // Downgrade a full explain to its bounded summary before generic field
+        // removal. Patch-assist is attached after the first explain budget
+        // decision, so it can push a previously fitting full explain over the
+        // final cap. The summary preserves vector operability status/counts and
+        // remains the explain-mode contract surface under that later pressure.
+        let full_retrieval_explain = response
             .get("retrieval_explain")
-            .and_then(|explain| explain.get("budget_limited"))
-            .and_then(Value::as_bool)
-            != Some(true)
-            && remove_context_agent_field(response, "retrieval_explain")
-        {
+            .filter(|explain| explain.get("budget_limited").and_then(Value::as_bool) != Some(true))
+            .cloned();
+        if let Some(full_retrieval_explain) = full_retrieval_explain {
+            let full_explain_bytes = serialized_json_len(&full_retrieval_explain);
+            let summary = context_pack_retrieval_explain_budget_summary(
+                &full_retrieval_explain,
+                full_explain_bytes,
+                max_output_bytes,
+            );
+            if let Some(object) = response.as_object_mut() {
+                object.insert("retrieval_explain".to_string(), summary);
+                object.insert(
+                    "explain_budget_status".to_string(),
+                    json!({
+                        "enabled": true,
+                        "status": "summary_included_full_explain_omitted_by_explain_budget",
+                        "separate_from_evidence_budget": true,
+                        "full_explain_bytes": full_explain_bytes,
+                    }),
+                );
+            }
             omitted.retrieval_architecture += 1;
             continue;
         }
@@ -9072,6 +9149,7 @@ fn compact_nested_language_capability_context(value: &mut Value) -> bool {
     let Some(context) = value.get_mut("language_capability_context") else {
         return false;
     };
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
     if context
         .get("compacted")
         .and_then(Value::as_bool)
@@ -9090,7 +9168,11 @@ fn compact_nested_language_capability_context(value: &mut Value) -> bool {
             "proof_strength": context.get("proof_strength").cloned().unwrap_or_else(|| json!("unknown")),
             "graph_proof": context.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
             "capability_metadata_does_not_create_graph_proof": true,
-            "typescript_packet_handles_preserved": true,
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_overclaim_count": 0,
             "non_typescript_packet_overclaim_count": 0,
             "context_entry_command_activated": false,
             "compacted": true,
@@ -9108,7 +9190,12 @@ fn compact_nested_language_capability_context(value: &mut Value) -> bool {
         "unknown_boundary_rows": context.get("unknown_boundary_rows").cloned().unwrap_or_else(|| json!(0)),
         "resolver_metadata_rows": context.get("resolver_metadata_rows").cloned().unwrap_or_else(|| json!(0)),
         "local_flow_packet_boundary": context.get("local_flow_packet_boundary").cloned().unwrap_or_else(|| json!({
-            "typescript_packet_handles_preserved": true,
+            "active_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_overclaim_count": 0,
             "non_typescript_packet_overclaim_count": 0,
             "handles_do_not_create_proof": true,
             "context_entry_command_activated": false
@@ -9192,9 +9279,11 @@ pub(crate) fn compact_context_agent_graph_verification(response: &mut Value) -> 
     }
     let compact = json!({
         "status": graph.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "candidate_count": graph.get("candidate_count").cloned().unwrap_or_else(|| json!(0)),
         "proof_status": graph.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
         "graph_proof": graph.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
         "evidence_status": graph.get("evidence_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "reason": graph.get("reason").cloned().unwrap_or_else(|| json!("graph verification reason unavailable")),
         "proof_failure_reason": graph.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
         "compacted": true,
         "contract": {
@@ -9914,19 +10003,46 @@ fn minimize_routing_language_capability_plan(packet: &Value) -> Value {
     let local_flow = plan
         .get("local_flow_packet_boundary")
         .unwrap_or(&Value::Null);
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
+    let active_non_typescript_packet_languages =
+        packet_language_registry["active_non_typescript_packet_languages"].clone();
+    let inactive_packet_languages = local_flow
+        .get("inactive_packet_languages_seen")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let inactive_packet_language_count = inactive_packet_languages
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_default();
     json!({
         "status": plan.get("status").cloned().unwrap_or_else(|| json!("unknown")),
         "languages": plan.get("languages").cloned().unwrap_or_else(|| json!([])),
         "unknown_dynamic_risks": compact_routing_language_risks(plan, 8),
         "unsupported_relations": compact_routing_unsupported_relations(plan, 2),
         "local_flow_packet_boundary": {
-            "active_languages": local_flow.get("active_languages").cloned().unwrap_or_else(|| json!(["typescript"])),
-            "non_typescript_packet_language_count": local_flow
-                .get("non_typescript_packet_languages_seen")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or_default(),
+            "active_languages": local_flow.get("active_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_languages": local_flow.get("active_packet_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "active_non_typescript_packet_languages": active_non_typescript_packet_languages,
+            "active_non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_languages_seen": inactive_packet_languages,
+            "inactive_packet_language_count": inactive_packet_language_count,
+            "inactive_packet_support": MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT,
+            "inactive_packet_overclaim_count": 0,
+            "active_non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "active_non_typescript_packet_overclaim_count": 0,
+            "non_typescript_packet_languages_seen": active_non_typescript_packet_languages,
+            "non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
             "non_typescript_packet_overclaim_count": 0,
+            "compatibility_aliases": {
+                "non_typescript_packet_languages_seen": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_languages"
+                }
+            },
             "packet_handles_do_not_create_proof": true,
             "flow_proof_not_emitted_for_unsupported_languages": true,
             "context_entry_command_activated": false
@@ -9934,7 +10050,9 @@ fn minimize_routing_language_capability_plan(packet: &Value) -> Value {
         "proof_boundary": {
             "capability_metadata_does_not_create_graph_proof": true,
             "unsupported_relations_are_not_blockers": true,
-            "candidate_or_text_evidence_not_graph_proof": true
+            "candidate_or_text_evidence_not_graph_proof": true,
+            "route_bridge_context_entry_activated": false,
+            "mutation_proof_activated": false
         },
         "unsupported_relations_are_not_blockers": true,
         "capability_metadata_does_not_create_graph_proof": true,
@@ -9943,6 +10061,11 @@ fn minimize_routing_language_capability_plan(packet: &Value) -> Value {
         "compacted": true,
         "minimal": true,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn minimize_routing_language_capability_plan_for_test(packet: &Value) -> Value {
+    minimize_routing_language_capability_plan(packet)
 }
 
 fn minimize_routing_agent_investigation_layer(packet: &Value) -> Value {
@@ -10100,6 +10223,21 @@ fn compact_routing_language_capability_plan(packet: &Value) -> Value {
     let resolver = plan
         .get("resolver_compiler_availability")
         .unwrap_or(&Value::Null);
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
+    let active_non_typescript_packet_languages = local_flow
+        .get("active_non_typescript_packet_languages")
+        .cloned()
+        .unwrap_or_else(|| {
+            packet_language_registry["active_non_typescript_packet_languages"].clone()
+        });
+    let inactive_packet_languages = local_flow
+        .get("inactive_packet_languages_seen")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let inactive_packet_language_count = inactive_packet_languages
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_default();
     json!({
         "status": plan.get("status").cloned().unwrap_or_else(|| json!("unknown")),
         "languages": plan.get("languages").cloned().unwrap_or_else(|| json!([])),
@@ -10112,13 +10250,31 @@ fn compact_routing_language_capability_plan(packet: &Value) -> Value {
         "unknown_dynamic_risks": compact_routing_language_risks(plan, 8),
         "unsupported_relations": compact_routing_unsupported_relations(plan, 2),
         "local_flow_packet_boundary": {
-            "active_languages": local_flow.get("active_languages").cloned().unwrap_or_else(|| json!(["typescript"])),
-            "non_typescript_packet_language_count": local_flow
-                .get("non_typescript_packet_languages_seen")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or_default(),
+            "active_languages": local_flow.get("active_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_languages": local_flow.get("active_packet_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "active_non_typescript_packet_languages": active_non_typescript_packet_languages,
+            "active_non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_languages_seen": inactive_packet_languages,
+            "inactive_packet_language_count": inactive_packet_language_count,
+            "inactive_packet_overclaim_count": 0,
+            "active_non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "active_non_typescript_packet_overclaim_count": 0,
+            "non_typescript_packet_languages_seen": active_non_typescript_packet_languages,
+            "non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
             "non_typescript_packet_overclaim_count": 0,
+            "compatibility_aliases": {
+                "non_typescript_packet_languages_seen": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_languages"
+                },
+                "non_typescript_packet_language_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_language_count"
+                }
+            },
             "packet_handles_do_not_create_proof": true,
             "flow_proof_not_emitted_for_unsupported_languages": true,
             "context_entry_command_activated": false

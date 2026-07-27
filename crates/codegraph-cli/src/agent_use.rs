@@ -9,9 +9,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use codegraph_core::{
-    mvp4_3_default_local_micro_flow_packet_query_language, DictV1PacketBody,
-    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    mvp4_3_default_local_micro_flow_packet_query_language,
+    mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source, DictV1PacketBody,
+    MicroEdgeOwnershipPolicy, MicroNodeKind,
 };
+use codegraph_index::SourceSpanDeltaEntry;
 use codegraph_store::{LocalFlowPacketQueryOptions, LocalFlowPacketRow};
 use notify::{RecursiveMode, Watcher};
 use serde_json::{json, Value};
@@ -19,6 +21,79 @@ use serde_json::{json, Value};
 use crate::*;
 
 const AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT: usize = 3;
+
+fn agent_use_validation_classification_compact_priority(
+    classification: ValidationClassification,
+) -> u8 {
+    match classification {
+        ValidationClassification::Block => 0,
+        ValidationClassification::Warn => 1,
+        ValidationClassification::Unknown | ValidationClassification::Unsupported => 2,
+        ValidationClassification::Degraded => 3,
+        ValidationClassification::Diagnostic => 4,
+    }
+}
+
+fn agent_use_compact_validation_packet(packet: &ValidationPacket, max_items: usize) -> Value {
+    let mut prioritized = packet.clone();
+    prioritized.warnings.sort_by_key(|finding| {
+        agent_use_validation_classification_compact_priority(finding.classification)
+    });
+    prioritized.compact_agent_json(max_items)
+}
+
+fn agent_use_source_span_compact_priority(entry: &SourceSpanDeltaEntry) -> u8 {
+    match (
+        entry.associated_fact_claimable,
+        entry.associated_fact_kind.as_str(),
+    ) {
+        (true, "entity") => 0,
+        (true, "edge") => 1,
+        (true, _) => 2,
+        (false, _) => 3,
+    }
+}
+
+fn agent_use_prioritize_compact_source_spans(delta: &mut EntitySourceRoleDeltaReport) {
+    delta
+        .source_spans_added
+        .sort_by_key(agent_use_source_span_compact_priority);
+    delta
+        .source_spans_removed
+        .sort_by_key(agent_use_source_span_compact_priority);
+    delta
+        .source_spans_changed
+        .sort_by_key(agent_use_source_span_compact_priority);
+}
+
+fn agent_use_micro_node_kind_from_storage(value: &str) -> Option<MicroNodeKind> {
+    let normalized = value.trim().to_ascii_lowercase();
+    MicroNodeKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.as_str() == normalized)
+}
+
+fn agent_use_micro_edge_ownership_violations(
+    policy: MicroEdgeOwnershipPolicy,
+    edge_function_entity_id: Option<&str>,
+    head_function_entity_id: Option<&str>,
+    tail_function_entity_id: Option<&str>,
+) -> (bool, bool) {
+    let edge_head_mismatch = !matches!(
+        (edge_function_entity_id, head_function_entity_id),
+        (Some(edge), Some(head)) if edge == head
+    );
+    let cross_function = match policy {
+        MicroEdgeOwnershipPolicy::SameFunction => !matches!(
+            (head_function_entity_id, tail_function_entity_id),
+            (Some(head), Some(tail)) if head == tail
+        ),
+        MicroEdgeOwnershipPolicy::CallerToSameFileFunction => tail_function_entity_id.is_none(),
+    };
+    (cross_function, edge_head_mismatch)
+}
+
 // MVP3.9.5.3: the validation delta is bounded; overflow in a blocking-relevant
 // category caps the packet at unknown (`graph_delta_bounded`) instead of
 // retaining an unbounded number of hydrated delta entries in memory.
@@ -911,7 +986,7 @@ pub(crate) fn run_agent_use_query_command(args: &[String]) -> Result<Value, Stri
     let options = parse_agent_use_forward_args(args, "query")?;
     let Some(query_kind) = options.forwarded_args.first().cloned() else {
         return Err(
-            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain|local-flow> <args> --repo <repo> --limit <n> --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] [--proof-strength <value>] --repo <repo> --agent-json"
+            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain|local-flow> <args> --repo <repo> --limit <n> --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [<function-or-file>] [--file <path>] [--function <id>] [--packet-id <id>] [--proof-status <status>] [--proof-strength <strength>] [--language <language>] [--source-role <role>] [--include-packet-body] --repo <repo> [--limit <n>] --agent-json"
                 .to_string(),
         );
     };
@@ -1208,7 +1283,7 @@ fn parse_agent_use_local_flow_query_args(
                     .to_string(),
             );
         }
-        if value.contains('/') || value.contains('\\') || value.ends_with(".ts") {
+        if agent_use_local_flow_positional_is_file_query(value) {
             options.file_id = Some(value.clone());
         } else {
             options.function_query = Some(value.clone());
@@ -1230,6 +1305,12 @@ fn parse_agent_use_local_flow_query_args(
         query_json,
         include_packet_body,
     })
+}
+
+pub(crate) fn agent_use_local_flow_positional_is_file_query(value: &str) -> bool {
+    value.contains('/')
+        || value.contains('\\')
+        || context_pack_frontend_from_repo_relative_path(value).is_some()
 }
 
 fn agent_use_local_flow_packet_result_json(
@@ -5115,8 +5196,9 @@ pub(crate) fn run_agent_use_watch_once_delta(
             } else {
                 // The compact view is derived from the full report instead of
                 // recomputing the whole delta at a lower cap.
-                validation_entity_source_role_delta
-                    .truncated_to_max_items(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
+                let mut compact_delta = validation_entity_source_role_delta.clone();
+                agent_use_prioritize_compact_source_spans(&mut compact_delta);
+                compact_delta.truncated_to_max_items(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
             };
             let delta_compute_ms = delta_compute_start.elapsed().as_millis();
             entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
@@ -5166,7 +5248,10 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 let mut validation_packet_json = if detail_mode.preserves_full_details() {
                     serde_json::to_value(&validation_packet).map_err(|error| error.to_string())?
                 } else {
-                    validation_packet.compact_agent_json(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
+                    agent_use_compact_validation_packet(
+                        &validation_packet,
+                        AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT,
+                    )
                 };
                 let validation_hard_interrupt = validation_packet_json
                     .get("hard_interrupt")
@@ -8162,10 +8247,23 @@ fn agent_use_validate_current_micro_edge_integrity(
     }
 
     let relation_label = micro_edge.relation_kind.trim().to_ascii_uppercase();
-    let expected_endpoints = mvp4_2_micro_edge_endpoint_kinds(relation_kind);
     let relation_span = agent_use_micro_edge_source_span(store, micro_edge);
     let head = nodes_by_id.get(&micro_edge.source_micro_node_id);
     let tail = nodes_by_id.get(&micro_edge.target_micro_node_id);
+    let head_kind = head.and_then(|node| agent_use_micro_node_kind_from_storage(&node.micro_kind));
+    let tail_kind = tail.and_then(|node| agent_use_micro_node_kind_from_storage(&node.micro_kind));
+    let head_kind_authorized = head_kind.is_some_and(|kind| {
+        capability
+            .endpoint_pairs
+            .iter()
+            .any(|pair| pair.head == kind)
+    });
+    let tail_kind_authorized = tail_kind.is_some_and(|kind| {
+        capability
+            .endpoint_pairs
+            .iter()
+            .any(|pair| pair.tail == kind)
+    });
 
     if head.is_none() {
         agent_use_push_micro_edge_integrity_finding(
@@ -8193,25 +8291,20 @@ fn agent_use_validate_current_micro_edge_integrity(
     }
 
     if let Some(head) = head {
-        if let Some((expected_head_kinds, _)) = expected_endpoints {
-            if !expected_head_kinds
-                .iter()
-                .any(|kind| kind.as_str() == head.micro_kind)
-            {
-                agent_use_push_micro_edge_integrity_finding(
-                    findings,
-                    seen_edge_rule,
-                    rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND],
-                    lifecycle.clone(),
-                    Some(micro_edge),
-                    affected_delta.clone(),
-                    relation_span.clone(),
-                    &format!(
-                        "{relation_label} head endpoint kind `{}` is not an authorized head micro-node kind for this relation",
-                        head.micro_kind
-                    ),
-                );
-            }
+        if !head_kind_authorized {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                &format!(
+                    "{relation_label} head endpoint kind `{}` is not an authorized head micro-node kind for this relation",
+                    head.micro_kind
+                ),
+            );
         }
         if head.file_id != micro_edge.file_id {
             agent_use_push_micro_edge_integrity_finding(
@@ -8230,25 +8323,20 @@ fn agent_use_validate_current_micro_edge_integrity(
     }
 
     if let Some(tail) = tail {
-        if let Some((_, expected_tail_kinds)) = expected_endpoints {
-            if !expected_tail_kinds
-                .iter()
-                .any(|kind| kind.as_str() == tail.micro_kind)
-            {
-                agent_use_push_micro_edge_integrity_finding(
-                    findings,
-                    seen_edge_rule,
-                    rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND],
-                    lifecycle.clone(),
-                    Some(micro_edge),
-                    affected_delta.clone(),
-                    relation_span.clone(),
-                    &format!(
-                        "{relation_label} tail endpoint kind `{}` is not an authorized tail micro-node kind for this relation",
-                        tail.micro_kind
-                    ),
-                );
-            }
+        if !tail_kind_authorized {
+            agent_use_push_micro_edge_integrity_finding(
+                findings,
+                seen_edge_rule,
+                rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND],
+                lifecycle.clone(),
+                Some(micro_edge),
+                affected_delta.clone(),
+                relation_span.clone(),
+                &format!(
+                    "{relation_label} tail endpoint kind `{}` is not an authorized tail micro-node kind for this relation",
+                    tail.micro_kind
+                ),
+            );
         }
         if tail.file_id != micro_edge.file_id {
             agent_use_push_micro_edge_integrity_finding(
@@ -8267,7 +8355,33 @@ fn agent_use_validate_current_micro_edge_integrity(
     }
 
     if let (Some(head), Some(tail)) = (head, tail) {
-        if head.function_entity_id != tail.function_entity_id {
+        if let (Some(head_kind), Some(tail_kind)) = (head_kind, tail_kind) {
+            if head_kind_authorized
+                && tail_kind_authorized
+                && !capability.supports_endpoint_pair(head_kind, tail_kind)
+            {
+                agent_use_push_micro_edge_integrity_finding(
+                    findings,
+                    seen_edge_rule,
+                    rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND],
+                    lifecycle.clone(),
+                    Some(micro_edge),
+                    affected_delta.clone(),
+                    relation_span.clone(),
+                    &format!(
+                        "{relation_label} endpoint pair `{} -> {}` is not directionally authorized for this relation",
+                        head.micro_kind, tail.micro_kind
+                    ),
+                );
+            }
+        }
+        let (cross_function, edge_head_mismatch) = agent_use_micro_edge_ownership_violations(
+            capability.ownership_policy,
+            micro_edge.function_entity_id.as_deref(),
+            head.function_entity_id.as_deref(),
+            tail.function_entity_id.as_deref(),
+        );
+        if cross_function {
             agent_use_push_micro_edge_integrity_finding(
                 findings,
                 seen_edge_rule,
@@ -8277,11 +8391,12 @@ fn agent_use_validate_current_micro_edge_integrity(
                 affected_delta.clone(),
                 relation_span.clone(),
                 &format!(
-                    "{relation_label} endpoints belong to different function ownership domains"
+                    "{relation_label} endpoints violate the `{}` function ownership policy",
+                    capability.ownership_policy.as_str()
                 ),
             );
         }
-        if micro_edge.function_entity_id != head.function_entity_id {
+        if edge_head_mismatch {
             agent_use_push_micro_edge_integrity_finding(
                 findings,
                 seen_edge_rule,
@@ -8290,7 +8405,7 @@ fn agent_use_validate_current_micro_edge_integrity(
                 Some(micro_edge),
                 affected_delta.clone(),
                 relation_span.clone(),
-                &format!("{relation_label} edge does not target the nearest enclosing function ownership domain recorded by the retained endpoints"),
+                &format!("{relation_label} edge ownership domain does not match its head/caller endpoint ownership domain"),
             );
         }
     }
@@ -8910,7 +9025,12 @@ fn agent_use_validate_current_local_flow_packet_integrity(
             "claimable local micro-flow packet has no packet provenance",
         );
     }
-    if packet.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION {
+    if packet.extraction_version
+        != mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+            &packet.language,
+            &packet.file_id,
+        )
+    {
         agent_use_push_local_flow_packet_integrity_finding(
             findings,
             seen_packet_rule,
@@ -12483,7 +12603,10 @@ fn agent_use_validation_stable_u64(input: &str) -> u64 {
 #[cfg(test)]
 mod exact_calls_validation_tests {
     use super::*;
-    use codegraph_core::{NormalizedClaimabilityMetadata, ValidationClassification};
+    use codegraph_core::{
+        NormalizedClaimabilityMetadata, ValidationClassification,
+        MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15582,6 +15705,52 @@ mod exact_calls_validation_tests {
         assert_eq!(
             missing_span.proof_requirement,
             ValidationProofRequirement::ReverifiedGraphIntegrity
+        );
+    }
+
+    #[test]
+    fn current_micro_edge_capability_is_directional_and_ownership_aware() {
+        let capability =
+            mvp4_micro_edge_language_capability("javascript", MicroEdgeKind::LocalCalls);
+        assert_eq!(
+            agent_use_micro_node_kind_from_storage("call_site"),
+            Some(MicroNodeKind::CallSite)
+        );
+        assert_eq!(
+            agent_use_micro_node_kind_from_storage("function_frame"),
+            Some(MicroNodeKind::FunctionFrame)
+        );
+        assert!(capability
+            .supports_endpoint_pair(MicroNodeKind::CallSite, MicroNodeKind::FunctionFrame));
+        assert!(!capability
+            .supports_endpoint_pair(MicroNodeKind::FunctionFrame, MicroNodeKind::CallSite));
+        assert_eq!(
+            capability.ownership_policy,
+            MicroEdgeOwnershipPolicy::CallerToSameFileFunction
+        );
+
+        let (cross_function, edge_head_mismatch) = agent_use_micro_edge_ownership_violations(
+            capability.ownership_policy,
+            Some("function://caller"),
+            Some("function://caller"),
+            Some("function://callee"),
+        );
+        assert!(!cross_function);
+        assert!(!edge_head_mismatch);
+
+        let (cross_function, edge_head_mismatch) = agent_use_micro_edge_ownership_violations(
+            MicroEdgeOwnershipPolicy::SameFunction,
+            Some("function://caller"),
+            Some("function://caller"),
+            Some("function://callee"),
+        );
+        assert!(cross_function);
+        assert!(!edge_head_mismatch);
+        assert!(
+            agent_use_validation_classification_compact_priority(ValidationClassification::Warn)
+                < agent_use_validation_classification_compact_priority(
+                    ValidationClassification::Degraded
+                )
         );
     }
 

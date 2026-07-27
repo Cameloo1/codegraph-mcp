@@ -9,17 +9,19 @@ use std::{
 
 use codegraph_core::{
     build_local_micro_flow_packet_candidates_from_persisted_facts, classify_edge_evidence_role,
-    classify_entity_source_role, mvp4_3_local_micro_flow_packet_source_supported,
-    mvp4_micro_edge_language_capability, normalize_edge_classification,
+    classify_entity_source_role,
+    mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source,
+    mvp4_3_local_micro_flow_packet_source_supported_for_source,
+    mvp4_micro_edge_language_capability_for_source, normalize_edge_classification,
     normalize_repo_relative_path, stable_edge_id, stable_entity_id_for_kind,
     validate_local_micro_flow_agent_json_contract, DerivedClosureEdge, Edge, EdgeClass,
     EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord,
     LocalMicroFlowPacketCandidate, LocalMicroFlowPacketCandidateSet, LocalMicroFlowPacketStatus,
     LocalMicroFlowPersistedEdgeFact, LocalMicroFlowPersistedFactInput,
-    LocalMicroFlowPersistedNodeFact, MicroEdgeKind, MicroEdgeSupportStatus, MicroExactness,
-    MicroNodeKind, MicroSourceRole, NormalizedCapabilityMetadataFact, PathEvidence,
-    ProofLadderLevel, RelationKind, RepoIndexState, SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_ENCODING,
-    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+    LocalMicroFlowPersistedNodeFact, MicroEdgeKind, MicroEdgeOwnershipPolicy,
+    MicroEdgeSupportStatus, MicroExactness, MicroNodeKind, MicroSourceRole,
+    NormalizedCapabilityMetadataFact, PathEvidence, ProofLadderLevel, RelationKind, RepoIndexState,
+    SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_ENCODING, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
     MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
 };
 use rusqlite::{
@@ -3089,23 +3091,11 @@ impl SqliteGraphStore {
         let Some(relation_kind) = MicroEdgeKind::from_storage_str(&row.relation_kind) else {
             return Ok(());
         };
-        // Allowed (head, tail) endpoint micro-kinds per persisted micro-edge relation.
-        let endpoint_kinds: Option<(&[&str], &[&str])> = match relation_kind {
-            MicroEdgeKind::LocalReturnsTo => Some((&["return_site"], &["function_frame"])),
-            MicroEdgeKind::LocalReads => Some((&["value_use"], &["parameter", "local_binding"])),
-            MicroEdgeKind::LocalWrites => {
-                Some((&["assignment_site"], &["parameter", "local_binding"]))
-            }
-            MicroEdgeKind::LocalFlowsTo => Some((
-                &["parameter", "local_binding"],
-                &["parameter", "local_binding"],
-            )),
-            _ => None,
-        };
-        let Some((head_kinds, tail_kinds)) = endpoint_kinds else {
-            return Ok(());
-        };
-
+        let capability = mvp4_micro_edge_language_capability_for_source(
+            &row.language,
+            &row.file_id,
+            relation_kind,
+        );
         let head = self.required_ast_micro_node_endpoint(
             &row.micro_edge_id,
             "head",
@@ -3116,16 +3106,22 @@ impl SqliteGraphStore {
             "tail",
             &row.target_micro_node_id,
         )?;
-        if !head_kinds.contains(&head.micro_kind.as_str()) {
+        let Some(head_kind) = micro_node_kind_from_storage_str(&head.micro_kind) else {
             return Err(StoreError::Message(format!(
-                "ast_micro_edge {} head must be one of {:?}, got {}",
-                row.micro_edge_id, head_kinds, head.micro_kind
+                "ast_micro_edge {} has unknown head micro-node kind {}",
+                row.micro_edge_id, head.micro_kind
             )));
-        }
-        if !tail_kinds.contains(&tail.micro_kind.as_str()) {
+        };
+        let Some(tail_kind) = micro_node_kind_from_storage_str(&tail.micro_kind) else {
             return Err(StoreError::Message(format!(
-                "ast_micro_edge {} tail must be one of {:?}, got {}",
-                row.micro_edge_id, tail_kinds, tail.micro_kind
+                "ast_micro_edge {} has unknown tail micro-node kind {}",
+                row.micro_edge_id, tail.micro_kind
+            )));
+        };
+        if !capability.supports_endpoint_pair(head_kind, tail_kind) {
+            return Err(StoreError::Message(format!(
+                "ast_micro_edge {} relation {} rejects directional endpoint pair {} -> {}",
+                row.micro_edge_id, row.relation_kind, head.micro_kind, tail.micro_kind
             )));
         }
         if head.file_id != row.file_id || tail.file_id != row.file_id {
@@ -3134,15 +3130,22 @@ impl SqliteGraphStore {
                 row.micro_edge_id
             )));
         }
-        if head.function_entity_id != tail.function_entity_id
-            || row.function_entity_id != head.function_entity_id
-        {
+        let ownership_matches = match capability.ownership_policy {
+            MicroEdgeOwnershipPolicy::SameFunction => {
+                head.function_entity_id == tail.function_entity_id
+                    && row.function_entity_id == head.function_entity_id
+            }
+            MicroEdgeOwnershipPolicy::CallerToSameFileFunction => {
+                row.function_entity_id == head.function_entity_id
+                    && tail_kind == MicroNodeKind::FunctionFrame
+            }
+        };
+        if !ownership_matches {
             return Err(StoreError::Message(format!(
-                "local_returns_to ast_micro_edge {} endpoint function mismatch",
+                "ast_micro_edge {} endpoint function ownership mismatch",
                 row.micro_edge_id
             )));
         }
-        let capability = mvp4_micro_edge_language_capability(&row.language, relation_kind);
         let source_role =
             MicroSourceRole::from_storage_str(&row.source_role).unwrap_or(MicroSourceRole::Unknown);
         let exactness =
@@ -3636,8 +3639,26 @@ impl SqliteGraphStore {
         let Some(packet) = candidate.packet.as_ref() else {
             return Ok(None);
         };
-        if !mvp4_3_local_micro_flow_packet_source_supported(
+        if packet.file.language != candidate.language {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} candidate/packet language mismatch: candidate {}, packet {}",
+                candidate.packet_id, candidate.language, packet.file.language
+            )));
+        }
+        if packet.packet_id != candidate.packet_id {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} candidate/packet identity mismatch: packet {}",
+                candidate.packet_id, packet.packet_id
+            )));
+        }
+        let extraction_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                &candidate.language,
+                &candidate.file_id,
+            );
+        if !mvp4_3_local_micro_flow_packet_source_supported_for_source(
             &candidate.language,
+            &candidate.file_id,
             candidate.source_role,
         ) {
             return Ok(None);
@@ -3655,6 +3676,13 @@ impl SqliteGraphStore {
                 candidate.packet_id
             ))
         })?;
+        if agent_json.get("extraction_version").and_then(Value::as_str) != Some(extraction_version)
+        {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} agent JSON extraction version does not match language {}",
+                candidate.packet_id, candidate.language
+            )));
+        }
         if agent_json.get("ordered_steps").is_some() {
             return Err(StoreError::Message(format!(
                 "local_flow_packet {} must not inline ordered_steps by default",
@@ -3735,7 +3763,7 @@ impl SqliteGraphStore {
             packet_status: candidate.packet_status.as_str().to_string(),
             schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
             row_schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
-            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+            extraction_version: extraction_version.to_string(),
             exactness: exactness.to_string(),
             provenance_id: Some(candidate.packet_id.clone()),
             source_role: candidate.source_role.as_str().to_string(),
@@ -3800,14 +3828,19 @@ impl SqliteGraphStore {
                 row.packet_id
             )));
         }
+        let expected_extraction_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                &row.language,
+                &row.file_id,
+            );
         if row.schema_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION
             || row.row_schema_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION
             || row.payload_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION
-            || row.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+            || row.extraction_version != expected_extraction_version
         {
             return Err(StoreError::Message(format!(
-                "local_flow_packet {} version contract mismatch",
-                row.packet_id
+                "local_flow_packet {} version contract mismatch for language {}: expected {}, got {}",
+                row.packet_id, row.language, expected_extraction_version, row.extraction_version
             )));
         }
         let row_source_role =
@@ -3817,7 +3850,11 @@ impl SqliteGraphStore {
                     row.packet_id, row.source_role
                 ))
             })?;
-        if !mvp4_3_local_micro_flow_packet_source_supported(&row.language, row_source_role) {
+        if !mvp4_3_local_micro_flow_packet_source_supported_for_source(
+            &row.language,
+            &row.file_id,
+            row_source_role,
+        ) {
             return Err(StoreError::Message(format!(
                 "local_flow_packet {} is outside the authorized packet adapter production scope",
                 row.packet_id
@@ -5619,6 +5656,7 @@ fn micro_node_kind_from_storage_str(value: &str) -> Option<MicroNodeKind> {
         "assignment_site" => Some(MicroNodeKind::AssignmentSite),
         "mutation_site" => Some(MicroNodeKind::MutationSite),
         "condition_site" => Some(MicroNodeKind::ConditionSite),
+        "branch_arm" => Some(MicroNodeKind::BranchArm),
         "literal_key" => Some(MicroNodeKind::LiteralKey),
         "import_binding" => Some(MicroNodeKind::ImportBinding),
         "export_binding" => Some(MicroNodeKind::ExportBinding),
@@ -8434,7 +8472,10 @@ fn local_flow_packet_truncation_reason(cap_state: &Value) -> Option<String> {
     cap_state
         .get("truncation_reason")
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "none"
+        })
         .map(str::to_string)
 }
 
@@ -14487,12 +14528,15 @@ mod tests {
     };
 
     use codegraph_core::{
-        stable_edge_id, stable_entity_id, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
-        EntityKind, Exactness, FileRecord, LocalMicroFlowPacketStatus, PathEvidence,
-        ProofLadderLevel, RelationKind, RepoIndexState, SourceSpan,
+        mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source, stable_edge_id,
+        stable_entity_id, stable_micro_packet_id, DerivedClosureEdge, Edge, EdgeClass, EdgeContext,
+        Entity, EntityKind, Exactness, FileRecord, LocalMicroFlowPacketStatus, MicroNodeKind,
+        MicroPacketIdentityInput, PathEvidence, ProofLadderLevel, RelationKind, RepoIndexState,
+        SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION,
         MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
         MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
-        MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+        MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION, MVP4_3_PARSER_FACTS_V1_CLAIMABILITY,
+        MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION,
     };
     use rusqlite::{params, Connection};
     use serde_json::json;
@@ -14852,7 +14896,7 @@ mod tests {
             source_micro_edge_extraction_versions_json:
                 "[\"mvp4.2b-typescript-local-flows-to-v1\"]".to_string(),
             cap_state_json:
-                "{\"omitted_count\":0,\"truncation_reason\":null,\"unknown_or_gap_count\":0}"
+                "{\"omitted_count\":0,\"truncation_reason\":\"none\",\"unknown_or_gap_count\":0}"
                     .to_string(),
             omitted_count: 0,
             compact_body_bytes: 128,
@@ -14863,11 +14907,14 @@ mod tests {
 
         let summary = ok(store.local_flow_packet_visibility_summary(10));
         assert_eq!(summary.total_rows, 1);
+        assert_eq!(summary.cap_hit_count, 0);
+        assert_eq!(summary.omitted_count, 0);
         assert_eq!(
             summary.rows_by_proof_strength.get("flow_proof").copied(),
             Some(1)
         );
         assert_eq!(summary.sample.len(), 1);
+        assert_eq!(summary.sample[0].truncation_reason, None);
         assert!(!summary.sample[0].packet_body_inlined);
         assert!(!summary.sample[0].ordered_steps_inlined);
         assert!(!summary.sample[0].full_source_body_output);
@@ -14893,6 +14940,32 @@ mod tests {
             }),
         );
         assert_eq!(by_function.len(), 1);
+    }
+
+    #[test]
+    fn local_flow_packet_cap_summary_counts_real_truncation_reason() {
+        let connection = ok(Connection::open_in_memory());
+        ok(connection.execute_batch(
+            "CREATE TABLE local_flow_packets (
+                omitted_count INTEGER NOT NULL,
+                packet_status TEXT NOT NULL,
+                cap_state_json TEXT NOT NULL
+            );",
+        ));
+        ok(connection.execute(
+            "INSERT INTO local_flow_packets (omitted_count, packet_status, cap_state_json)
+             VALUES (?1, ?2, ?3)",
+            params![
+                0i64,
+                "micro_flow_found",
+                "{\"omitted_count\":0,\"truncation_reason\":\"packet_step_cap_omission\"}"
+            ],
+        ));
+
+        assert_eq!(
+            ok(super::local_flow_packet_cap_summary(&connection)),
+            (1, 0)
+        );
     }
 
     #[test]
@@ -14978,6 +15051,39 @@ mod tests {
         assert_eq!(summary.cap_hit_details[0].omitted_count, 3);
         assert!(!summary.default_full_table_scan);
         assert!(!summary.full_source_body_output);
+    }
+
+    #[test]
+    fn branch_arm_micro_node_round_trips_and_hydrates_to_canonical_kind() {
+        let store = store();
+        let span = SourceSpan::new("src/branch.ts", 2, 3);
+        ok(store.insert_source_span_after_file_delete("branch-arm-1", &span));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "branch-arm-1".to_string(),
+            file_id: "src/branch.ts".to_string(),
+            function_entity_id: Some("repo://e/branch.choose".to_string()),
+            scope_entity_id: Some("scope://branch.choose/if-1".to_string()),
+            micro_kind: "branch_arm".to_string(),
+            symbol: Some("then".to_string()),
+            source_span_id: "branch-arm-1".to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some("branch-arm-1".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_branch_arm".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+
+        let rows = ok(store.ast_micro_nodes_for_file("src/branch.ts"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].micro_kind, "branch_arm");
+        assert_eq!(
+            super::micro_node_kind_from_storage_str(&rows[0].micro_kind),
+            Some(MicroNodeKind::BranchArm)
+        );
     }
 
     #[test]
@@ -15489,7 +15595,307 @@ mod tests {
     }
 
     #[test]
-    fn local_micro_flow_packet_candidates_read_persisted_facts_without_rows() {
+    fn parser_facts_v1_micro_edges_enforce_source_aware_directional_capability() {
+        let store = store();
+        let seed_condition_and_branch =
+            |prefix: &str, file_id: &str, language: &str| -> (String, String, String, String) {
+                let condition_id = format!("{prefix}-condition");
+                let branch_id = format!("{prefix}-branch");
+                let edge_span_id = format!("{prefix}-edge-span");
+                let function_id = format!("repo://e/{prefix}.run");
+                for (span_id, line) in [
+                    (format!("{prefix}-condition-span"), 1),
+                    (format!("{prefix}-branch-span"), 2),
+                    (edge_span_id.clone(), 2),
+                ] {
+                    ok(store.insert_source_span_after_file_delete(
+                        &span_id,
+                        &SourceSpan {
+                            repo_relative_path: file_id.to_string(),
+                            start_line: line,
+                            start_column: Some(1),
+                            end_line: line,
+                            end_column: Some(8),
+                        },
+                    ));
+                }
+                for (node_id, kind, span_id) in [
+                    (
+                        condition_id.clone(),
+                        "condition_site",
+                        format!("{prefix}-condition-span"),
+                    ),
+                    (
+                        branch_id.clone(),
+                        "branch_arm",
+                        format!("{prefix}-branch-span"),
+                    ),
+                ] {
+                    ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+                        micro_node_id: node_id.clone(),
+                        file_id: file_id.to_string(),
+                        function_entity_id: Some(function_id.clone()),
+                        scope_entity_id: Some(format!("scope://{prefix}.run")),
+                        micro_kind: kind.to_string(),
+                        symbol: None,
+                        source_span_id: span_id,
+                        schema_version: 1,
+                        extraction_version: MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION
+                            .to_string(),
+                        exactness: "exact".to_string(),
+                        provenance_id: Some(format!("prov-{node_id}")),
+                        source_role: "production".to_string(),
+                        language: language.to_string(),
+                        payload_version: 1,
+                        claimability: MVP4_3_PARSER_FACTS_V1_CLAIMABILITY.to_string(),
+                        lifecycle_binding: "db_passport".to_string(),
+                    }));
+                }
+                (condition_id, branch_id, edge_span_id, function_id)
+            };
+
+        let mut valid_edges = Vec::new();
+        for (prefix, file_id, language, frontend) in [
+            (
+                "javascript",
+                "src/generic.js",
+                "javascript",
+                "tree-sitter-javascript",
+            ),
+            ("python", "src/generic.py", "python", "tree-sitter-python"),
+            ("go", "src/generic.go", "go", "tree-sitter-go"),
+            ("rust", "src/generic.rs", "rust", "tree-sitter-rust"),
+            ("java", "src/generic.java", "java", "tree-sitter-java"),
+            ("csharp", "src/generic.cs", "csharp", "tree-sitter-c-sharp"),
+            ("c", "src/generic.c", "c", "tree-sitter-c"),
+            ("c-header", "src/generic.h", "c", "tree-sitter-c"),
+            ("cpp-cc", "src/generic.cc", "cpp", "tree-sitter-cpp"),
+            ("cpp", "src/generic.cpp", "cpp", "tree-sitter-cpp"),
+            ("cpp-cxx", "src/generic.cxx", "cpp", "tree-sitter-cpp"),
+            ("cpp-hpp", "src/generic.hpp", "cpp", "tree-sitter-cpp"),
+            ("cpp-hh", "src/generic.hh", "cpp", "tree-sitter-cpp"),
+            ("cpp-hxx", "src/generic.hxx", "cpp", "tree-sitter-cpp"),
+            ("ruby", "src/generic.rb", "ruby", "tree-sitter-ruby"),
+            ("php", "src/generic.php", "php", "tree-sitter-php"),
+        ] {
+            let (condition_id, branch_id, edge_span_id, function_id) =
+                seed_condition_and_branch(prefix, file_id, language);
+            let valid_edge = AstMicroEdgeRow {
+                micro_edge_id: format!("{prefix}-branches-to"),
+                file_id: file_id.to_string(),
+                function_entity_id: Some(function_id),
+                scope_entity_id: Some(format!("scope://{prefix}.run")),
+                core_edge_id: None,
+                source_micro_node_id: condition_id,
+                target_micro_node_id: branch_id,
+                relation_kind: "local_branches_to".to_string(),
+                source_span_id: Some(edge_span_id),
+                exactness: "exact".to_string(),
+                provenance_id: Some(format!("prov-{prefix}-branches-to")),
+                schema_version: 1,
+                extraction_version: MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION
+                    .to_string(),
+                source_role: "production".to_string(),
+                language: language.to_string(),
+                frontend: frontend.to_string(),
+                payload_version: 1,
+                claimability: MVP4_3_PARSER_FACTS_V1_CLAIMABILITY.to_string(),
+                lifecycle_binding: "db_passport".to_string(),
+            };
+            ok(store.insert_ast_micro_edge(&valid_edge));
+
+            let mut reversed = valid_edge.clone();
+            reversed.micro_edge_id = format!("{prefix}-reversed-branches-to");
+            std::mem::swap(
+                &mut reversed.source_micro_node_id,
+                &mut reversed.target_micro_node_id,
+            );
+            let error = store
+                .insert_ast_micro_edge(&reversed)
+                .expect_err("reversed generic endpoint pair must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("rejects directional endpoint pair"),
+                "{prefix}: {error}"
+            );
+            valid_edges.push(valid_edge);
+        }
+        let c_header_edge = valid_edges
+            .iter()
+            .find(|edge| edge.file_id == "src/generic.h")
+            .cloned()
+            .expect("C header template edge");
+        let cpp_header_edge = valid_edges
+            .iter()
+            .find(|edge| edge.file_id == "src/generic.hpp")
+            .cloned()
+            .expect("C++ header template edge");
+        let valid_edge = valid_edges
+            .into_iter()
+            .next()
+            .expect("JavaScript template edge");
+
+        let mut cpp_claiming_c_header = c_header_edge;
+        cpp_claiming_c_header.micro_edge_id = "cpp-claiming-c-header".to_string();
+        cpp_claiming_c_header.language = "cpp".to_string();
+        cpp_claiming_c_header.frontend = "tree-sitter-cpp".to_string();
+        let error = store
+            .insert_ast_micro_edge(&cpp_claiming_c_header)
+            .expect_err("bare .h must remain owned by the C adapter only");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        let mut c_claiming_cpp_header = cpp_header_edge;
+        c_claiming_cpp_header.micro_edge_id = "c-claiming-cpp-header".to_string();
+        c_claiming_cpp_header.language = "c".to_string();
+        c_claiming_cpp_header.frontend = "tree-sitter-c".to_string();
+        let error = store
+            .insert_ast_micro_edge(&c_claiming_cpp_header)
+            .expect_err("C++-specific headers must not be claimed by the C adapter");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        for (prefix, path, node_language, edge_language, frontend) in [
+            (
+                "ruby-rake",
+                "src/generic.rake",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-gemspec",
+                "src/generic.gemspec",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-ru",
+                "src/generic.ru",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-shebang",
+                "bin/ruby-generic",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-language-alias",
+                "src/generic.php",
+                "ruby",
+                "rb",
+                "tree-sitter-ruby",
+            ),
+            (
+                "php-phtml",
+                "src/generic.phtml",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-inc",
+                "src/generic.inc",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-php3",
+                "src/generic.php3",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-shebang",
+                "bin/php-generic",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-cross-adapter",
+                "src/generic.rb",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+        ] {
+            let (condition_id, branch_id, edge_span_id, function_id) =
+                seed_condition_and_branch(prefix, path, node_language);
+            let mut inactive_language = valid_edge.clone();
+            inactive_language.micro_edge_id = format!("inactive-{prefix}-branches-to");
+            inactive_language.file_id = path.to_string();
+            inactive_language.function_entity_id = Some(function_id);
+            inactive_language.scope_entity_id = Some(format!("scope://{prefix}.run"));
+            inactive_language.source_micro_node_id = condition_id;
+            inactive_language.target_micro_node_id = branch_id;
+            inactive_language.source_span_id = Some(edge_span_id);
+            inactive_language.language = edge_language.to_string();
+            inactive_language.frontend = frontend.to_string();
+            let error = store
+                .insert_ast_micro_edge(&inactive_language)
+                .expect_err("noncanonical Ruby/PHP source or adapter alias must remain inactive");
+            assert!(
+                error
+                    .to_string()
+                    .contains("not enabled by the active micro-edge language capability"),
+                "{prefix}: {error}"
+            );
+        }
+
+        let (condition_id, branch_id, edge_span_id, function_id) =
+            seed_condition_and_branch("declaration", "src/generic.d.ts", "typescript");
+        let mut inactive_source = valid_edge.clone();
+        inactive_source.micro_edge_id = "declaration-branches-to".to_string();
+        inactive_source.file_id = "src/generic.d.ts".to_string();
+        inactive_source.function_entity_id = Some(function_id);
+        inactive_source.scope_entity_id = Some("scope://declaration.run".to_string());
+        inactive_source.source_micro_node_id = condition_id;
+        inactive_source.target_micro_node_id = branch_id;
+        inactive_source.source_span_id = Some(edge_span_id);
+        inactive_source.language = "typescript".to_string();
+        inactive_source.frontend = "tree-sitter-typescript".to_string();
+        let error = store
+            .insert_ast_micro_edge(&inactive_source)
+            .expect_err("declaration-file adapter must remain inactive");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        let (condition_id, branch_id, edge_span_id, function_id) =
+            seed_condition_and_branch("legacy", "src/legacy.ts", "typescript");
+        let mut unsupported_legacy_relation = valid_edge.clone();
+        unsupported_legacy_relation.micro_edge_id = "legacy-branches-to".to_string();
+        unsupported_legacy_relation.file_id = "src/legacy.ts".to_string();
+        unsupported_legacy_relation.function_entity_id = Some(function_id);
+        unsupported_legacy_relation.scope_entity_id = Some("scope://legacy.run".to_string());
+        unsupported_legacy_relation.source_micro_node_id = condition_id;
+        unsupported_legacy_relation.target_micro_node_id = branch_id;
+        unsupported_legacy_relation.source_span_id = Some(edge_span_id);
+        unsupported_legacy_relation.language = "typescript".to_string();
+        unsupported_legacy_relation.frontend = "tree-sitter-typescript".to_string();
+        let error = store
+            .insert_ast_micro_edge(&unsupported_legacy_relation)
+            .expect_err("legacy exact .ts must not acquire generic-only relations");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        assert_eq!(ok(store.ast_micro_edge_count()), 16);
+    }
+
+    #[test]
+    fn legacy_four_edge_packet_shape_is_partial_and_preserves_current_ts_v1_identity() {
         let store = store();
         let span = |line: u32, start: u32| SourceSpan {
             repo_relative_path: "src/auth.ts".to_string(),
@@ -15640,22 +16046,73 @@ mod tests {
         let candidate = &candidates.candidates[0];
         assert_eq!(
             candidate.packet_status,
-            LocalMicroFlowPacketStatus::MicroFlowFound
+            LocalMicroFlowPacketStatus::PartialMicroFlowFound
         );
-        assert_eq!(candidate.proof_strength, ProofLadderLevel::FlowProof);
+        assert_eq!(
+            candidate.proof_strength,
+            ProofLadderLevel::GraphRelationProof
+        );
         assert_eq!(candidate.edge_ref_count, 4);
-        assert!(candidate.packet.is_some());
+        let packet = candidate.packet.as_ref().expect("canonical packet");
+        assert_eq!(packet.unknown_unsupported_gaps.len(), 1);
+        assert_eq!(
+            packet.unknown_unsupported_gaps[0].gap_kind,
+            "flow_not_connected_to_return"
+        );
+        assert!(packet.unknown_unsupported_gaps[0].reason.contains(
+            "do not reverse-reach a source-spanned value read owned by this return site"
+        ));
+        let current_ordered_step_ids = packet
+            .paths
+            .iter()
+            .flat_map(|path| path.steps.iter().map(|step| step.step_id.clone()))
+            .collect::<Vec<_>>();
+        let expected_current_ts_v1_packet_id = stable_micro_packet_id(&MicroPacketIdentityInput {
+            repo_relative_path: packet.file.repo_relative_path.clone(),
+            language: packet.file.language.clone(),
+            function_entity_id: packet.function_identity.function_id.clone(),
+            packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
+            packet_version: 1,
+            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+            step_set_version: LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION.to_string(),
+            ordered_step_ids: current_ordered_step_ids,
+        });
+        assert_eq!(candidate.packet_id, expected_current_ts_v1_packet_id);
+        assert_eq!(packet.packet_id, expected_current_ts_v1_packet_id);
+        let agent_json = ok(packet.to_agent_json(false));
+        assert_eq!(
+            agent_json["extraction_version"],
+            json!(MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION)
+        );
+        let missing_requirements = agent_json["proof_classification"]["path_classifications"][0]
+            ["missing_requirements"]
+            .as_array()
+            .expect("path missing requirements");
+        for requirement in [
+            "flow_connected_to_return",
+            "includes_local_flows_to",
+            "includes_required_reads_and_writes",
+            "not_local_returns_to_only",
+        ] {
+            assert!(
+                missing_requirements
+                    .iter()
+                    .any(|value| value.as_str() == Some(requirement)),
+                "legacy four-edge shape must retain missing requirement {requirement}"
+            );
+        }
         let packet_rows = ok(store.local_flow_packet_rows_from_candidates(&candidates));
         assert_eq!(packet_rows.len(), 1);
         let packet_row = &packet_rows[0];
         assert_eq!(packet_row.encoding, "dict_v1");
         assert_eq!(packet_row.packet_kind, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND);
+        assert_eq!(packet_row.packet_id, expected_current_ts_v1_packet_id);
         assert_eq!(
             packet_row.extraction_version,
             MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
         );
-        assert_eq!(packet_row.proof_strength, "flow_proof");
-        assert_eq!(packet_row.packet_status, "micro_flow_found");
+        assert_eq!(packet_row.proof_strength, "graph_relation_proof");
+        assert_eq!(packet_row.packet_status, "partial_micro_flow_found");
         assert_eq!(
             packet_row.packet_body_hash,
             local_flow_packet_body_hash(&packet_row.packet_body)
@@ -15743,12 +16200,71 @@ mod tests {
         let mut unsupported_language = packet_rows[0].clone();
         unsupported_language.packet_id = "local-flow-auth-javascript".to_string();
         unsupported_language.language = "javascript".to_string();
+        let version_error = store
+            .insert_local_flow_packet(&unsupported_language)
+            .expect_err("TS packet version must not validate for JavaScript");
+        assert!(version_error
+            .to_string()
+            .contains("version contract mismatch"));
+        let mut inactive_declaration = packet_rows[0].clone();
+        inactive_declaration.packet_id = "local-flow-auth-declaration".to_string();
+        inactive_declaration.file_id = "src/auth.d.ts".to_string();
+        inactive_declaration.extraction_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                "typescript",
+                &inactive_declaration.file_id,
+            )
+            .to_string();
+        let inactive_error = store
+            .insert_local_flow_packet(&inactive_declaration)
+            .expect_err("inactive TypeScript declaration packet rows must not publish");
         assert!(
-            store
-                .insert_local_flow_packet(&unsupported_language)
-                .is_err(),
-            "languages without an exact packet adapter must not publish packet rows"
+            inactive_error
+                .to_string()
+                .contains("outside the authorized packet adapter production scope"),
+            "source-correct inactive versions must still be rejected even with a claimable row label"
         );
+
+        let mut mismatched_candidates = candidates.clone();
+        mismatched_candidates.candidates[0]
+            .packet
+            .as_mut()
+            .expect("packet")
+            .file
+            .language = "python".to_string();
+        let mismatch_error = store
+            .local_flow_packet_rows_from_candidates(&mismatched_candidates)
+            .expect_err("candidate and packet languages must agree");
+        assert!(mismatch_error
+            .to_string()
+            .contains("candidate/packet language mismatch"));
+
+        for (case_name, language, path) in [
+            ("ruby-rake", "ruby", "src/inactive.rake"),
+            ("ruby-gemspec", "ruby", "src/inactive.gemspec"),
+            ("ruby-ru", "ruby", "src/inactive.ru"),
+            ("ruby-shebang", "ruby", "bin/ruby-inactive"),
+            ("ruby-language-alias", "rb", "src/inactive.php"),
+            ("php-phtml", "php", "src/inactive.phtml"),
+            ("php-inc", "php", "src/inactive.inc"),
+            ("php-php3", "php", "src/inactive.php3"),
+            ("php-shebang", "php", "bin/php-inactive"),
+            ("php-cross-adapter", "php", "src/inactive.rb"),
+        ] {
+            let mut inactive_candidates = candidates.clone();
+            inactive_candidates.candidates[0].language = language.to_string();
+            inactive_candidates.candidates[0].file_id = path.to_string();
+            let inactive_packet = inactive_candidates.candidates[0]
+                .packet
+                .as_mut()
+                .expect("packet");
+            inactive_packet.file.language = language.to_string();
+            inactive_packet.file.repo_relative_path = path.to_string();
+            assert!(
+                ok(store.local_flow_packet_rows_from_candidates(&inactive_candidates)).is_empty(),
+                "{case_name}: inactive source or language alias candidates must remain source-gated before persistence"
+            );
+        }
 
         let mut missing_frame = packet_rows[0].clone();
         missing_frame.packet_id = "local-flow-auth-missing-frame".to_string();

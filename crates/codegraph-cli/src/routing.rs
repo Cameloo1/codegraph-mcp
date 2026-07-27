@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use codegraph_core::{mvp4_3_local_micro_flow_packet_active_languages, ContextPacket};
+use codegraph_core::ContextPacket;
 use serde_json::{json, Value};
 
 use crate::*;
@@ -793,8 +793,23 @@ pub(crate) fn routing_language_capability_plan(
     }
 
     let language_names = languages.keys().cloned().collect::<Vec<_>>();
-    let active_packet_languages = mvp4_3_local_micro_flow_packet_active_languages();
-    let non_typescript_packet_languages = language_names
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
+    let active_packet_languages = packet_language_registry["active_packet_languages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let active_non_typescript_packet_languages = packet_language_registry
+        ["active_non_typescript_packet_languages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let inactive_packet_languages = language_names
         .iter()
         .filter(|language| {
             language.as_str() != "unknown"
@@ -805,10 +820,8 @@ pub(crate) fn routing_language_capability_plan(
         .cloned()
         .collect::<Vec<_>>();
     let unknown_dynamic_risks = routing_language_dynamic_risks(task_kind, evidence);
-    let unsupported_relations = routing_language_unsupported_relations(
-        &non_typescript_packet_languages,
-        &unknown_dynamic_risks,
-    );
+    let unsupported_relations =
+        routing_language_unsupported_relations(&inactive_packet_languages, &unknown_dynamic_risks);
 
     json!({
         "status": if evidence.is_empty() { "no_language_scoped_evidence" } else { "language_capability_aware" },
@@ -845,10 +858,42 @@ pub(crate) fn routing_language_capability_plan(
         "unsupported_relations": unsupported_relations,
         "local_flow_packet_boundary": {
             "active_languages": active_packet_languages,
+            "active_packet_languages": active_packet_languages,
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "active_non_typescript_packet_languages": active_non_typescript_packet_languages,
+            "active_non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "packet_language_registry": packet_language_registry,
             "micro_flow_packet_summary": micro_flow_packet_summary,
-            "non_typescript_packet_languages_seen": non_typescript_packet_languages,
-            "non_typescript_packet_support": "not_implemented_without_explicit_exact_gate",
+            "inactive_packet_languages_seen": inactive_packet_languages,
+            "inactive_packet_language_count": inactive_packet_languages.len(),
+            "inactive_packet_support": MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT,
+            "inactive_packet_overclaim_count": 0,
+            "active_non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "active_non_typescript_packet_overclaim_count": 0,
+            "non_typescript_packet_languages_seen": active_non_typescript_packet_languages,
+            "non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
             "non_typescript_packet_overclaim_count": 0,
+            "compatibility_aliases": {
+                "non_typescript_packet_languages_seen": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_languages"
+                },
+                "non_typescript_packet_language_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_language_count"
+                },
+                "non_typescript_packet_support": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_support"
+                },
+                "non_typescript_packet_overclaim_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_overclaim_count"
+                }
+            },
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
             "packet_handles_do_not_create_proof": true,
             "flow_proof_not_emitted_for_unsupported_languages": true,
             "context_entry_command_activated": false
@@ -1095,16 +1140,32 @@ fn routing_language_dynamic_risks(task_kind: &str, evidence: &[Value]) -> Vec<Va
 }
 
 fn routing_language_unsupported_relations(
-    non_typescript_packet_languages: &[String],
+    inactive_packet_languages: &[String],
     dynamic_risks: &[Value],
 ) -> Vec<Value> {
     let mut relations = Vec::new();
-    if !non_typescript_packet_languages.is_empty() {
+    if !inactive_packet_languages.is_empty() {
+        let packet_registry = mvp4_local_flow_packet_language_registry_json();
+        let active_languages = packet_registry["active_packet_languages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        let proof_boundary = if active_languages.is_empty() {
+            "No local-flow packet language adapter is active; observed language evidence cannot carry packet proof."
+                .to_string()
+        } else {
+            format!(
+                "Only registry-active local-flow packet language adapters ({}) may carry flow_proof; inactive languages do not emit packet proof.",
+                active_languages.join(", ")
+            )
+        };
         relations.push(json!({
             "relation": "local_flow_packets",
-            "status": "not_implemented_without_explicit_exact_gate",
-            "languages": non_typescript_packet_languages,
-            "proof_boundary": "Only verified TypeScript .ts production local-flow packet handles may carry flow_proof; other languages do not emit packet proof.",
+            "status": MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT,
+            "languages": inactive_packet_languages,
+            "proof_boundary": proof_boundary,
             "blocking": false
         }));
     }
@@ -1139,14 +1200,14 @@ fn routing_language_boundary_unknowns(language_plan: &Value) -> Vec<Value> {
         }));
     }
     if language_plan
-        .pointer("/local_flow_packet_boundary/non_typescript_packet_languages_seen")
+        .pointer("/local_flow_packet_boundary/inactive_packet_languages_seen")
         .and_then(Value::as_array)
         .is_some_and(|languages| !languages.is_empty())
     {
         unknowns.push(json!({
-            "claim": "non-TypeScript local-flow packet proof",
+            "claim": "inactive-language local-flow packet proof",
             "reason": "unsupported_language_packet_boundary",
-            "sentence": "Non-TypeScript evidence can orient the plan, but it does not carry local-flow packet proof in this lane.",
+            "sentence": "Evidence from languages outside the registry-active packet set can orient the plan, but it does not carry local-flow packet proof in this lane.",
         }));
     }
     unknowns
@@ -1216,14 +1277,15 @@ fn routing_language_validation_steps(language_plan: &Value, limit: usize) -> Vec
     }
     if steps.len() < limit
         && language_plan
-            .pointer("/local_flow_packet_boundary/non_typescript_packet_languages_seen")
+            .pointer("/local_flow_packet_boundary/inactive_packet_languages_seen")
             .and_then(Value::as_array)
             .is_some_and(|languages| !languages.is_empty())
     {
         steps.push(json!({
-            "description": "Do not request or rely on local-flow packet proof for non-TypeScript evidence in this lane.",
-            "language": "non_typescript",
-            "risk": "packet support is unsupported/not_implemented without a future exact gate",
+            "description": "Do not request or rely on local-flow packet proof for evidence outside the registry-active packet language set in this lane.",
+            "language": "registry_inactive",
+            "inactive_language_scope": true,
+            "risk": "packet support is not implemented outside the registry-active source gate",
             "recommendation_kind": "packet_boundary_check",
             "blocking": false,
         }));

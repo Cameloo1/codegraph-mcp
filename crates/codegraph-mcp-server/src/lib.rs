@@ -20,28 +20,33 @@ use std::{
 
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role, classify_validation_finding,
-    entity_kind_defines_symbol, mvp4_3_local_micro_flow_packet_active_languages,
-    mvp4_micro_edge_language_capability, normalize_repo_relative_path, ContextPacket,
-    ContextSnippet, DictV1PacketBody, Edge, Entity, EvidenceRole, Exactness, MicroEdgeKind,
-    MicroEdgeSupportStatus, MicroExactness, MicroSourceRole, PathEvidence, RelationKind,
-    RetrievalCandidate, SourceSpan, SupportedRelationStatus, ValidationBlockingLevel,
-    ValidationClassification, ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
+    entity_kind_defines_symbol, mvp4_3_default_local_micro_flow_packet_query_language,
+    mvp4_3_local_micro_flow_packet_active_languages,
+    mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source,
+    mvp4_3_local_micro_flow_packet_language_capability, mvp4_micro_edge_language_capability,
+    normalize_repo_relative_path, ContextPacket, ContextSnippet, DictV1PacketBody, Edge, Entity,
+    EvidenceRole, Exactness, MicroEdgeKind, MicroEdgeOwnershipPolicy, MicroEdgeSupportStatus,
+    MicroExactness, MicroNodeKind, MicroSourceRole, PathEvidence, RelationKind, RetrievalCandidate,
+    SourceSpan, SupportedRelationStatus, ValidationBlockingLevel, ValidationClassification,
+    ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
     ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
     ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
     ValidationReverificationInput, ValidationRule, ValidationRuleKind,
     ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
     MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
     MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
     MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES,
 };
 use codegraph_index::{
     candidate_spool_index_status_for_repo, compute_entity_source_role_delta, default_db_path,
     index_repo_to_db_with_options, inspect_db_lifecycle_preflight, load_vector_chunk_index_json,
-    mvp4_2_micro_edge_endpoint_kinds, query_candidate_spool_index_for_repo,
-    rtds_dependency_closure_for_changed_paths_to_db, snapshot_normalized_facts_for_paths_to_db,
-    update_changed_files_to_db, validate_edit_changed_files_preflight_with_scope,
-    validate_vector_chunk_source_bindings, vector_chunk_search_hit_to_retrieval_candidate,
-    CandidateSpoolIndexLoad, CandidateSpoolIndexQueryResult, DbLifecyclePreflight, EdgeDeltaEntry,
+    query_candidate_spool_index_for_repo, rtds_dependency_closure_for_changed_paths_to_db,
+    snapshot_normalized_facts_for_paths_to_db, update_changed_files_to_db,
+    validate_edit_changed_files_preflight_with_scope, validate_vector_chunk_source_bindings,
+    vector_chunk_search_hit_to_retrieval_candidate, CandidateSpoolIndexLoad,
+    CandidateSpoolIndexQueryResult, DbLifecyclePreflight, EdgeDeltaEntry,
     EntitySourceRoleDeltaOptions, EntitySourceRoleDeltaReport, IndexOptions, IndexScopeOptions,
     NormalizedFactSnapshotOptions, UnresolvedReferenceDeltaEntry,
     ValidateEditChangedFilesPreflight, VectorChunkIndexBuildOptions,
@@ -62,8 +67,9 @@ use codegraph_query::{
 };
 use codegraph_store::{
     classify_sqlite_access_problem, AstMicroEdgeRow, AstMicroNodeRow,
-    CapabilityMetadataQueryOptions, DbPreflightReport, GraphStore, LocalFlowPacketRow,
-    SqliteGraphStore, TextSearchHit, TextSearchKind,
+    CapabilityMetadataQueryOptions, DbPreflightReport, GraphStore, LocalFlowPacketQueryOptions,
+    LocalFlowPacketRow, LocalFlowPacketVisibilitySummary, SqliteGraphStore, TextSearchHit,
+    TextSearchKind,
 };
 use codegraph_trace::{TraceConfig, TraceLogger};
 use codegraph_vector::{DeterministicTestEmbeddingProvider, TestEmbeddingEnablement};
@@ -96,7 +102,10 @@ const MCP_CONTEXT_PACK_EDGE_LIMIT: usize = 4_096;
 const MCP_CONTEXT_PACK_SOURCE_FILE_LIMIT: usize = 64;
 const MCP_CONTEXT_PACK_SOURCE_BYTE_LIMIT: usize = 256 * 1024;
 const MCP_VALIDATE_EDIT_TOOL_NAME: &str = "codegraph.validate_edit";
+const MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME: &str = "codegraph.query_local_flow_packets";
+const MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME: &str = "codegraph.open_local_flow_packet";
 const MCP_VALIDATE_EDIT_SCHEMA_NAME: &str = "validate_edit_agent_json";
+const MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT: usize = 100;
 const CG_MVP3_CALLS_DANGLING_TARGET: &str = "CG_MVP3_CALLS_DANGLING_TARGET";
 const CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED: &str = "CG_MVP3_CALLS_RENAMED_CALLEE_NOT_UPDATED";
 const CG_MVP3_IMPORTS_DANGLING_TARGET: &str = "CG_MVP3_IMPORTS_DANGLING_TARGET";
@@ -139,7 +148,59 @@ const CG_MVP4_3_PACKET_RETURN_PATH_IDENTITY_MISSING: &str =
 const CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE: &str = "CG_MVP4_3_PACKET_SHADOW_BINDING_COLLAPSE";
 const CG_MVP4_3_PACKET_LAYER_TRUNCATED: &str = "CG_MVP4_3_PACKET_LAYER_TRUNCATED";
 const CG_MVP4_3_PACKET_LAYER_UNAVAILABLE: &str = "CG_MVP4_3_PACKET_LAYER_UNAVAILABLE";
+const MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT: &str =
+    "not_implemented_outside_registry_active_source_gate";
+const MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT: &str =
+    "registry_active_source_aware_exact_capability_only";
+const MVP4_3_LOCAL_FLOW_PACKET_SUPPORTED_LANGUAGE_SLICE: &str =
+    "registry_active_source_aware_local_flow_packets_v1";
 const MCP_BLOCK_ON_UNRESOLVED_LOCAL_ENV: &str = "CODEGRAPH_BLOCK_ON_UNRESOLVED_LOCAL";
+
+fn mcp_validation_classification_compact_priority(classification: ValidationClassification) -> u8 {
+    match classification {
+        ValidationClassification::Block => 0,
+        ValidationClassification::Warn => 1,
+        ValidationClassification::Unknown | ValidationClassification::Unsupported => 2,
+        ValidationClassification::Degraded => 3,
+        ValidationClassification::Diagnostic => 4,
+    }
+}
+
+fn mcp_compact_validation_packet(packet: &ValidationPacket, max_items: usize) -> Value {
+    let mut prioritized = packet.clone();
+    prioritized.warnings.sort_by_key(|finding| {
+        mcp_validation_classification_compact_priority(finding.classification)
+    });
+    prioritized.compact_agent_json(max_items)
+}
+
+fn mcp_micro_node_kind_from_storage(value: &str) -> Option<MicroNodeKind> {
+    let normalized = value.trim().to_ascii_lowercase();
+    MicroNodeKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.as_str() == normalized)
+}
+
+fn mcp_micro_edge_ownership_violations(
+    policy: MicroEdgeOwnershipPolicy,
+    edge_function_entity_id: Option<&str>,
+    head_function_entity_id: Option<&str>,
+    tail_function_entity_id: Option<&str>,
+) -> (bool, bool) {
+    let edge_head_mismatch = !matches!(
+        (edge_function_entity_id, head_function_entity_id),
+        (Some(edge), Some(head)) if edge == head
+    );
+    let cross_function = match policy {
+        MicroEdgeOwnershipPolicy::SameFunction => !matches!(
+            (head_function_entity_id, tail_function_entity_id),
+            (Some(head), Some(tail)) if head == tail
+        ),
+        MicroEdgeOwnershipPolicy::CallerToSameFileFunction => tail_function_entity_id.is_none(),
+    };
+    (cross_function, edge_head_mismatch)
+}
 
 const MCP_RESOURCE_URIS: &[&str] = &[
     "codegraph://status",
@@ -170,6 +231,8 @@ const TOOL_NAMES: &[&str] = &[
     "codegraph.search_text",
     "codegraph.search_semantic",
     "codegraph.context_pack",
+    MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+    MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
     "codegraph.trace_path",
     "codegraph.impact_analysis",
     "codegraph.find_callers",
@@ -486,6 +549,8 @@ impl McpServer {
             "codegraph.search_text" => self.search_text(args),
             "codegraph.search_semantic" => self.search_semantic(args),
             "codegraph.context_pack" => self.context_pack(args),
+            MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME => self.query_local_flow_packets(args),
+            MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME => self.open_local_flow_packet(args),
             "codegraph.trace_path" => self.trace_path(args),
             "codegraph.impact_analysis" => self.impact_analysis(args),
             "codegraph.find_callers" => self.relation_query(args, "callers"),
@@ -1074,6 +1139,10 @@ impl McpServer {
                 &mut value,
                 Self::mvp4_micro_edge_visibility_for_preflight(&preflight),
             );
+            Self::attach_mvp4_local_flow_packet_visibility(
+                &mut value,
+                Self::mvp4_local_flow_packet_visibility_for_preflight(&preflight),
+            );
             mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
             return Ok(value);
         }
@@ -1119,6 +1188,10 @@ impl McpServer {
             Self::attach_mvp4_micro_edge_visibility(
                 &mut value,
                 Self::mvp4_micro_edge_visibility_for_preflight(&preflight),
+            );
+            Self::attach_mvp4_local_flow_packet_visibility(
+                &mut value,
+                Self::mvp4_local_flow_packet_visibility_for_preflight(&preflight),
             );
             mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
             return Ok(value);
@@ -1171,6 +1244,9 @@ impl McpServer {
         let micro_edges =
             Self::mvp4_micro_edge_visibility_from_store(&store, &preflight, 0, false)?;
         Self::attach_mvp4_micro_edge_visibility(&mut value, micro_edges);
+        let local_flow_packets =
+            Self::mvp4_local_flow_packet_visibility_from_store(&store, &preflight, 0, false)?;
+        Self::attach_mvp4_local_flow_packet_visibility(&mut value, local_flow_packets);
         mcp_attach_dirty_evidence_output_fields(&mut value, "codegraph.status", false);
         Ok(value)
     }
@@ -1224,8 +1300,8 @@ impl McpServer {
             "feature_status": status,
             "ready": false,
             "feature": "mvp4_2_ast_micro_edges",
-            "supported_language_slice": "typescript_ts_local_returns_to_v1",
-            "supported_relation_slice": "local_returns_to",
+            "supported_language_slice": "registry_active_source_aware_local_micro_edges_v1",
+            "supported_relation_slice": "registry_active_11_relation_local_micro_edges_v1",
             "relation_kinds_active": [],
             "languages_active": [],
             "schema_version": preflight.db_health.schema_version,
@@ -1245,7 +1321,7 @@ impl McpServer {
             "availability_separate_from_graph_claimability": true,
             "core_graph_claimability_separate": true,
             "micro_node_availability_separate": true,
-            "local_flow_packet_availability": "not_applicable",
+            "local_flow_packet_availability": "reported_separately",
             "default_full_table_scan": false,
             "bounded_summary": true,
             "sample_available_in_audit": true,
@@ -1279,7 +1355,7 @@ impl McpServer {
         match status {
             "ready" => "none",
             "not_applicable" => {
-                "run an MVP4.2-enabled index on production TypeScript .ts files if micro-edge visibility is expected"
+                "run an MVP4.2-enabled index on production source files for a registry-active frontend if micro-edge visibility is expected"
             }
             "unavailable" => {
                 "re-run index with a current writable schema if this DB should expose MVP4.2 micro-edge availability"
@@ -1358,8 +1434,8 @@ impl McpServer {
             "feature_status": status,
             "ready": status == "ready",
             "feature": "mvp4_2_ast_micro_edges",
-            "supported_language_slice": "typescript_ts_local_returns_to_v1",
-            "supported_relation_slice": "local_returns_to",
+            "supported_language_slice": "registry_active_source_aware_local_micro_edges_v1",
+            "supported_relation_slice": "registry_active_11_relation_local_micro_edges_v1",
             "relation_kinds_active": relation_kinds_active,
             "languages_active": languages_active,
             "schema_version": preflight.db_health.schema_version,
@@ -1386,7 +1462,7 @@ impl McpServer {
             "availability_separate_from_graph_claimability": true,
             "core_graph_claimability_separate": true,
             "micro_node_availability_separate": true,
-            "local_flow_packet_availability": "not_applicable",
+            "local_flow_packet_availability": "reported_separately",
             "default_full_table_scan": summary.default_full_table_scan,
             "bounded_summary": true,
             "sample_limit": summary.sample_limit,
@@ -1429,12 +1505,692 @@ impl McpServer {
         object.insert("mvp4_micro_edge_rows".to_string(), json!(rows));
         object.insert(
             "mvp4_local_flow_packet_status".to_string(),
-            json!("not_applicable"),
+            json!("unknown"),
         );
         object.insert(
             "core_graph_micro_edge_availability_separated".to_string(),
             json!(true),
         );
+    }
+
+    fn mvp4_local_flow_packet_proof_boundary_json() -> Value {
+        json!({
+            "dict_v1_is_representation_only": true,
+            "ordered_steps_default_inline": false,
+            "ordered_steps_require_explicit_open_opt_in": true,
+            "full_source_body_output": false,
+            "flow_proof_requires_complete_current_claimable_local_chain": true,
+            "local_returns_to_only_flow_proof": false,
+            "graph_claimability_micro_edge_packet_availability_separate": true,
+            "query_and_open_do_not_create_proof": true,
+            "mutation_proof_activated": false,
+        })
+    }
+
+    fn mvp4_local_flow_packet_capability_recovery_action(status: &str) -> String {
+        if status != "not_applicable" {
+            return Self::mvp4_local_flow_packet_recovery_action(status).to_string();
+        }
+        let registry = mcp_local_flow_packet_language_registry_json();
+        let active_languages = registry["active_packet_languages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if active_languages.is_empty() {
+            "no active local-flow packet language adapter is registered; packet proof remains unavailable"
+                .to_string()
+        } else {
+            format!(
+                "run an MVP4.3-enabled index for registry-active packet language adapters ({}) if packet visibility is expected",
+                active_languages.join(", ")
+            )
+        }
+    }
+
+    fn mvp4_local_flow_packet_visibility_for_preflight(preflight: &DbLifecyclePreflight) -> Value {
+        let status = Self::mvp4_local_flow_packet_status_from_preflight(preflight);
+        let packet_language_registry = mcp_local_flow_packet_language_registry_json();
+        json!({
+            "status": status,
+            "feature_status": status,
+            "ready": false,
+            "feature": "mvp4_3_local_flow_packets",
+            "supported_language_slice": MVP4_3_LOCAL_FLOW_PACKET_SUPPORTED_LANGUAGE_SLICE,
+            "packet_language_registry": packet_language_registry,
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_capabilities": packet_language_registry["active_packet_language_capabilities"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "supported_packet_kind": "local_micro_flow_packet",
+            "schema_version": preflight.db_health.schema_version,
+            "row_schema_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            "payload_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+            "extraction_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            "total_rows": 0,
+            "rows_by_packet_kind": {},
+            "rows_by_proof_status": {},
+            "rows_by_proof_strength": {},
+            "rows_by_packet_status": {},
+            "rows_by_language": {},
+            "rows_by_source_role": {},
+            "files_represented": 0,
+            "functions_represented": 0,
+            "cap_hit_count": 0,
+            "omitted_count": 0,
+            "compact_body_bytes": 0,
+            "audit_body_bytes": 0,
+            "sidecar_table_bytes": Value::Null,
+            "sidecar_table_bytes_measurement": "unavailable",
+            "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+            "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+            "core_graph_claimability_separate": true,
+            "micro_node_availability_separate": true,
+            "micro_edge_availability_separate": true,
+            "default_full_table_scan": false,
+            "bounded_summary": true,
+            "sample_available_in_audit": true,
+            "sample_count": 0,
+            "full_source_body_output": false,
+            "ordered_steps_default_inline": false,
+            "query_tool": MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+            "open_tool": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+            "recovery_action": Self::mvp4_local_flow_packet_recovery_action(status),
+            "capability_recovery_action": Self::mvp4_local_flow_packet_capability_recovery_action(status),
+            "proof_boundary": Self::mvp4_local_flow_packet_proof_boundary_json(),
+        })
+    }
+
+    fn mvp4_local_flow_packet_status_from_preflight(
+        preflight: &DbLifecyclePreflight,
+    ) -> &'static str {
+        if preflight.path_access_status == "db_missing" {
+            return "not_applicable";
+        }
+        if preflight.schema_status != "ok" {
+            return "incompatible";
+        }
+        match preflight.db_problem_kind.as_deref() {
+            Some("db_locked" | "permission_denied" | "filesystem_inaccessible") => "unavailable",
+            Some("sqlite_corrupt" | "passport_corrupt") => "corrupt",
+            Some("schema_mismatch" | "passport_missing" | "passport_mismatch") => "incompatible",
+            Some("repo_mismatch" | "scope_mismatch" | "repo_head_mismatch") => "stale",
+            Some(_) => "unavailable",
+            None if preflight.safe => "not_applicable",
+            None => "unknown",
+        }
+    }
+
+    fn mvp4_local_flow_packet_recovery_action(status: &str) -> &'static str {
+        match status {
+            "ready" => "none",
+            "not_applicable" => {
+                "run an MVP4.3-enabled index on registry-active production source paths if packet visibility is expected"
+            }
+            "unavailable" => {
+                "re-run index with a current writable schema if this DB should expose MVP4.3 packet availability"
+            }
+            "stale" => "refresh the DB for the current repo/head before trusting local-flow packets",
+            "incompatible" => {
+                "open with a writer/index path that performs the explicit schema migration, or rebuild the DB"
+            }
+            "corrupt" => "replace or rebuild the DB; do not use optional packet state as proof",
+            "truncated" => {
+                "inspect packet rows with the bounded query/open tools and omitted counts before relying on packet completeness"
+            }
+            "unknown" => "inspect DB lifecycle and packet-table status before using packet evidence",
+            _ => "inspect DB lifecycle status",
+        }
+    }
+
+    fn mvp4_local_flow_packet_visibility_from_store(
+        store: &SqliteGraphStore,
+        preflight: &DbLifecyclePreflight,
+        sample_limit: usize,
+        include_sample: bool,
+    ) -> Result<Value, ToolCallError> {
+        if !store
+            .table_exists("local_flow_packets")
+            .map_err(mcp_store_error)?
+        {
+            let mut layer = Self::mvp4_local_flow_packet_visibility_for_preflight(preflight);
+            if let Some(object) = layer.as_object_mut() {
+                object.insert("status".to_string(), json!("unavailable"));
+                object.insert("feature_status".to_string(), json!("unavailable"));
+                object.insert(
+                    "recovery_action".to_string(),
+                    json!(Self::mvp4_local_flow_packet_recovery_action("unavailable")),
+                );
+                object.insert(
+                    "capability_recovery_action".to_string(),
+                    json!(Self::mvp4_local_flow_packet_capability_recovery_action(
+                        "unavailable"
+                    )),
+                );
+                object.insert(
+                    "missing_reason".to_string(),
+                    json!("local_flow_packets table missing"),
+                );
+            }
+            return Ok(layer);
+        }
+        if !store
+            .sparse_sidecar_schema_ready()
+            .map_err(mcp_store_error)?
+        {
+            let mut layer = Self::mvp4_local_flow_packet_visibility_for_preflight(preflight);
+            if let Some(object) = layer.as_object_mut() {
+                object.insert("status".to_string(), json!("unavailable"));
+                object.insert("feature_status".to_string(), json!("unavailable"));
+                object.insert(
+                    "recovery_action".to_string(),
+                    json!(Self::mvp4_local_flow_packet_recovery_action("unavailable")),
+                );
+                object.insert(
+                    "missing_reason".to_string(),
+                    json!("sparse sidecar schema incomplete"),
+                );
+            }
+            return Ok(layer);
+        }
+
+        let summary = store
+            .local_flow_packet_visibility_summary(if include_sample { sample_limit } else { 0 })
+            .map_err(mcp_store_error)?;
+        Self::mvp4_local_flow_packet_visibility_layer(preflight, summary, include_sample)
+    }
+
+    fn mvp4_local_flow_packet_visibility_layer(
+        preflight: &DbLifecyclePreflight,
+        summary: LocalFlowPacketVisibilitySummary,
+        include_sample: bool,
+    ) -> Result<Value, ToolCallError> {
+        let incompatible = summary
+            .row_schema_versions
+            .iter()
+            .any(|version| *version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION)
+            || summary
+                .payload_versions
+                .iter()
+                .any(|version| *version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION);
+        let status = if summary.total_rows == 0 {
+            "not_applicable"
+        } else if incompatible {
+            "incompatible"
+        } else if summary.cap_hit_count > 0 || summary.omitted_count > 0 {
+            "truncated"
+        } else {
+            "ready"
+        };
+        let packet_language_registry = mcp_local_flow_packet_language_registry_json();
+        let languages_active = summary.rows_by_language.keys().cloned().collect::<Vec<_>>();
+        let sample_count = summary.sample.len();
+        let mut layer = json!({
+            "status": status,
+            "feature_status": status,
+            "ready": status == "ready",
+            "feature": "mvp4_3_local_flow_packets",
+            "supported_language_slice": MVP4_3_LOCAL_FLOW_PACKET_SUPPORTED_LANGUAGE_SLICE,
+            "packet_language_registry": packet_language_registry,
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_capabilities": packet_language_registry["active_packet_language_capabilities"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "supported_packet_kind": "local_micro_flow_packet",
+            "schema_version": preflight.db_health.schema_version,
+            "row_schema_version": summary.row_schema_versions.first().copied().unwrap_or(MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION),
+            "row_schema_versions": summary.row_schema_versions,
+            "payload_version": summary.payload_versions.first().copied().unwrap_or(MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION),
+            "payload_versions": summary.payload_versions,
+            "extraction_version": summary.extraction_versions.first().cloned().unwrap_or_else(|| MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string()),
+            "extraction_versions": summary.extraction_versions,
+            "total_rows": summary.total_rows,
+            "rows_by_packet_kind": summary.rows_by_packet_kind,
+            "rows_by_proof_status": summary.rows_by_proof_status,
+            "rows_by_proof_strength": summary.rows_by_proof_strength,
+            "rows_by_packet_status": summary.rows_by_packet_status,
+            "rows_by_language": summary.rows_by_language,
+            "rows_by_source_role": summary.rows_by_source_role,
+            "files_represented": summary.files_represented,
+            "functions_represented": summary.functions_represented,
+            "languages_active": languages_active,
+            "cap_hit_count": summary.cap_hit_count,
+            "omitted_count": summary.omitted_count,
+            "compact_body_bytes": summary.compact_body_bytes,
+            "audit_body_bytes": summary.audit_body_bytes,
+            "cap_hit_counts": {
+                "total": summary.cap_hit_count,
+                "omitted_count": summary.omitted_count,
+                "source": "MVP4.3 local_flow_packets persisted summary"
+            },
+            "exactness_counts": summary.exactness_counts,
+            "claimability_counts": summary.claimability_counts,
+            "sidecar_table_bytes": summary.estimated_payload_bytes,
+            "sidecar_table_bytes_measurement": "estimated_row_payload_bytes",
+            "last_lifecycle_status": preflight.db_health.passport.as_ref().map(|passport| passport.last_run_status.clone()),
+            "currentness_status": if preflight.safe { "current" } else { preflight.path_access_status.as_str() },
+            "core_graph_claimability_separate": true,
+            "micro_node_availability_separate": true,
+            "micro_edge_availability_separate": true,
+            "default_full_table_scan": summary.default_full_table_scan,
+            "bounded_summary": true,
+            "sample_limit": summary.sample_limit,
+            "sample_count": sample_count,
+            "sample_available_in_audit": true,
+            "full_source_body_output": summary.full_source_body_output,
+            "ordered_steps_default_inline": summary.ordered_steps_default_inline,
+            "query_plan": summary.query_plan,
+            "query_tool": MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+            "open_tool": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+            "recovery_action": Self::mvp4_local_flow_packet_recovery_action(status),
+            "capability_recovery_action": Self::mvp4_local_flow_packet_capability_recovery_action(status),
+            "proof_boundary": Self::mvp4_local_flow_packet_proof_boundary_json(),
+        });
+        if include_sample {
+            if let Some(object) = layer.as_object_mut() {
+                object.insert(
+                    "sample".to_string(),
+                    serde_json::to_value(summary.sample).map_err(|error| {
+                        ToolCallError::new(
+                            "serialization_failed",
+                            format!("could not encode local-flow packet sample: {error}"),
+                        )
+                    })?,
+                );
+            }
+        }
+        Ok(layer)
+    }
+
+    fn attach_mvp4_local_flow_packet_visibility(value: &mut Value, layer: Value) {
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        let status = layer
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let ready = layer.get("ready").and_then(Value::as_bool).unwrap_or(false);
+        let rows = layer.get("total_rows").cloned().unwrap_or_else(|| json!(0));
+        if let Some(micro_edges) = object
+            .get_mut("mvp4_micro_edges")
+            .and_then(Value::as_object_mut)
+        {
+            micro_edges.insert(
+                "local_flow_packet_availability".to_string(),
+                json!(status.clone()),
+            );
+        }
+        object.insert("mvp4_local_flow_packets".to_string(), layer.clone());
+        object.insert(
+            "mvp4_local_flow_packet_status".to_string(),
+            json!(status.clone()),
+        );
+        object.insert("mvp4_local_flow_packet_rows".to_string(), rows);
+        if let Some(staged) = object
+            .get_mut("staged_availability")
+            .and_then(Value::as_object_mut)
+        {
+            if let Some(layer_readiness) = staged
+                .get_mut("layer_readiness")
+                .and_then(Value::as_object_mut)
+            {
+                layer_readiness.insert("mvp4_local_flow_packets".to_string(), layer);
+            }
+            let target_array = if ready {
+                staged.get_mut("available_layers")
+            } else if matches!(
+                status.as_str(),
+                "unavailable" | "stale" | "incompatible" | "corrupt" | "truncated" | "unknown"
+            ) {
+                staged.get_mut("missing_layers")
+            } else {
+                None
+            };
+            if let Some(array) = target_array.and_then(Value::as_array_mut) {
+                if !array
+                    .iter()
+                    .any(|value| value.as_str() == Some("mvp4_local_flow_packets"))
+                {
+                    array.push(json!("mvp4_local_flow_packets"));
+                }
+            }
+        }
+    }
+
+    fn context_pack_local_flow_packet_handles(
+        store: &SqliteGraphStore,
+        document_paths: &BTreeSet<String>,
+        limit: usize,
+        repo_root: &Path,
+        db_path: &Path,
+    ) -> Result<Vec<Value>, ToolCallError> {
+        let limit = limit.max(1).min(MCP_CONTEXT_PACK_DEFAULT_LIMIT);
+        let mut rows = BTreeMap::<String, LocalFlowPacketRow>::new();
+        for path in document_paths {
+            if rows.len() >= limit {
+                break;
+            }
+            let remaining = limit.saturating_sub(rows.len()).max(1);
+            for row in store
+                .query_local_flow_packets(&LocalFlowPacketQueryOptions {
+                    limit: remaining,
+                    file_id: Some(path.clone()),
+                    source_role: Some("production".to_string()),
+                    ..LocalFlowPacketQueryOptions::default()
+                })
+                .map_err(mcp_store_error)?
+            {
+                rows.entry(row.packet_id.clone()).or_insert(row);
+            }
+        }
+        Ok(rows
+            .into_values()
+            .take(limit)
+            .map(|row| Self::local_flow_packet_context_handle_json(&row, repo_root, db_path))
+            .collect())
+    }
+
+    fn local_flow_packet_context_handle_json(
+        row: &LocalFlowPacketRow,
+        repo_root: &Path,
+        db_path: &Path,
+    ) -> Value {
+        json!({
+            "packet_id": row.packet_id,
+            "packet_kind": row.packet_kind,
+            "file": row.file_id,
+            "function_entity_id": row.function_entity_id,
+            "proof_status": row.proof_status,
+            "proof_strength": row.proof_strength,
+            "packet_status": row.packet_status,
+            "source_role": row.source_role,
+            "language": row.language,
+            "claimability": row.claimability,
+            "expansion_handle": format!("audit.local_flow_packets.packet:{}", row.packet_id),
+            "mcp_expansion": {
+                "tool": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+                "arguments": {
+                    "repo": path_string(repo_root),
+                    "db_path": path_string(db_path),
+                    "packet_id": row.packet_id,
+                    "include_ordered_steps": false,
+                }
+            },
+            "packet_body_included": false,
+            "ordered_steps_inline": false,
+            "open_required_for_packet_body": true,
+            "query_or_open_creates_proof": false,
+        })
+    }
+
+    fn query_local_flow_packets(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
+        let repo_root = self.repo_root(args)?;
+        let db_path = self.db_path(args, &repo_root)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
+        let limit = optional_usize(
+            args,
+            "limit",
+            DEFAULT_RESULT_LIMIT,
+            1,
+            MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT,
+        )?;
+        let options = LocalFlowPacketQueryOptions {
+            limit,
+            packet_id: optional_string(args, "packet_id"),
+            file_id: optional_string(args, "file").or_else(|| optional_string(args, "path")),
+            function_query: optional_string(args, "function")
+                .or_else(|| optional_string(args, "symbol")),
+            proof_status: optional_string(args, "proof_status"),
+            proof_strength: optional_string(args, "proof_strength"),
+            language: optional_string(args, "language"),
+            source_role: Some(
+                optional_string(args, "source_role").unwrap_or_else(|| "production".to_string()),
+            ),
+            include_packet_body: false,
+        };
+        let packet_layer =
+            Self::mvp4_local_flow_packet_visibility_from_store(&store, &preflight, 0, false)?;
+        let rows = store
+            .query_local_flow_packets(&options)
+            .map_err(mcp_store_error)?;
+        let result_count = rows.len();
+        let results = rows
+            .iter()
+            .map(|row| Self::local_flow_packet_result_json(row, false, false, &repo_root, &db_path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let packet_layer_status = packet_layer
+            .get("status")
+            .cloned()
+            .unwrap_or_else(|| json!("unknown"));
+        Ok(json!({
+            "status": "ok",
+            "command": MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+            "repo": path_string(&repo_root),
+            "db_path": path_string(&db_path),
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+            "claimable_lifecycle": preflight.safe,
+            "diagnostic_only": !preflight.safe,
+            "packet_layer_status": packet_layer_status,
+            "packet_layer": packet_layer,
+            "query": {
+                "packet_id": options.packet_id,
+                "file": options.file_id,
+                "function": options.function_query,
+                "proof_status": options.proof_status,
+                "proof_strength": options.proof_strength,
+                "language": options.language,
+                "source_role": options.source_role,
+                "limit": limit,
+                "packet_body_included": false,
+                "ordered_steps_included": false
+            },
+            "result_count": result_count,
+            "limit": limit,
+            "limit_capped_at": MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT,
+            "more_results_may_exist": result_count == limit,
+            "results": results,
+            "compact_default_packet_body_inline": false,
+            "compact_default_ordered_steps_inline": false,
+            "read_only": true,
+            "proof": "Rows are read from the persisted local_flow_packets table under the current DB lifecycle. Querying or opening a packet does not create proof.",
+        }))
+    }
+
+    fn open_local_flow_packet(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
+        let packet_id = required_string(args, "packet_id")?;
+        let include_ordered_steps =
+            optional_bool_arg(args, "include_ordered_steps")?.unwrap_or(false);
+        let repo_root = self.repo_root(args)?;
+        let db_path = self.db_path(args, &repo_root)?;
+        let (store, preflight) = self.open_store_with_preflight(args)?;
+        let packet_layer =
+            Self::mvp4_local_flow_packet_visibility_from_store(&store, &preflight, 0, false)?;
+        let rows = store
+            .query_local_flow_packets(&LocalFlowPacketQueryOptions {
+                limit: 2,
+                packet_id: Some(packet_id.clone()),
+                ..LocalFlowPacketQueryOptions::default()
+            })
+            .map_err(mcp_store_error)?;
+        let row = match rows.as_slice() {
+            [row] => row,
+            [] => {
+                let layer_status = packet_layer
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let code = if matches!(layer_status, "unavailable" | "incompatible" | "corrupt") {
+                    "local_flow_packet_unavailable"
+                } else {
+                    "local_flow_packet_not_found"
+                };
+                return Err(ToolCallError::new(
+                    code,
+                    format!(
+                        "local-flow packet {packet_id:?} was not available; layer status={layer_status}; recovery={}",
+                        Self::mvp4_local_flow_packet_recovery_action(layer_status)
+                    ),
+                ));
+            }
+            _ => {
+                return Err(ToolCallError::new(
+                    "local_flow_packet_identity_conflict",
+                    format!("multiple persisted packets matched exact packet id {packet_id:?}"),
+                ));
+            }
+        };
+        let packet = Self::local_flow_packet_result_json(
+            row,
+            true,
+            include_ordered_steps,
+            &repo_root,
+            &db_path,
+        )?;
+        Ok(json!({
+            "status": "ok",
+            "command": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+            "repo": path_string(&repo_root),
+            "db_path": path_string(&db_path),
+            "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
+            "packet_layer_status": packet_layer.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "packet_layer": packet_layer,
+            "packet": packet,
+            "packet_body_included": true,
+            "ordered_steps_included": include_ordered_steps,
+            "read_only": true,
+            "proof": "The packet body is an explicit read of one persisted packet. Ordered steps are decoded only on explicit opt-in, and neither operation creates proof.",
+        }))
+    }
+
+    fn local_flow_packet_result_json(
+        row: &LocalFlowPacketRow,
+        include_packet_body: bool,
+        include_ordered_steps: bool,
+        repo_root: &Path,
+        db_path: &Path,
+    ) -> Result<Value, ToolCallError> {
+        let cap_state: Value =
+            serde_json::from_str(&row.cap_state_json).unwrap_or_else(|_| json!({}));
+        let source_span_ids: Value =
+            serde_json::from_str(&row.source_span_ids_json).unwrap_or_else(|_| json!([]));
+        let source_span_ref_count = source_span_ids.as_array().map(Vec::len).unwrap_or_default();
+        let unknown_or_gap_count = cap_state
+            .get("unknown_or_gap_count")
+            .or_else(|| cap_state.get("gap_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let claimable_for_flow_proof = row.source_role == "production"
+            && row.proof_status == "flow_proof"
+            && row.proof_strength == "flow_proof"
+            && row.packet_status == "micro_flow_found"
+            && row.claimability.starts_with("claimable")
+            && row.omitted_count == 0
+            && unknown_or_gap_count == 0;
+        let mut result = json!({
+            "packet_id": row.packet_id,
+            "packet_kind": row.packet_kind,
+            "file": row.file_id,
+            "function_entity_id": row.function_entity_id,
+            "function_frame_micro_node_id": row.function_frame_micro_node_id,
+            "primary_source_span_id": row.primary_source_span_id,
+            "source_span_ref_count": source_span_ref_count,
+            "source_span_ids_handle": format!("audit.local_flow_packets.packet:{}.source_span_ids", row.packet_id),
+            "proof_status": row.proof_status,
+            "proof_strength": row.proof_strength,
+            "packet_status": row.packet_status,
+            "encoding": row.encoding,
+            "packet_body_hash": row.packet_body_hash,
+            "packet_summary": {
+                "compact_body_bytes": row.compact_body_bytes,
+                "audit_body_bytes": row.audit_body_bytes,
+                "omitted_count": row.omitted_count,
+                "truncation_reason": cap_state.get("truncation_reason").cloned().unwrap_or(Value::Null),
+                "unknown_or_gap_count": unknown_or_gap_count,
+            },
+            "source_role": row.source_role,
+            "language": row.language,
+            "exactness": row.exactness,
+            "claimability": row.claimability,
+            "claimable_for_flow_proof": claimable_for_flow_proof,
+            "nonclaimable_reason": if claimable_for_flow_proof {
+                Value::Null
+            } else if row.source_role != "production" {
+                json!("non_production_source_role")
+            } else if row.omitted_count > 0 || unknown_or_gap_count > 0 {
+                json!("incomplete_or_gapped_packet")
+            } else {
+                json!("persisted_packet_claimability_or_proof_status_not_claimable")
+            },
+            "versions": {
+                "schema_version": row.schema_version,
+                "row_schema_version": row.row_schema_version,
+                "payload_version": row.payload_version,
+                "extraction_version": row.extraction_version,
+                "source_micro_node_extraction_versions": serde_json::from_str::<Value>(&row.source_micro_node_extraction_versions_json).unwrap_or_else(|_| json!([])),
+                "source_micro_edge_extraction_versions": serde_json::from_str::<Value>(&row.source_micro_edge_extraction_versions_json).unwrap_or_else(|_| json!([])),
+            },
+            "expansion_handle": format!("audit.local_flow_packets.packet:{}", row.packet_id),
+            "mcp_expansion": {
+                "tool": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+                "arguments": {
+                    "repo": path_string(repo_root),
+                    "db_path": path_string(db_path),
+                    "packet_id": row.packet_id,
+                    "include_ordered_steps": false,
+                }
+            },
+            "packet_body_included": false,
+            "ordered_steps_inline": false,
+            "full_source_body_output": false,
+        });
+        if include_packet_body {
+            let packet_body: Value = serde_json::from_str(&row.packet_body).map_err(|error| {
+                ToolCallError::new(
+                    "local_flow_packet_corrupt",
+                    format!("packet {} body is invalid JSON: {error}", row.packet_id),
+                )
+            })?;
+            if let Some(object) = result.as_object_mut() {
+                object.insert("source_span_ids".to_string(), source_span_ids);
+                object.insert("packet_body".to_string(), packet_body.clone());
+                object.insert("packet_body_included".to_string(), json!(true));
+                if include_ordered_steps {
+                    let body: DictV1PacketBody =
+                        serde_json::from_value(packet_body).map_err(|error| {
+                            ToolCallError::new(
+                                "local_flow_packet_expansion_failed",
+                                format!(
+                                    "packet {} dict_v1 body is invalid: {error}",
+                                    row.packet_id
+                                ),
+                            )
+                        })?;
+                    object.insert(
+                        "ordered_steps".to_string(),
+                        serde_json::to_value(body.to_ordered_steps().map_err(|error| {
+                            ToolCallError::new(
+                                "local_flow_packet_expansion_failed",
+                                format!(
+                                    "packet {} ordered-step expansion failed: {error}",
+                                    row.packet_id
+                                ),
+                            )
+                        })?)
+                        .map_err(|error| {
+                            ToolCallError::new(
+                                "serialization_failed",
+                                format!("could not encode packet ordered steps: {error}"),
+                            )
+                        })?,
+                    );
+                    object.insert("ordered_steps_inline".to_string(), json!(true));
+                }
+            }
+        }
+        Ok(result)
     }
 
     fn index_repo(&self, args: &Map<String, Value>) -> Result<Value, ToolCallError> {
@@ -1967,6 +2723,13 @@ impl McpServer {
         let (documents, document_metrics) =
             retrieval_documents_for_context_pack(&store, &task, &seeds)?;
         let document_paths = retrieval_document_paths(&documents);
+        let local_flow_packet_handles = Self::context_pack_local_flow_packet_handles(
+            &store,
+            &document_paths,
+            response_limit,
+            &repo_root,
+            &db_path,
+        )?;
         let (sources, source_metrics) =
             load_sources_for_paths(&repo_root, &document_paths).map_err(ToolCallError::from)?;
         let mut config = RetrievalFunnelConfig::default();
@@ -2044,6 +2807,14 @@ impl McpServer {
             "staged_availability".to_string(),
             staged_availability.clone(),
         );
+        packet.metadata.insert(
+            "local_flow_packet_handles".to_string(),
+            Value::Array(local_flow_packet_handles.clone()),
+        );
+        packet.metadata.insert(
+            "local_flow_packet_handle_count".to_string(),
+            json!(local_flow_packet_handles.len()),
+        );
         let (task_intent, task_profile, retrieval_plan) = plan_task_retrieval(&task);
 
         if response_mode == "verbose" || response_mode == "explain" {
@@ -2060,6 +2831,12 @@ impl McpServer {
                 "retrieval_plan_summary": retrieval_plan.summary_json(),
                 "db_lifecycle_read": mcp_db_lifecycle_preflight_json(&preflight),
                 "packet": packet,
+                "local_flow_packet_handles": local_flow_packet_handles,
+                "local_flow_packet_handle_resolution": {
+                    "tool": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+                    "arguments_required": ["repo", "db_path", "packet_id"],
+                    "ordered_steps_require_explicit_opt_in": true
+                },
                 "funnel_trace": result.trace.iter().map(retrieval_trace_stage_json).collect::<Vec<_>>(),
                 "vector_candidate_diagnostics": vector_candidate_diagnostics,
                 "nuance_rescue_diagnostics": nuance_rescue_diagnostics,
@@ -2104,6 +2881,18 @@ impl McpServer {
         );
         if let Some(object) = compact.as_object_mut() {
             object.insert("read_path_metrics".to_string(), read_path_metrics);
+            object.insert(
+                "local_flow_packet_handles".to_string(),
+                Value::Array(local_flow_packet_handles),
+            );
+            object.insert(
+                "local_flow_packet_handle_resolution".to_string(),
+                json!({
+                    "tool": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+                    "arguments_required": ["repo", "db_path", "packet_id"],
+                    "ordered_steps_require_explicit_opt_in": true
+                }),
+            );
         }
         mcp_attach_compact_rtds_freshness_fields(
             &mut compact,
@@ -2396,11 +3185,23 @@ impl McpServer {
                 "status": "ok",
                 "phase": PHASE,
                 "capability_model": {
-                    "source_of_truth": "language_frontends.capabilities",
+                    "source_of_truth": "language_frontends.capabilities_and_scoped_readiness",
+                    "authoritative_fields": [
+                        "language_frontends.capabilities",
+                        "language_frontends.scoped_readiness"
+                    ],
                     "old_tiers_backward_compatible": true,
                     "old_tier_alone_drives_proof": false,
                     "old_tier_alone_drives_linter_blocking": false,
-                    "promotion_gate": "reports/audit/artifacts/pre_mvp4_4_full_language_frontends/promotion_gate_contract.json"
+                    "promotion_gate": "mvp4_3l_all_language_static_flow_readiness",
+                    "promotion_gate_contract": {
+                        "gate_id": "mvp4_3l_all_language_static_flow_readiness",
+                        "contract_id": "mvp4_3l_all_language_static_flow_readiness_v3",
+                        "runner": "mvp4_language_readiness",
+                        "manifest": "fixtures/mvp4_micro_flow_oracles/manifest.json",
+                        "public_contract": "docs/language-frontends.md#scoped-tier-5-mvp4-readiness",
+                        "manifest_validation_authorizes_readiness": false
+                    }
                 },
                 "capability_flags": LANGUAGE_CAPABILITY_FLAGS,
                 "capability_status_values": LANGUAGE_CAPABILITY_STATUS_VALUES,
@@ -2858,6 +3659,14 @@ fn tool_definition(name: &str) -> Value {
             "Build a compact graph/source verified context packet.",
             context_pack_schema(),
         ),
+        MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME => (
+            "Query persisted local-flow packets with exact bounded filters; compact rows omit packet bodies and ordered steps.",
+            query_local_flow_packets_schema(),
+        ),
+        MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME => (
+            "Open one persisted local-flow packet by exact id; packet body is explicit and ordered steps require opt-in.",
+            open_local_flow_packet_schema(),
+        ),
         "codegraph.trace_path" | "codegraph.explain_path" => (
             "Trace and explain exact graph paths between two entities.",
             path_schema(),
@@ -2970,6 +3779,25 @@ fn output_schema_for_tool(name: &str) -> Value {
                 json!({"type": "string"}),
             );
             properties.insert("vector_audit_status".to_string(), json!({"type": "string"}));
+            properties.insert(
+                "local_flow_packet_handles".to_string(),
+                json!({"type": "array"}),
+            );
+            properties.insert(
+                "local_flow_packet_handle_resolution".to_string(),
+                json!({"type": "object"}),
+            );
+        }
+        MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME => {
+            properties.insert("packet_layer_status".to_string(), json!({"type": "string"}));
+            properties.insert("packet_layer".to_string(), json!({"type": "object"}));
+            properties.insert("query".to_string(), json!({"type": "object"}));
+            properties.insert("result_count".to_string(), json!({"type": "integer"}));
+            properties.insert("results".to_string(), json!({"type": "array"}));
+        }
+        MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME => {
+            properties.insert("packet_layer_status".to_string(), json!({"type": "string"}));
+            properties.insert("packet".to_string(), json!({"type": "object"}));
         }
         "codegraph.status" => {
             properties.insert("safe_to_query".to_string(), json!({"type": "boolean"}));
@@ -3005,6 +3833,14 @@ fn output_schema_for_tool(name: &str) -> Value {
             properties.insert(
                 "mvp4_local_flow_packet_status".to_string(),
                 json!({"type": "string"}),
+            );
+            properties.insert(
+                "mvp4_local_flow_packets".to_string(),
+                json!({"type": "object"}),
+            );
+            properties.insert(
+                "mvp4_local_flow_packet_rows".to_string(),
+                json!({"type": "integer"}),
             );
             properties.insert(
                 "core_graph_micro_edge_availability_separated".to_string(),
@@ -3293,6 +4129,71 @@ fn status_schema() -> Value {
         properties.insert(
             "vector_audit_artifact".to_string(),
             json!({"type": "string", "description": "Optional diagnostic-only vector audit artifact path for staged availability inspection."}),
+        );
+    }
+    schema
+}
+
+fn query_local_flow_packets_schema() -> Value {
+    let mut schema = repo_schema(Vec::new());
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for (name, description) in [
+            ("file", "Exact repository-relative source path."),
+            ("path", "Alias for file."),
+            (
+                "function",
+                "Exact/substring function entity or frame query.",
+            ),
+            ("symbol", "Alias for function."),
+            ("packet_id", "Exact persisted packet id."),
+            ("proof_status", "Exact persisted proof-status value."),
+            ("proof_strength", "Exact persisted proof-strength value."),
+            (
+                "language",
+                "Exact persisted language id; no language is selected by default.",
+            ),
+        ] {
+            properties.insert(
+                name.to_string(),
+                json!({"type": "string", "description": description}),
+            );
+        }
+        properties.insert(
+            "source_role".to_string(),
+            json!({
+                "type": "string",
+                "enum": ["production", "test", "mock", "mixed", "unknown"],
+                "default": "production",
+                "description": "Exact source-role filter; defaults to production."
+            }),
+        );
+        properties.insert(
+            "limit".to_string(),
+            json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT,
+                "default": DEFAULT_RESULT_LIMIT
+            }),
+        );
+    }
+    schema
+}
+
+fn open_local_flow_packet_schema() -> Value {
+    let mut schema = repo_schema(vec![(
+        "packet_id",
+        "string",
+        "Exact persisted local-flow packet id.",
+    )]);
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "include_ordered_steps".to_string(),
+            json!({
+                "type": "boolean",
+                "default": false,
+                "description": "Explicitly expand dict_v1 into ordered steps."
+            }),
         );
     }
     schema
@@ -5136,7 +6037,12 @@ fn mcp_validate_edit_push_local_flow_packet_integrity_findings(
             "claimable local micro-flow packet has no packet provenance",
         )?;
     }
-    if packet.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION {
+    if packet.extraction_version
+        != mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+            &packet.language,
+            &packet.file_id,
+        )
+    {
         push(
             CG_MVP4_3_PACKET_STALE_SOURCE_FACT,
             "packet extraction version does not match the current MVP4.3 contract",
@@ -5251,7 +6157,6 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
         return Ok(());
     }
     let relation_label = edge.relation_kind.trim().to_ascii_uppercase();
-    let expected_endpoints = mvp4_2_micro_edge_endpoint_kinds(relation_kind);
     let head = nodes_by_id.get(&edge.source_micro_node_id);
     let tail = nodes_by_id.get(&edge.target_micro_node_id);
     let relation_span = edge
@@ -5310,30 +6215,52 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
     let Some(tail) = tail else {
         return Ok(());
     };
-    if let Some((expected_head_kinds, expected_tail_kinds)) = expected_endpoints {
-        if !expected_head_kinds
+    let head_kind = mcp_micro_node_kind_from_storage(&head.micro_kind);
+    let tail_kind = mcp_micro_node_kind_from_storage(&tail.micro_kind);
+    let head_kind_authorized = head_kind.is_some_and(|kind| {
+        capability
+            .endpoint_pairs
             .iter()
-            .any(|kind| kind.as_str() == head.micro_kind)
-        {
-            push(
-                CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
-                &format!(
-                    "persisted {relation_label} head endpoint kind `{}` is not authorized for this relation",
-                    head.micro_kind
-                ),
-                relation_span_present,
-                provenance_present,
-            )?;
-        }
-        if !expected_tail_kinds
+            .any(|pair| pair.head == kind)
+    });
+    let tail_kind_authorized = tail_kind.is_some_and(|kind| {
+        capability
+            .endpoint_pairs
             .iter()
-            .any(|kind| kind.as_str() == tail.micro_kind)
+            .any(|pair| pair.tail == kind)
+    });
+    if !head_kind_authorized {
+        push(
+            CG_MVP4_2_MICRO_EDGE_INVALID_HEAD_KIND,
+            &format!(
+                "persisted {relation_label} head endpoint kind `{}` is not authorized for this relation",
+                head.micro_kind
+            ),
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if !tail_kind_authorized {
+        push(
+            CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
+            &format!(
+                "persisted {relation_label} tail endpoint kind `{}` is not authorized for this relation",
+                tail.micro_kind
+            ),
+            relation_span_present,
+            provenance_present,
+        )?;
+    }
+    if let (Some(head_kind), Some(tail_kind)) = (head_kind, tail_kind) {
+        if head_kind_authorized
+            && tail_kind_authorized
+            && !capability.supports_endpoint_pair(head_kind, tail_kind)
         {
             push(
                 CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND,
                 &format!(
-                    "persisted {relation_label} tail endpoint kind `{}` is not authorized for this relation",
-                    tail.micro_kind
+                    "persisted {relation_label} endpoint pair `{} -> {}` is not directionally authorized for this relation",
+                    head.micro_kind, tail.micro_kind
                 ),
                 relation_span_present,
                 provenance_present,
@@ -5349,21 +6276,28 @@ fn mcp_validate_edit_push_micro_edge_integrity_findings(
             provenance_present,
         )?;
     }
-    if head.function_entity_id != tail.function_entity_id {
+    let (cross_function, edge_head_mismatch) = mcp_micro_edge_ownership_violations(
+        capability.ownership_policy,
+        edge.function_entity_id.as_deref(),
+        head.function_entity_id.as_deref(),
+        tail.function_entity_id.as_deref(),
+    );
+    if cross_function {
         push(
             CG_MVP4_2_MICRO_EDGE_CROSS_FUNCTION,
             &format!(
-                "persisted {relation_label} endpoints do not share the same function identity domain"
+                "persisted {relation_label} endpoints violate the `{}` function ownership policy",
+                capability.ownership_policy.as_str()
             ),
             relation_span_present,
             provenance_present,
         )?;
     }
-    if edge.function_entity_id != head.function_entity_id {
+    if edge_head_mismatch {
         push(
             CG_MVP4_2_LOCAL_RETURNS_TO_WRONG_ENCLOSING_FUNCTION,
             &format!(
-                "persisted {relation_label} edge does not point to the nearest enclosing function identity"
+                "persisted {relation_label} edge ownership domain does not match its head/caller endpoint ownership domain"
             ),
             relation_span_present,
             provenance_present,
@@ -5592,7 +6526,7 @@ fn mcp_validate_edit_micro_edge_layer_status_section(
         "node_table_available": node_table_available,
         "core_graph_micro_edge_availability_separated": true,
         "micro_node_availability_separate": true,
-        "local_flow_packet_availability": "not_applicable",
+        "local_flow_packet_availability": "reported_separately",
         "cap_omission_count": delta.micro_edge_cap_omissions,
         "truncated": delta.micro_edge_cap_omissions > 0 || status == "truncated",
         "lifecycle_change": status_change,
@@ -6327,7 +7261,7 @@ fn mcp_validate_edit_response(
     })?;
     mcp_validate_edit_attach_micro_edge_sections(&mut full_packet);
     let mut validation_packet = match mode {
-        "agent-json" => packet.compact_agent_json(3),
+        "agent-json" => mcp_compact_validation_packet(packet, 3),
         "explain" | "audit-json" => full_packet.clone(),
         _ => full_packet.clone(),
     };
@@ -6773,7 +7707,7 @@ fn mcp_validate_edit_default_validation_layer_section(key: &str) -> Value {
             "ready": false,
             "core_graph_micro_edge_availability_separated": true,
             "micro_node_availability_separate": true,
-            "local_flow_packet_availability": "not_applicable",
+            "local_flow_packet_availability": "reported_separately",
             "cap_omission_count": 0,
             "truncated": false,
             "flow_proof_activated": false,
@@ -6924,7 +7858,7 @@ fn mcp_validate_edit_apply_output_budget(
     if encoded_len <= max_output_bytes {
         return Ok(value);
     }
-    let compact_packet = packet.compact_agent_json(1);
+    let compact_packet = mcp_compact_validation_packet(packet, 1);
     if let Some(object) = value.as_object_mut() {
         object.insert("output_truncated".to_string(), json!(true));
         object.insert("max_output_bytes".to_string(), json!(max_output_bytes));
@@ -7135,6 +8069,27 @@ fn mcp_context_pack_language_capability_context_json(
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or_default();
+    let packet_language_registry = mcp_local_flow_packet_language_registry_json();
+    let active_packet_language_count = packet_language_registry["active_packet_language_count"]
+        .as_u64()
+        .unwrap_or_default();
+    let typescript_packet_handles_preserved = packet_language_registry
+        ["typescript_packet_handles_preserved"]
+        .as_bool()
+        .unwrap_or(false);
+    let compact_packet_language_registry = json!({
+        "active_packet_languages": packet_language_registry["active_packet_languages"],
+        "active_packet_language_count": active_packet_language_count,
+        "active_non_typescript_packet_language_count": active_packet_language_count.saturating_sub(if typescript_packet_handles_preserved { 1 } else { 0 }),
+        "inactive_packet_language_count": 0,
+        "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+        "selection_state": packet_language_registry["selection_state"],
+        "typescript_packet_handles_preserved": typescript_packet_handles_preserved,
+        "promotion_gate": "mvp4_3l_all_language_static_flow_readiness",
+        "readiness_contract": "mvp4_3l_all_language_static_flow_readiness_v3",
+        "capability_details_resource": "codegraph://languages",
+        "summary_only": true,
+    });
     json!({
         "status": if capability_metadata.get("status").and_then(Value::as_str) == Some("ok") {
             "available"
@@ -7180,12 +8135,23 @@ fn mcp_context_pack_language_capability_context_json(
             }
         ],
         "local_flow_packet_boundary": {
-            "active_languages": mvp4_3_local_micro_flow_packet_active_languages(),
-            "typescript_packet_handles_preserved": true,
-            "non_typescript_packet_support": "not_implemented_without_explicit_exact_gate",
+            "active_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "packet_language_registry": compact_packet_language_registry,
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_support": MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT,
+            "inactive_packet_overclaim_count": 0,
+            "non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
             "non_typescript_packet_overclaim_count": 0,
             "handles_do_not_create_proof": true,
-            "context_entry_command_activated": false
+            "context_entry_command_activated": false,
+            "mcp_packet_query_open_activated": true,
+            "mcp_handle_resolution": {
+                "tool": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+                "ordered_steps_require_explicit_opt_in": true
+            }
         },
         "compact_output_contract": {
             "evidence_first": true,
@@ -7194,6 +8160,76 @@ fn mcp_context_pack_language_capability_context_json(
             "candidate_vector_nuance_evidence_not_graph_proof": true
         }
     })
+}
+
+fn mcp_local_flow_packet_language_set_summary(requested_active_languages: &[&str]) -> Value {
+    let mut requested = requested_active_languages
+        .iter()
+        .map(|language| language.trim().to_ascii_lowercase())
+        .filter(|language| !language.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut active_packet_languages = Vec::new();
+    for capability in MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES {
+        if requested.remove(capability.language) {
+            active_packet_languages.push(capability.language.to_string());
+        }
+    }
+    active_packet_languages.extend(requested);
+    let default_packet_query_language = match active_packet_languages.as_slice() {
+        [language] => Value::String(language.clone()),
+        _ => Value::Null,
+    };
+    let selection_state = match active_packet_languages.len() {
+        0 => "no_active_packet_language",
+        1 => "exactly_one_active_packet_language",
+        _ => "multiple_active_packet_languages_no_default",
+    };
+    let typescript_packet_handles_preserved = active_packet_languages
+        .iter()
+        .any(|language| language == "typescript");
+    json!({
+        "active_packet_languages": active_packet_languages,
+        "active_packet_language_count": active_packet_languages.len(),
+        "default_packet_query_language": default_packet_query_language,
+        "selection_state": selection_state,
+        "typescript_packet_handles_preserved": typescript_packet_handles_preserved,
+    })
+}
+
+fn mcp_local_flow_packet_language_registry_json() -> Value {
+    let active_languages = mvp4_3_local_micro_flow_packet_active_languages();
+    let mut summary = mcp_local_flow_packet_language_set_summary(&active_languages);
+    let active_capabilities = active_languages
+        .iter()
+        .map(|language| {
+            let capability = mvp4_3_local_micro_flow_packet_language_capability(language);
+            json!({
+                "language": capability.language,
+                "activation_status": capability.activation_status.as_str(),
+                "adapter_id": capability.adapter_id,
+                "declared_static_scope": capability.declared_static_scope,
+                "packet_kind": capability.packet_kind,
+                "extraction_version": capability.extraction_version,
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(object) = summary.as_object_mut() {
+        object.insert(
+            "default_packet_query_language".to_string(),
+            mvp4_3_default_local_micro_flow_packet_query_language()
+                .map(Value::from)
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "active_packet_language_capabilities".to_string(),
+            Value::Array(active_capabilities),
+        );
+        object.insert(
+            "registry_source".to_string(),
+            json!("MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES"),
+        );
+    }
+    summary
 }
 
 fn mcp_context_pack_source_language_capability_json(
@@ -8827,8 +9863,6 @@ fn mcp_enforce_context_pack_compact_budget(value: &mut Value, max_output_bytes: 
             }
             let mut removed = false;
             for key in [
-                "vector_candidate_diagnostics",
-                "nuance_rescue_diagnostics",
                 "proof",
                 "retrieval_plan_summary",
                 "task_profile",
@@ -8841,6 +9875,8 @@ fn mcp_enforce_context_pack_compact_budget(value: &mut Value, max_output_bytes: 
                 "sidecar_statuses",
                 "stale_non_proof_reasons",
                 "recovery_commands",
+                "vector_candidate_diagnostics",
+                "nuance_rescue_diagnostics",
             ] {
                 if mcp_context_pack_remove_field(value, key) {
                     truncated_sections.push(key.to_string());
@@ -8850,6 +9886,11 @@ fn mcp_enforce_context_pack_compact_budget(value: &mut Value, max_output_bytes: 
                 }
             }
             if removed {
+                continue;
+            }
+            if mcp_context_pack_pop_array_preserve_one(value, "local_flow_packet_handles") {
+                truncated_sections.push("local_flow_packet_handles".to_string());
+                omitted_count = omitted_count.saturating_add(1);
                 continue;
             }
             if mcp_context_pack_pop_array_preserve_one(value, "symbols") {
@@ -12554,7 +13595,7 @@ mod tests {
             }
             assert_eq!(
                 packet["micro_edge_layer_status"]["local_flow_packet_availability"].as_str(),
-                Some("not_applicable")
+                Some("reported_separately")
             );
             assert_eq!(
                 packet["micro_flow_packet_delta"]["ordered_steps_inline"].as_bool(),
@@ -13012,6 +14053,143 @@ mod tests {
         fs::remove_dir_all(profile_root).expect("cleanup profile");
     }
 
+    fn mcp_js_family_static_call_validate_edit(extension: &str, invocation: &str) -> Value {
+        let repo = fixture_repo();
+        fs::write(repo.join("package.json"), "{\n  \"type\": \"module\"\n}\n")
+            .expect("write package metadata");
+        let service_relative = format!("src/service.{extension}");
+        let consumer_relative = format!("src/consumer.{extension}");
+        fs::write(
+            repo.join(&service_relative),
+            "export function removedTarget() {\n  return 1;\n}\n\nexport function keptTarget() {\n  return 2;\n}\n",
+        )
+        .expect("write service source");
+        fs::write(
+            repo.join(&consumer_relative),
+            format!(
+                "import {{ removedTarget, keptTarget }} from './service';\n\nexport function caller() {{\n  const rendered = {invocation};\n  return [rendered, keptTarget()].join(',');\n}}\n"
+            ),
+        )
+        .expect("write consumer source");
+
+        let profile_id = FIXTURE_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let profile_root = repo.parent().expect("repo parent").join(format!(
+            "app-validate-edit-js-family-{extension}-{profile_id}"
+        ));
+        if profile_root.exists() {
+            fs::remove_dir_all(&profile_root).expect("remove stale profile");
+        }
+        fs::create_dir_all(&profile_root).expect("profile root");
+        let db_path = profile_root.join(MCP_AGENT_USE_PROFILE_DB_FILE_NAME);
+        let server = McpServer::new(McpServerConfig::for_repo(&repo).with_db_path(&db_path));
+
+        ok(server.call_tool(
+            "codegraph.index_repo",
+            &json!({"repo": path_string(&repo), "db_path": path_string(&db_path)}),
+        ));
+        fs::write(
+            repo.join(&service_relative),
+            "export function keptTarget() {\n  return 3;\n}\n",
+        )
+        .expect("remove target source");
+
+        let response = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 81,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_VALIDATE_EDIT_TOOL_NAME,
+                    "arguments": {
+                        "repo": path_string(&repo),
+                        "db_path": path_string(&db_path),
+                        "changed_files": [service_relative],
+                        "mode": "agent-json",
+                        "fail_on_blocking": true
+                    }
+                }
+            }))
+            .expect("tools/call response");
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        let packet = response["result"]["structuredContent"].clone();
+        assert_eq!(
+            packet["db_path"].as_str(),
+            Some(path_string(&db_path).as_str()),
+            "{extension}: {packet}"
+        );
+        assert_eq!(
+            packet["external_db_used"].as_bool(),
+            Some(true),
+            "{extension}: {packet}"
+        );
+        assert_eq!(
+            packet["no_dot_codegraph_fallback"].as_bool(),
+            Some(true),
+            "{extension}: {packet}"
+        );
+        assert_eq!(
+            packet["normal_dot_codegraph_mutated"].as_bool(),
+            Some(false),
+            "{extension}: {packet}"
+        );
+        assert!(
+            !repo.join(".codegraph").exists(),
+            "{extension} MCP validation must not create repo-local .codegraph"
+        );
+
+        drop(server);
+        fs::remove_dir_all(repo).expect("cleanup repo");
+        fs::remove_dir_all(profile_root).expect("cleanup profile");
+        packet
+    }
+
+    #[test]
+    fn mcp_validate_edit_js_family_static_import_calls_include_template_interpolation() {
+        for (extension, invocation) in [
+            ("js", "removedTarget()"),
+            ("jsx", "removedTarget()"),
+            ("ts", "removedTarget()"),
+            ("tsx", "`value=${removedTarget()}`"),
+        ] {
+            let packet = mcp_js_family_static_call_validate_edit(extension, invocation);
+            assert_eq!(
+                packet["status"].as_str(),
+                Some("blocking_graph_error"),
+                "{extension}: {packet}"
+            );
+            assert_eq!(
+                packet["hard_interrupt_available"].as_bool(),
+                Some(true),
+                "{extension}: {packet}"
+            );
+            assert_eq!(
+                packet["must_fix_before_continuing"].as_bool(),
+                Some(true),
+                "{extension}: {packet}"
+            );
+            let call_error = packet["hard_interrupt"]["errors"]
+                .as_array()
+                .and_then(|errors| {
+                    errors
+                        .iter()
+                        .find(|error| error["relation_kind"].as_str() == Some("CALLS"))
+                })
+                .unwrap_or_else(|| {
+                    panic!("{extension} must retain a source-spanned CALLS blocker: {packet}")
+                });
+            assert_eq!(
+                call_error["validation_rule_id"].as_str(),
+                Some(CG_MVP3_CALLS_DANGLING_TARGET),
+                "{extension}: {call_error}"
+            );
+            assert_eq!(
+                call_error["source_span"]["repo_relative_path"].as_str(),
+                Some(format!("src/consumer.{extension}").as_str()),
+                "{extension}: {call_error}"
+            );
+        }
+    }
+
     #[test]
     fn mcp_validate_edit_ignores_deleted_callee_mentions_in_comments_and_strings() {
         let repo = fixture_repo();
@@ -13084,6 +14262,7 @@ mod tests {
             packet["normal_dot_codegraph_mutated"].as_bool(),
             Some(false)
         );
+        assert!(!repo.join(".codegraph").exists());
 
         fs::remove_dir_all(repo).expect("cleanup repo");
         fs::remove_dir_all(profile_root).expect("cleanup profile");
@@ -14257,6 +15436,41 @@ mod tests {
             .any(|limitation| limitation
                 .as_str()
                 .is_some_and(|text| text.contains("actually runs and records provenance"))));
+        let assert_scoped_packet_support = |frontend: &Value, proof_marker: &str| {
+            assert!(frontend["capabilities"]
+                .as_array()
+                .expect("mcp frontend capabilities")
+                .iter()
+                .any(|capability| capability["flag"].as_str()
+                    == Some("local_flow_packet_supported")
+                    && capability["status"].as_str() == Some("not_implemented")
+                    && capability["scope"].as_str() == Some("language_frontend")));
+            let scoped_readiness = frontend["scoped_readiness"]
+                .as_array()
+                .expect("mcp scoped readiness");
+            assert_eq!(
+                scoped_readiness
+                    .iter()
+                    .filter(|readiness| readiness["scope"].as_str()
+                        == Some("same_file_intraprocedural"))
+                    .count(),
+                4,
+                "Tier 5 must expose exactly four same-file intraprocedural readiness rows"
+            );
+            assert!(scoped_readiness
+                .iter()
+                .any(|readiness| readiness["flag"].as_str()
+                    == Some("local_flow_packet_supported")
+                    && readiness["status"].as_str() == Some("supported_exact")
+                    && readiness["scope"].as_str() == Some("same_file_intraprocedural")));
+            assert!(frontend["known_limitations"]
+                .as_array()
+                .expect("mcp frontend limitations")
+                .iter()
+                .any(|limitation| limitation
+                    .as_str()
+                    .is_some_and(|text| text.contains(proof_marker))));
+        };
         let mcp_tsx = language_json["frontends"]
             .as_array()
             .expect("mcp frontends")
@@ -14282,13 +15496,7 @@ mod tests {
                 "TSX capability {flag} must stay {status} at language_frontend scope"
             );
         }
-        assert!(mcp_tsx["known_limitations"]
-            .as_array()
-            .expect("mcp tsx limitations")
-            .iter()
-            .any(|limitation| limitation
-                .as_str()
-                .is_some_and(|text| text.contains("not_implemented for TSX"))));
+        assert_scoped_packet_support(mcp_tsx, "same-file intraprocedural .tsx ParserFactsV1");
         let mcp_javascript = language_json["frontends"]
             .as_array()
             .expect("mcp frontends")
@@ -14323,13 +15531,7 @@ mod tests {
             .any(|limitation| limitation
                 .as_str()
                 .is_some_and(|text| text.contains("diagnostic evidence"))));
-        assert!(mcp_javascript["known_limitations"]
-            .as_array()
-            .expect("mcp javascript limitations")
-            .iter()
-            .any(|limitation| limitation
-                .as_str()
-                .is_some_and(|text| text.contains("not_implemented for JavaScript"))));
+        assert_scoped_packet_support(mcp_javascript, ".js/.mjs/.cjs ParserFactsV1");
         let mcp_jsx = language_json["frontends"]
             .as_array()
             .expect("mcp frontends")
@@ -14364,20 +15566,168 @@ mod tests {
             .any(|limitation| limitation
                 .as_str()
                 .is_some_and(|text| text.contains("dynamic props"))));
-        assert!(mcp_jsx["known_limitations"]
+        assert_scoped_packet_support(mcp_jsx, ".jsx ParserFactsV1");
+        let mcp_python = language_json["frontends"]
             .as_array()
-            .expect("mcp jsx limitations")
+            .expect("mcp frontends")
             .iter()
-            .any(|limitation| limitation
-                .as_str()
-                .is_some_and(|text| text.contains("not_implemented for JSX"))));
+            .find(|frontend| frontend["language_id"].as_str() == Some("python"))
+            .expect("mcp python frontend");
+        assert_eq!(
+            mcp_python["support_tier"].as_str(),
+            Some("tier5_dataflow_security_test_impact")
+        );
+        assert_scoped_packet_support(
+            mcp_python,
+            ".py ParserFactsV1 local-flow packets are supported only for the same-file intraprocedural scoped contract",
+        );
+        let mcp_go = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("go"))
+            .expect("mcp go frontend");
+        assert_scoped_packet_support(
+            mcp_go,
+            ".go ParserFactsV1 local-flow packets are supported only for the same-file intraprocedural scoped contract",
+        );
+        let mcp_rust = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("rust"))
+            .expect("mcp rust frontend");
+        assert_scoped_packet_support(
+            mcp_rust,
+            ".rs ParserFactsV1 local-flow packets are supported only for the same-file intraprocedural scoped contract",
+        );
+        let mcp_java = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("java"))
+            .expect("mcp java frontend");
+        assert_scoped_packet_support(
+            mcp_java,
+            ".java ParserFactsV1 local-flow packets are supported only for the same-file method-local intraprocedural scoped contract",
+        );
+        let mcp_csharp = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("csharp"))
+            .expect("mcp csharp frontend");
+        assert_scoped_packet_support(
+            mcp_csharp,
+            ".cs ParserFactsV1 local-flow packets are supported only for the same-file method-local intraprocedural scoped contract",
+        );
+        let mcp_c = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("c"))
+            .expect("mcp c frontend");
+        assert_eq!(
+            mcp_c["support_tier"].as_str(),
+            Some("tier5_dataflow_security_test_impact")
+        );
+        assert_scoped_packet_support(
+            mcp_c,
+            ".c/.h ParserFactsV1 local-flow packets are supported only for the same-file function-local intraprocedural scoped contract",
+        );
+        for marker in ["compile database", "macro expansion", "function pointer"] {
+            assert!(mcp_c["known_limitations"]
+                .as_array()
+                .expect("mcp c limitations")
+                .iter()
+                .any(|limitation| limitation
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))));
+        }
+        let mcp_cpp = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("cpp"))
+            .expect("mcp cpp frontend");
+        assert_eq!(
+            mcp_cpp["support_tier"].as_str(),
+            Some("tier5_dataflow_security_test_impact")
+        );
+        assert_scoped_packet_support(
+            mcp_cpp,
+            ".cc/.cpp/.cxx/.hpp/.hh/.hxx ParserFactsV1 local-flow packets are supported only for the same-file function-local intraprocedural scoped contract",
+        );
+        for marker in [
+            "compile database",
+            "overload resolution",
+            "ADL",
+            "template instantiation",
+            "macro expansion",
+            "function pointer",
+        ] {
+            assert!(mcp_cpp["known_limitations"]
+                .as_array()
+                .expect("mcp cpp limitations")
+                .iter()
+                .any(|limitation| limitation
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))));
+        }
+        let mcp_ruby = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("ruby"))
+            .expect("mcp ruby frontend");
+        assert_eq!(
+            mcp_ruby["support_tier"].as_str(),
+            Some("tier5_dataflow_security_test_impact")
+        );
+        assert_scoped_packet_support(
+            mcp_ruby,
+            ".rb ParserFactsV1 local-flow packets are supported only for the same-file",
+        );
+        for marker in ["method_missing", "open classes"] {
+            assert!(mcp_ruby["known_limitations"]
+                .as_array()
+                .expect("mcp ruby limitations")
+                .iter()
+                .any(|limitation| limitation
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))));
+        }
+        let mcp_php = language_json["frontends"]
+            .as_array()
+            .expect("mcp frontends")
+            .iter()
+            .find(|frontend| frontend["language_id"].as_str() == Some("php"))
+            .expect("mcp php frontend");
+        assert_eq!(
+            mcp_php["support_tier"].as_str(),
+            Some("tier5_dataflow_security_test_impact")
+        );
+        assert_scoped_packet_support(
+            mcp_php,
+            ".php ParserFactsV1 local-flow packets are supported only for the same-file",
+        );
+        for marker in ["magic methods", "include", "variable functions"] {
+            assert!(mcp_php["known_limitations"]
+                .as_array()
+                .expect("mcp php limitations")
+                .iter()
+                .any(|limitation| limitation
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))));
+        }
         assert!(language_json["frontends"]
             .as_array()
             .expect("mcp frontends")
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("go")
-                    && frontend["support_tier"].as_str() == Some("tier3_calls_caller_callee")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("go capabilities")
@@ -14401,7 +15751,8 @@ mod tests {
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("rust")
-                    && frontend["support_tier"].as_str() == Some("tier3_calls_caller_callee")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("rust capabilities")
@@ -14441,7 +15792,8 @@ mod tests {
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("java")
-                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("java capabilities")
@@ -14457,6 +15809,15 @@ mod tests {
                         .any(|capability| {
                             capability["flag"].as_str() == Some("caller_callee_exact")
                                 && capability["status"].as_str() == Some("requires_compiler")
+                        })
+                    && frontend["known_limitations"]
+                        .as_array()
+                        .expect("java limitations")
+                        .iter()
+                        .any(|limitation| {
+                            limitation
+                                .as_str()
+                                .is_some_and(|text| text.contains("reflection/DI"))
                         })
             }));
         assert!(language_json["frontends"]
@@ -14465,7 +15826,8 @@ mod tests {
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("csharp")
-                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("csharp capabilities")
@@ -14482,6 +15844,15 @@ mod tests {
                             capability["flag"].as_str() == Some("caller_callee_exact")
                                 && capability["status"].as_str() == Some("requires_compiler")
                         })
+                    && frontend["known_limitations"]
+                        .as_array()
+                        .expect("csharp limitations")
+                        .iter()
+                        .any(|limitation| {
+                            limitation
+                                .as_str()
+                                .is_some_and(|text| text.contains("Roslyn semantic model"))
+                        })
             }));
         assert!(language_json["frontends"]
             .as_array()
@@ -14489,7 +15860,8 @@ mod tests {
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("c")
-                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("c capabilities")
@@ -14521,7 +15893,8 @@ mod tests {
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("cpp")
-                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("cpp capabilities")
@@ -14553,7 +15926,8 @@ mod tests {
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("ruby")
-                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("ruby capabilities")
@@ -14585,7 +15959,8 @@ mod tests {
             .iter()
             .any(|frontend| {
                 frontend["language_id"].as_str() == Some("php")
-                    && frontend["support_tier"].as_str() == Some("tier1_syntax_entities")
+                    && frontend["support_tier"].as_str()
+                        == Some("tier5_dataflow_security_test_impact")
                     && frontend["capabilities"]
                         .as_array()
                         .expect("php capabilities")
@@ -14759,13 +16134,58 @@ mod tests {
         assert_eq!(status["graph_proof_available"].as_bool(), Some(true));
         assert!(status["mvp4_micro_edges"].is_object());
         assert_eq!(
+            status["mvp4_micro_edges"]["supported_language_slice"].as_str(),
+            Some("registry_active_source_aware_local_micro_edges_v1")
+        );
+        assert_eq!(
+            status["mvp4_micro_edges"]["supported_relation_slice"].as_str(),
+            Some("registry_active_11_relation_local_micro_edges_v1")
+        );
+
+        assert_eq!(
             status["core_graph_micro_edge_availability_separated"].as_bool(),
             Some(true)
         );
         assert_eq!(
             status["mvp4_micro_edges"]["local_flow_packet_availability"].as_str(),
-            Some("not_applicable")
+            Some("ready")
         );
+        assert_eq!(
+            status["mvp4_local_flow_packet_status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(
+            status["mvp4_local_flow_packets"]["status"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(
+            status["mvp4_local_flow_packets"]["ready"].as_bool(),
+            Some(true)
+        );
+        assert!(status["mvp4_local_flow_packet_rows"]
+            .as_u64()
+            .is_some_and(|rows| rows > 0));
+        let packet_cap_hit_count = status["mvp4_local_flow_packets"]["cap_hit_count"]
+            .as_u64()
+            .expect("packet cap-hit count");
+        let packet_omitted_count = status["mvp4_local_flow_packets"]["omitted_count"]
+            .as_u64()
+            .expect("packet omitted count");
+        assert_eq!(packet_cap_hit_count, 0);
+        assert_eq!(packet_omitted_count, 0);
+        assert_eq!(
+            status["mvp4_local_flow_packets"]["query_tool"].as_str(),
+            Some(MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME)
+        );
+        assert_eq!(
+            status["mvp4_local_flow_packets"]["open_tool"].as_str(),
+            Some(MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME)
+        );
+        assert!(status["staged_availability"]["available_layers"]
+            .as_array()
+            .is_some_and(|layers| layers
+                .iter()
+                .any(|layer| layer.as_str() == Some("mvp4_local_flow_packets"))));
         assert_eq!(
             status["mvp4_micro_edges"]["proof_boundary"]["flow_proof_activated"].as_bool(),
             Some(false)
@@ -15720,6 +17140,50 @@ mod tests {
                 language_capability_context["non_typescript_packet_overclaim_count"].as_u64()
             });
         assert_eq!(non_ts_packet_overclaim, Some(0));
+        let packet_boundary = &language_capability_context["local_flow_packet_boundary"];
+        assert_eq!(
+            packet_boundary["inactive_packet_support"].as_str(),
+            Some("not_implemented_outside_registry_active_source_gate")
+        );
+        assert_eq!(
+            packet_boundary["non_typescript_packet_support"].as_str(),
+            Some("registry_active_source_aware_exact_capability_only")
+        );
+        assert_eq!(
+            packet_boundary["handles_do_not_create_proof"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet_boundary["active_packet_languages"],
+            json!([
+                "javascript",
+                "jsx",
+                "typescript",
+                "tsx",
+                "python",
+                "go",
+                "rust",
+                "java",
+                "csharp",
+                "c",
+                "cpp",
+                "ruby",
+                "php"
+            ])
+        );
+        assert!(packet_boundary["default_packet_query_language"].is_null());
+        assert_eq!(
+            packet_boundary["typescript_packet_handles_preserved"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            packet_boundary["inactive_packet_overclaim_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            packet_boundary["context_entry_command_activated"].as_bool(),
+            Some(false)
+        );
         assert!(
             language_capability_context["proof_boundary"]
                 ["capability_metadata_does_not_create_graph_proof"]
@@ -15778,6 +17242,43 @@ mod tests {
         assert!(compact["rtds_freshness"]["agent_json_compacted"]
             .as_bool()
             .unwrap_or(false));
+        let packet_handles = compact["local_flow_packet_handles"]
+            .as_array()
+            .expect("budgeted packet handles");
+        assert_eq!(packet_handles.len(), 1);
+        assert_eq!(
+            packet_handles[0]["mcp_expansion"]["tool"].as_str(),
+            Some(MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME)
+        );
+        assert!(packet_handles[0]["mcp_expansion"]["arguments"]["packet_id"]
+            .as_str()
+            .is_some());
+        let packet_registry = &compact["language_capability_context"]["local_flow_packet_boundary"]
+            ["packet_language_registry"];
+        assert_eq!(
+            packet_registry["active_packet_language_count"].as_u64(),
+            Some(13)
+        );
+        assert_eq!(
+            packet_registry["active_non_typescript_packet_language_count"].as_u64(),
+            Some(12)
+        );
+        assert_eq!(
+            packet_registry["inactive_packet_language_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            packet_registry["promotion_gate"].as_str(),
+            Some("mvp4_3l_all_language_static_flow_readiness")
+        );
+        assert_eq!(
+            packet_registry["readiness_contract"].as_str(),
+            Some("mvp4_3l_all_language_static_flow_readiness_v3")
+        );
+        assert_eq!(
+            packet_registry["capability_details_resource"].as_str(),
+            Some("codegraph://languages")
+        );
         fs::remove_dir_all(repo).expect("cleanup");
     }
 
@@ -15946,6 +17447,617 @@ mod tests {
             .all(|candidate| candidate["graph_proof"].as_bool() == Some(false)));
 
         fs::remove_dir_all(repo).expect("cleanup");
+    }
+
+    #[test]
+    fn mcp_packet_language_summary_handles_zero_one_and_multiple_active_sets() {
+        let empty = mcp_local_flow_packet_language_set_summary(&[]);
+        assert_eq!(empty["active_packet_languages"], json!([]));
+        assert!(empty["default_packet_query_language"].is_null());
+        assert_eq!(
+            empty["typescript_packet_handles_preserved"].as_bool(),
+            Some(false)
+        );
+
+        let one = mcp_local_flow_packet_language_set_summary(&["typescript"]);
+        assert_eq!(one["active_packet_languages"], json!(["typescript"]));
+        assert_eq!(
+            one["default_packet_query_language"].as_str(),
+            Some("typescript")
+        );
+
+        let multiple =
+            mcp_local_flow_packet_language_set_summary(&["python", "typescript", "python"]);
+        assert_eq!(
+            multiple["active_packet_languages"],
+            json!(["typescript", "python"])
+        );
+        assert!(multiple["default_packet_query_language"].is_null());
+        assert_eq!(
+            multiple["selection_state"].as_str(),
+            Some("multiple_active_packet_languages_no_default")
+        );
+
+        let current = mcp_local_flow_packet_language_registry_json();
+        assert_eq!(
+            current["active_packet_languages"],
+            json!([
+                "javascript",
+                "jsx",
+                "typescript",
+                "tsx",
+                "python",
+                "go",
+                "rust",
+                "java",
+                "csharp",
+                "c",
+                "cpp",
+                "ruby",
+                "php"
+            ])
+        );
+        assert_eq!(current["active_packet_language_count"].as_u64(), Some(13));
+        assert!(current["default_packet_query_language"].is_null());
+        assert_eq!(
+            current["selection_state"].as_str(),
+            Some("multiple_active_packet_languages_no_default")
+        );
+        assert_eq!(
+            current["typescript_packet_handles_preserved"].as_bool(),
+            Some(true)
+        );
+        let capabilities = current["active_packet_language_capabilities"]
+            .as_array()
+            .expect("active packet language capabilities");
+        assert_eq!(capabilities.len(), 13);
+        assert!(capabilities.iter().all(|capability| {
+            capability["activation_status"].as_str() == Some("exact_capable")
+        }));
+        assert_eq!(
+            capabilities[2]["adapter_id"].as_str(),
+            Some("legacy_typescript_v1")
+        );
+        assert!(capabilities
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != 2)
+            .all(|(_, capability)| capability["adapter_id"].as_str() == Some("parser_facts_v1")));
+        for (language, path) in [
+            ("java", "src/App.java"),
+            ("csharp", "src/App.cs"),
+            ("c", "src/App.c"),
+            ("c", "include/App.h"),
+            ("cpp", "src/App.cc"),
+            ("cpp", "src/App.cpp"),
+            ("cpp", "src/App.cxx"),
+            ("cpp", "include/App.hpp"),
+            ("cpp", "include/App.hh"),
+            ("cpp", "include/App.hxx"),
+            ("ruby", "src/App.rb"),
+            ("php", "src/App.php"),
+        ] {
+            let capability = capabilities
+                .iter()
+                .find(|capability| capability["language"].as_str() == Some(language))
+                .expect("active ParserFactsV1 packet capability");
+            assert_eq!(
+                capability["extraction_version"].as_str(),
+                Some(
+                    mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                        language, path,
+                    )
+                ),
+                "{language}/{path} registry and source-aware packet identity must agree"
+            );
+            let compact = mcp_context_pack_source_language_capability_json(
+                Some(path),
+                "graph_path",
+                "proof_path_found",
+                true,
+                "exact",
+                "production",
+            );
+            assert_eq!(compact["language"].as_str(), Some(language));
+            assert_eq!(compact["source_role"].as_str(), Some("production"));
+            assert_eq!(compact["claimability"]["graph_proof"].as_bool(), Some(true));
+            assert_eq!(compact["not_graph_proof"].as_bool(), Some(false));
+        }
+    }
+
+    fn local_flow_packet_visibility_summary_fixture(
+        total_rows: u64,
+    ) -> LocalFlowPacketVisibilitySummary {
+        LocalFlowPacketVisibilitySummary {
+            total_rows,
+            rows_by_packet_kind: BTreeMap::from([(
+                "local_micro_flow_packet".to_string(),
+                total_rows,
+            )]),
+            rows_by_proof_status: BTreeMap::from([("flow_proof".to_string(), total_rows)]),
+            rows_by_proof_strength: BTreeMap::from([("flow_proof".to_string(), total_rows)]),
+            rows_by_packet_status: BTreeMap::from([("micro_flow_found".to_string(), total_rows)]),
+            rows_by_language: BTreeMap::from([("typescript".to_string(), total_rows)]),
+            rows_by_source_role: BTreeMap::from([("production".to_string(), total_rows)]),
+            files_represented: total_rows,
+            functions_represented: total_rows,
+            schema_versions: vec![MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION],
+            row_schema_versions: vec![MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION],
+            payload_versions: vec![MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION],
+            extraction_versions: vec![MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string()],
+            exactness_counts: BTreeMap::from([("derived".to_string(), total_rows)]),
+            claimability_counts: BTreeMap::from([("claimable".to_string(), total_rows)]),
+            cap_hit_count: 0,
+            omitted_count: 0,
+            compact_body_bytes: total_rows.saturating_mul(64),
+            audit_body_bytes: total_rows.saturating_mul(128),
+            estimated_payload_bytes: total_rows.saturating_mul(128),
+            sample_limit: 0,
+            sample: Vec::new(),
+            query_plan: vec!["bounded aggregate query".to_string()],
+            default_full_table_scan: false,
+            full_source_body_output: false,
+            ordered_steps_default_inline: false,
+        }
+    }
+
+    #[test]
+    fn mcp_local_flow_packet_lifecycle_states_are_explicit_and_recoverable() {
+        let repo = fixture_repo();
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": path_string(&repo)})));
+        let args = json!({"repo": path_string(&repo)});
+        let (store, preflight) = ok(server
+            .open_store_with_preflight(args.as_object().expect("MCP lifecycle test arguments")));
+
+        let ready = ok(McpServer::mvp4_local_flow_packet_visibility_layer(
+            &preflight,
+            local_flow_packet_visibility_summary_fixture(1),
+            false,
+        ));
+        assert_eq!(ready["status"].as_str(), Some("ready"));
+        assert_eq!(ready["ready"].as_bool(), Some(true));
+        assert_eq!(ready["recovery_action"].as_str(), Some("none"));
+
+        let empty = ok(McpServer::mvp4_local_flow_packet_visibility_layer(
+            &preflight,
+            local_flow_packet_visibility_summary_fixture(0),
+            false,
+        ));
+        assert_eq!(empty["status"].as_str(), Some("not_applicable"));
+        assert_eq!(empty["total_rows"].as_u64(), Some(0));
+
+        let mut truncated_summary = local_flow_packet_visibility_summary_fixture(1);
+        truncated_summary.omitted_count = 2;
+        let truncated = ok(McpServer::mvp4_local_flow_packet_visibility_layer(
+            &preflight,
+            truncated_summary,
+            false,
+        ));
+        assert_eq!(truncated["status"].as_str(), Some("truncated"));
+        assert_eq!(truncated["ready"].as_bool(), Some(false));
+        assert!(truncated["recovery_action"]
+            .as_str()
+            .is_some_and(|value| value.contains("bounded query/open tools")));
+
+        let mut incompatible_summary = local_flow_packet_visibility_summary_fixture(1);
+        incompatible_summary.row_schema_versions =
+            vec![MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION + 1];
+        let incompatible_rows = ok(McpServer::mvp4_local_flow_packet_visibility_layer(
+            &preflight,
+            incompatible_summary,
+            false,
+        ));
+        assert_eq!(incompatible_rows["status"].as_str(), Some("incompatible"));
+
+        let mut missing = preflight.clone();
+        missing.safe = false;
+        missing.path_access_status = "db_missing".to_string();
+        missing.db_problem_kind = None;
+        assert_eq!(
+            McpServer::mvp4_local_flow_packet_status_from_preflight(&missing),
+            "not_applicable"
+        );
+
+        let mut stale = preflight.clone();
+        stale.safe = false;
+        stale.db_problem_kind = Some("repo_head_mismatch".to_string());
+        assert_eq!(
+            McpServer::mvp4_local_flow_packet_status_from_preflight(&stale),
+            "stale"
+        );
+
+        let mut incompatible = preflight.clone();
+        incompatible.safe = false;
+        incompatible.schema_status = "mismatch".to_string();
+        incompatible.db_problem_kind = Some("schema_mismatch".to_string());
+        assert_eq!(
+            McpServer::mvp4_local_flow_packet_status_from_preflight(&incompatible),
+            "incompatible"
+        );
+
+        let mut corrupt = preflight.clone();
+        corrupt.safe = false;
+        corrupt.db_problem_kind = Some("sqlite_corrupt".to_string());
+        assert_eq!(
+            McpServer::mvp4_local_flow_packet_status_from_preflight(&corrupt),
+            "corrupt"
+        );
+
+        let mut unavailable = preflight;
+        unavailable.safe = false;
+        unavailable.db_problem_kind = Some("filesystem_inaccessible".to_string());
+        assert_eq!(
+            McpServer::mvp4_local_flow_packet_status_from_preflight(&unavailable),
+            "unavailable"
+        );
+
+        drop(store);
+        fs::remove_dir_all(repo).expect("cleanup lifecycle fixture");
+    }
+
+    #[test]
+    fn mcp_local_flow_packet_query_filters_and_open_expansion_are_bounded() {
+        let (server, repo, _login, _sanitize) = indexed_server();
+        let repo_arg = path_string(&repo);
+        let query = ok(server.call_tool(
+            MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+            &json!({
+                "repo": repo_arg,
+                "file": "src/auth.ts",
+                "limit": MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT + 50
+            }),
+        ));
+        assert_eq!(query["status"].as_str(), Some("ok"));
+        assert_eq!(query["query"]["source_role"].as_str(), Some("production"));
+        assert_eq!(
+            query["limit"].as_u64(),
+            Some(MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT as u64)
+        );
+        assert_eq!(
+            query["query"]["packet_body_included"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            query["query"]["ordered_steps_included"].as_bool(),
+            Some(false)
+        );
+        let results = query["results"]
+            .as_array()
+            .expect("bounded MCP local-flow results");
+        assert!(
+            !results.is_empty(),
+            "indexed TypeScript fixture must emit packets"
+        );
+        assert!(results.len() <= MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT);
+        assert!(results.iter().all(|result| {
+            result.get("packet_body").is_none()
+                && result.get("ordered_steps").is_none()
+                && result["source_role"].as_str() == Some("production")
+        }));
+
+        let first = &results[0];
+        let packet_id = first["packet_id"].as_str().expect("packet id").to_string();
+        let file = first["file"].as_str().expect("packet file").to_string();
+        let function = first["function_entity_id"]
+            .as_str()
+            .expect("packet function")
+            .to_string();
+        let proof_status = first["proof_status"]
+            .as_str()
+            .expect("packet proof status")
+            .to_string();
+        let proof_strength = first["proof_strength"]
+            .as_str()
+            .expect("packet proof strength")
+            .to_string();
+        let language = first["language"]
+            .as_str()
+            .expect("packet language")
+            .to_string();
+
+        let filtered = ok(server.call_tool(
+            MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+            &json!({
+                "repo": repo_arg,
+                "packet_id": packet_id,
+                "file": file,
+                "function": function,
+                "proof_status": proof_status,
+                "proof_strength": proof_strength,
+                "language": language,
+                "source_role": "production",
+                "limit": 1
+            }),
+        ));
+        assert_eq!(filtered["result_count"].as_u64(), Some(1));
+        assert_eq!(filtered["results"][0]["packet_id"], json!(packet_id));
+
+        for mismatch in [
+            json!({"repo": repo_arg, "file": "src/missing.ts"}),
+            json!({"repo": repo_arg, "language": "python"}),
+            json!({"repo": repo_arg, "source_role": "test"}),
+            json!({"repo": repo_arg, "proof_status": "not_a_real_proof_status"}),
+        ] {
+            let empty = ok(server.call_tool(MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME, &mismatch));
+            assert_eq!(empty["result_count"].as_u64(), Some(0), "{mismatch}");
+        }
+
+        let opened = ok(server.call_tool(
+            MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+            &json!({"repo": repo_arg, "packet_id": packet_id}),
+        ));
+        assert_eq!(opened["packet_body_included"].as_bool(), Some(true));
+        assert_eq!(opened["ordered_steps_included"].as_bool(), Some(false));
+        assert_eq!(
+            opened["packet"]["packet_body_included"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            opened["packet"]["ordered_steps_inline"].as_bool(),
+            Some(false)
+        );
+        assert!(opened["packet"].get("packet_body").is_some());
+        assert!(opened["packet"].get("ordered_steps").is_none());
+
+        let expanded = ok(server.call_tool(
+            MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+            &json!({
+                "repo": repo_arg,
+                "packet_id": packet_id,
+                "include_ordered_steps": true
+            }),
+        ));
+        assert_eq!(expanded["ordered_steps_included"].as_bool(), Some(true));
+        assert_eq!(
+            expanded["packet"]["ordered_steps_inline"].as_bool(),
+            Some(true)
+        );
+        assert!(expanded["packet"]["ordered_steps"]
+            .as_array()
+            .is_some_and(|steps| !steps.is_empty()));
+
+        let missing = server
+            .call_tool(
+                MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+                &json!({"repo": repo_arg, "packet_id": "missing-packet-id"}),
+            )
+            .expect_err("unknown packet id must fail closed");
+        assert_eq!(missing.code, "local_flow_packet_not_found");
+
+        fs::remove_dir_all(repo).expect("cleanup local-flow query fixture");
+    }
+
+    #[test]
+    fn mcp_local_flow_packet_tools_are_advertised_and_round_trip_jsonrpc() {
+        let (server, repo, _login, _sanitize) = indexed_server();
+        let repo_arg = path_string(&repo);
+        let initialized = server
+            .handle_jsonrpc(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+            .expect("initialize response");
+        assert_eq!(
+            initialized["result"]["serverInfo"]["name"].as_str(),
+            Some(SERVER_NAME)
+        );
+
+        let listed = server
+            .handle_jsonrpc(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+            .expect("tools/list response");
+        let tools = listed["result"]["tools"]
+            .as_array()
+            .expect("MCP tools array");
+        for name in [
+            MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+            MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing MCP tool {name}"));
+            assert_eq!(tool["annotations"]["readOnlyHint"].as_bool(), Some(true));
+            assert_eq!(
+                tool["annotations"]["destructiveHint"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(tool["annotations"]["idempotentHint"].as_bool(), Some(true));
+            assert_eq!(tool["annotations"]["localOnly"].as_bool(), Some(true));
+            assert_eq!(tool["inputSchema"]["type"].as_str(), Some("object"));
+            assert_eq!(tool["outputSchema"]["type"].as_str(), Some("object"));
+        }
+        let query_definition = tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME))
+            .expect("query packet tool definition");
+        assert_eq!(
+            query_definition["inputSchema"]["properties"]["limit"]["maximum"].as_u64(),
+            Some(MCP_LOCAL_FLOW_PACKET_QUERY_LIMIT as u64)
+        );
+        assert_eq!(
+            query_definition["inputSchema"]["properties"]["source_role"]["default"].as_str(),
+            Some("production")
+        );
+        let open_definition = tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME))
+            .expect("open packet tool definition");
+        assert!(open_definition["inputSchema"]["required"]
+            .as_array()
+            .is_some_and(|required| required
+                .iter()
+                .any(|field| field.as_str() == Some("packet_id"))));
+        assert_eq!(
+            open_definition["inputSchema"]["properties"]["include_ordered_steps"]["default"]
+                .as_bool(),
+            Some(false)
+        );
+
+        let queried = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+                    "arguments": {"repo": repo_arg, "file": "src/auth.ts", "limit": 1}
+                }
+            }))
+            .expect("query packet JSON-RPC response");
+        assert_eq!(queried["result"]["isError"].as_bool(), Some(false));
+        let packet_id = queried["result"]["structuredContent"]["results"][0]["packet_id"]
+            .as_str()
+            .expect("JSON-RPC packet id")
+            .to_string();
+        assert_eq!(
+            queried["result"]["structuredContent"]["command"].as_str(),
+            Some(MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME)
+        );
+
+        let opened = server
+            .handle_jsonrpc(&json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME,
+                    "arguments": {
+                        "repo": repo_arg,
+                        "packet_id": packet_id,
+                        "include_ordered_steps": true
+                    }
+                }
+            }))
+            .expect("open packet JSON-RPC response");
+        assert_eq!(opened["result"]["isError"].as_bool(), Some(false));
+        assert_eq!(
+            opened["result"]["structuredContent"]["command"].as_str(),
+            Some(MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME)
+        );
+        assert_eq!(
+            opened["result"]["structuredContent"]["packet"]["packet_id"],
+            json!(packet_id)
+        );
+        assert_eq!(
+            opened["result"]["structuredContent"]["packet"]["ordered_steps_inline"].as_bool(),
+            Some(true)
+        );
+
+        fs::remove_dir_all(repo).expect("cleanup JSON-RPC packet fixture");
+    }
+
+    #[test]
+    fn mcp_context_packet_handles_resolve_and_dynamic_comment_target_does_not_leak() {
+        let repo = fixture_repo();
+        let source_path = repo.join("src").join("auth.ts");
+        let mut source = fs::read_to_string(&source_path).expect("read MCP packet fixture");
+        source.push_str("\n// phantom_dynamic_target() is a negative oracle, not code.\n");
+        fs::write(&source_path, source).expect("write MCP dynamic-boundary fixture");
+        let server = McpServer::new(McpServerConfig::for_repo(&repo));
+        let repo_arg = path_string(&repo);
+        ok(server.call_tool("codegraph.index_repo", &json!({"repo": repo_arg})));
+
+        let context = ok(server.call_tool(
+            "codegraph.context_pack",
+            &json!({
+                "repo": repo_arg,
+                "task": "Change login authentication flow",
+                "seeds": ["login"],
+                "limit": 4
+            }),
+        ));
+        let handles = context["local_flow_packet_handles"]
+            .as_array()
+            .expect("compact context packet handles");
+        assert!(
+            !handles.is_empty(),
+            "context packet must carry resolvable packet handles"
+        );
+        assert!(handles.len() <= 4);
+        assert_eq!(
+            context["local_flow_packet_handle_resolution"]["tool"].as_str(),
+            Some(MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME)
+        );
+        assert_eq!(
+            context["local_flow_packet_handle_resolution"]["ordered_steps_require_explicit_opt_in"]
+                .as_bool(),
+            Some(true)
+        );
+
+        let first_handle = &handles[0];
+        assert_eq!(
+            first_handle["mcp_expansion"]["tool"].as_str(),
+            Some(MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME)
+        );
+        assert_eq!(first_handle["source_role"].as_str(), Some("production"));
+        assert!(first_handle.get("packet_body").is_none());
+        assert!(first_handle.get("ordered_steps").is_none());
+        let expansion_arguments = first_handle["mcp_expansion"]["arguments"].clone();
+        let resolved =
+            ok(server.call_tool(MCP_OPEN_LOCAL_FLOW_PACKET_TOOL_NAME, &expansion_arguments));
+        assert_eq!(resolved["packet"]["packet_id"], first_handle["packet_id"]);
+        assert_eq!(
+            resolved["packet"]["ordered_steps_inline"].as_bool(),
+            Some(false)
+        );
+
+        let queried = ok(server.call_tool(
+            MCP_QUERY_LOCAL_FLOW_PACKETS_TOOL_NAME,
+            &json!({"repo": repo_arg, "file": "src/auth.ts", "limit": 100}),
+        ));
+        let semantic_packet_outputs = serde_json::to_string(&json!({
+            "handles": handles,
+            "resolved": resolved,
+            "queried": queried
+        }))
+        .expect("serialize MCP packet outputs");
+        assert!(!semantic_packet_outputs.contains("phantom_dynamic_target"));
+
+        fs::remove_dir_all(repo).expect("cleanup context packet fixture");
+    }
+
+    #[test]
+    fn current_micro_edge_capability_is_directional_and_ownership_aware() {
+        let capability =
+            mvp4_micro_edge_language_capability("javascript", MicroEdgeKind::LocalCalls);
+        assert_eq!(
+            mcp_micro_node_kind_from_storage("call_site"),
+            Some(MicroNodeKind::CallSite)
+        );
+        assert_eq!(
+            mcp_micro_node_kind_from_storage("function_frame"),
+            Some(MicroNodeKind::FunctionFrame)
+        );
+        assert!(capability
+            .supports_endpoint_pair(MicroNodeKind::CallSite, MicroNodeKind::FunctionFrame));
+        assert!(!capability
+            .supports_endpoint_pair(MicroNodeKind::FunctionFrame, MicroNodeKind::CallSite));
+        assert_eq!(
+            capability.ownership_policy,
+            MicroEdgeOwnershipPolicy::CallerToSameFileFunction
+        );
+
+        let (cross_function, edge_head_mismatch) = mcp_micro_edge_ownership_violations(
+            capability.ownership_policy,
+            Some("function://caller"),
+            Some("function://caller"),
+            Some("function://callee"),
+        );
+        assert!(!cross_function);
+        assert!(!edge_head_mismatch);
+
+        let (cross_function, edge_head_mismatch) = mcp_micro_edge_ownership_violations(
+            MicroEdgeOwnershipPolicy::SameFunction,
+            Some("function://caller"),
+            Some("function://caller"),
+            Some("function://callee"),
+        );
+        assert!(cross_function);
+        assert!(!edge_head_mismatch);
+        assert!(
+            mcp_validation_classification_compact_priority(ValidationClassification::Warn)
+                < mcp_validation_classification_compact_priority(
+                    ValidationClassification::Degraded
+                )
+        );
     }
 
     fn trace_entry<'a>(trace: &'a [Value], stage: &str) -> &'a Value {

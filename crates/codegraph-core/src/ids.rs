@@ -26,6 +26,12 @@ pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION: u32 = 1;
 pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION: u32 = 1;
 pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION: &str =
     "mvp4.3-typescript-local-micro-flow-packets-v1";
+pub const MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION: &str =
+    "mvp4.3-parser-facts-v1-micro-facts-v1";
+pub const MVP4_3_PARSER_FACTS_V1_CLAIMABILITY: &str =
+    "claimable_source_spanned_parser_facts_v1_same_file_intraprocedural";
+pub const MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION: &str =
+    "mvp4.3-parser-facts-v1-local-micro-flow-packets-v1";
 pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND: &str = "function_local_micro_flow_packet";
 pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_ENCODING: &str = "dict_v1";
 
@@ -126,6 +132,8 @@ pub enum MicroNodeKind {
     AssignmentSite,
     MutationSite,
     ConditionSite,
+    /// A source-spanned control-flow arm owned by a condition.
+    BranchArm,
     LiteralKey,
     ImportBinding,
     ExportBinding,
@@ -151,6 +159,7 @@ impl MicroNodeKind {
         Self::AssignmentSite,
         Self::MutationSite,
         Self::ConditionSite,
+        Self::BranchArm,
         Self::LiteralKey,
         Self::ImportBinding,
         Self::ExportBinding,
@@ -173,6 +182,7 @@ impl MicroNodeKind {
             Self::AssignmentSite => "assignment_site",
             Self::MutationSite => "mutation_site",
             Self::ConditionSite => "condition_site",
+            Self::BranchArm => "branch_arm",
             Self::LiteralKey => "literal_key",
             Self::ImportBinding => "import_binding",
             Self::ExportBinding => "export_binding",
@@ -182,6 +192,446 @@ impl MicroNodeKind {
             Self::AuthLiteral => "auth_literal",
             Self::SanitizerCall => "sanitizer_call",
             Self::ValueUse => "value_use",
+        }
+    }
+}
+
+/// The closed node vocabulary admitted by MVP4.3 function-local flow packets.
+///
+/// `MicroNodeKind::ALL` also contains non-local route, import/export, auth, and
+/// literal vocabulary. Those kinds are deliberately excluded from local packet
+/// capabilities and persistence admission.
+pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS: &[MicroNodeKind] = &[
+    MicroNodeKind::FunctionFrame,
+    MicroNodeKind::Parameter,
+    MicroNodeKind::LocalBinding,
+    MicroNodeKind::PropertyAccess,
+    MicroNodeKind::CallSite,
+    MicroNodeKind::ReturnSite,
+    MicroNodeKind::AssignmentSite,
+    MicroNodeKind::ValueUse,
+    MicroNodeKind::MutationSite,
+    MicroNodeKind::ConditionSite,
+    MicroNodeKind::BranchArm,
+    MicroNodeKind::TestAssertion,
+    MicroNodeKind::SanitizerCall,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Mvp4LanguageFrontendContract {
+    pub language: &'static str,
+    pub frontend: &'static str,
+    pub aliases: &'static [&'static str],
+    pub file_extensions: &'static [&'static str],
+    pub declared_static_scope: &'static str,
+    pub resolver_boundary: &'static str,
+    pub dynamic_boundary: &'static str,
+}
+
+const JAVASCRIPT_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "javascript",
+    frontend: "tree-sitter-javascript",
+    aliases: &["js"],
+    file_extensions: &["js", "mjs", "cjs"],
+    declared_static_scope: "declared function-local static ECMAScript subset for .js/.mjs/.cjs",
+    resolver_boundary: "lexical bindings and statically named same-file call targets only",
+    dynamic_boundary: "runtime dispatch, eval, prototype mutation, and loader effects excluded",
+};
+const JSX_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "jsx",
+    frontend: "tree-sitter-javascript",
+    aliases: &[],
+    file_extensions: &["jsx"],
+    declared_static_scope: "declared function-local static JSX/ECMAScript subset for .jsx",
+    resolver_boundary: "lexical bindings and statically named same-file call targets only",
+    dynamic_boundary: "component runtime, dynamic props, and framework rendering effects excluded",
+};
+const TYPESCRIPT_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "typescript",
+    frontend: "tree-sitter-typescript",
+    aliases: &["ts"],
+    file_extensions: &["ts", "mts", "cts"],
+    declared_static_scope: "production exact function-local .ts legacy v1 and .mts/.cts ParserFactsV1 subsets; .d.ts inactive",
+    resolver_boundary: "resolver-proven lexical bindings inside one function and file",
+    dynamic_boundary:
+        "type-only inference, runtime dispatch, decorators, and module effects excluded",
+};
+const TSX_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "tsx",
+    frontend: "tree-sitter-typescript",
+    aliases: &[],
+    file_extensions: &["tsx"],
+    declared_static_scope: "declared function-local static TypeScript/JSX subset for .tsx",
+    resolver_boundary:
+        "resolver-proven lexical bindings and statically named same-file targets only",
+    dynamic_boundary: "component runtime, hooks, JSX evaluation, and dynamic dispatch excluded",
+};
+const PYTHON_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "python",
+    frontend: "tree-sitter-python",
+    aliases: &["py"],
+    file_extensions: &["py"],
+    declared_static_scope: "declared function-local static Python subset for .py",
+    resolver_boundary:
+        "lexical local/nonlocal/global resolution must be explicit before activation",
+    dynamic_boundary:
+        "monkey patching, descriptors, dynamic imports, and runtime attribute lookup excluded",
+};
+const GO_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "go",
+    frontend: "tree-sitter-go",
+    aliases: &[],
+    file_extensions: &["go"],
+    declared_static_scope: "declared function-local static Go subset for .go",
+    resolver_boundary: "block bindings and statically resolved same-package call targets only",
+    dynamic_boundary:
+        "interface dispatch, reflection, generated code, and build-tag selection excluded",
+};
+const RUST_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "rust",
+    frontend: "tree-sitter-rust",
+    aliases: &["rs"],
+    file_extensions: &["rs"],
+    declared_static_scope: "declared function-local static Rust subset for .rs",
+    resolver_boundary: "lexical bindings before macro expansion and compiler type resolution only",
+    dynamic_boundary: "macro expansion, trait dispatch, proc macros, and cfg expansion excluded",
+};
+const JAVA_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "java",
+    frontend: "tree-sitter-java",
+    aliases: &[],
+    file_extensions: &["java"],
+    declared_static_scope: "declared method-local static Java subset for .java",
+    resolver_boundary: "lexical locals and statically resolved same-file methods only",
+    dynamic_boundary:
+        "virtual dispatch, reflection, annotation processing, and generated code excluded",
+};
+const CSHARP_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "csharp",
+    frontend: "tree-sitter-c-sharp",
+    aliases: &["c#", "cs"],
+    file_extensions: &["cs"],
+    declared_static_scope: "declared method-local static C# subset for .cs",
+    resolver_boundary: "lexical locals and statically resolved same-file methods only",
+    dynamic_boundary:
+        "dynamic binding, virtual dispatch, LINQ lowering, and source generation excluded",
+};
+const C_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "c",
+    frontend: "tree-sitter-c",
+    aliases: &[],
+    file_extensions: &["c", "h"],
+    declared_static_scope: "declared function-local static C subset for .c/.h selected as C",
+    resolver_boundary: "block locals and statically named same-translation-unit functions only",
+    dynamic_boundary:
+        "preprocessor expansion, function pointers, alias analysis, and build flags excluded",
+};
+const CPP_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "cpp",
+    frontend: "tree-sitter-cpp",
+    aliases: &["c++", "cc", "cxx", "hpp"],
+    file_extensions: &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
+    declared_static_scope:
+        "declared function-local static C++ subset for registered C++ extensions",
+    resolver_boundary:
+        "block locals and statically named same-file functions before template resolution",
+    dynamic_boundary:
+        "templates, overload resolution, macros, virtual dispatch, and alias analysis excluded",
+};
+const RUBY_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "ruby",
+    frontend: "tree-sitter-ruby",
+    aliases: &["rb"],
+    file_extensions: &["rb"],
+    declared_static_scope: "declared method-local static Ruby subset for .rb",
+    resolver_boundary: "lexical locals with explicit method-boundary ownership only",
+    dynamic_boundary:
+        "metaprogramming, open classes, method_missing, and runtime dispatch excluded",
+};
+const PHP_FRONTEND_CONTRACT: Mvp4LanguageFrontendContract = Mvp4LanguageFrontendContract {
+    language: "php",
+    frontend: "tree-sitter-php",
+    aliases: &[],
+    file_extensions: &["php"],
+    declared_static_scope: "declared function-local static PHP subset for .php",
+    resolver_boundary: "lexical variables and statically named same-file functions only",
+    dynamic_boundary:
+        "dynamic includes, variable variables, magic methods, and runtime dispatch excluded",
+};
+
+pub const MVP4_CANONICAL_FRONTEND_COUNT: usize = 13;
+pub const MVP4_CANONICAL_LANGUAGE_FRONTENDS: &[Mvp4LanguageFrontendContract] = &[
+    JAVASCRIPT_FRONTEND_CONTRACT,
+    JSX_FRONTEND_CONTRACT,
+    TYPESCRIPT_FRONTEND_CONTRACT,
+    TSX_FRONTEND_CONTRACT,
+    PYTHON_FRONTEND_CONTRACT,
+    GO_FRONTEND_CONTRACT,
+    RUST_FRONTEND_CONTRACT,
+    JAVA_FRONTEND_CONTRACT,
+    CSHARP_FRONTEND_CONTRACT,
+    C_FRONTEND_CONTRACT,
+    CPP_FRONTEND_CONTRACT,
+    RUBY_FRONTEND_CONTRACT,
+    PHP_FRONTEND_CONTRACT,
+];
+
+pub fn mvp4_language_frontend_contract(language: &str) -> Option<Mvp4LanguageFrontendContract> {
+    let normalized = language.trim().to_ascii_lowercase();
+    MVP4_CANONICAL_LANGUAGE_FRONTENDS
+        .iter()
+        .copied()
+        .find(|contract| {
+            contract.language == normalized
+                || contract.aliases.iter().any(|alias| *alias == normalized)
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mvp4MicroFlowSourceAdapterKind {
+    LegacyTypeScriptV1,
+    ParserFactsV1,
+    Inactive,
+}
+
+/// Selects the only production micro-flow source adapter authorized for a
+/// canonical frontend/path pair. This is the single extension boundary shared
+/// by parser dispatch, capability admission, packet identity, index
+/// persistence, and store serialization.
+pub fn mvp4_micro_flow_source_adapter(
+    frontend_language: &str,
+    source_path: &str,
+) -> Mvp4MicroFlowSourceAdapterKind {
+    let Some(contract) = mvp4_language_frontend_contract(frontend_language) else {
+        return Mvp4MicroFlowSourceAdapterKind::Inactive;
+    };
+    let path = normalize_repo_relative_path(source_path).to_ascii_lowercase();
+    if path.ends_with(".d.ts") {
+        return Mvp4MicroFlowSourceAdapterKind::Inactive;
+    }
+    match contract.language {
+        "javascript"
+            if path.ends_with(".js") || path.ends_with(".mjs") || path.ends_with(".cjs") =>
+        {
+            Mvp4MicroFlowSourceAdapterKind::ParserFactsV1
+        }
+        "jsx" if path.ends_with(".jsx") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "typescript" if path.ends_with(".ts") => Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1,
+        "typescript" if path.ends_with(".mts") || path.ends_with(".cts") => {
+            Mvp4MicroFlowSourceAdapterKind::ParserFactsV1
+        }
+        "tsx" if path.ends_with(".tsx") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "python" if path.ends_with(".py") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "go" if path.ends_with(".go") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "rust" if path.ends_with(".rs") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "java" if path.ends_with(".java") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "csharp" if path.ends_with(".cs") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "c" if path.ends_with(".c") || path.ends_with(".h") => {
+            Mvp4MicroFlowSourceAdapterKind::ParserFactsV1
+        }
+        "cpp"
+            if path.ends_with(".cc")
+                || path.ends_with(".cpp")
+                || path.ends_with(".cxx")
+                || path.ends_with(".hpp")
+                || path.ends_with(".hh")
+                || path.ends_with(".hxx") =>
+        {
+            Mvp4MicroFlowSourceAdapterKind::ParserFactsV1
+        }
+        "ruby" if path.ends_with(".rb") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        "php" if path.ends_with(".php") => Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+        _ => Mvp4MicroFlowSourceAdapterKind::Inactive,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicroNodeSupportStatus {
+    ExactCapable,
+    NotImplemented,
+}
+
+impl MicroNodeSupportStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactCapable => "exact_capable",
+            Self::NotImplemented => "not_implemented",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MicroNodeLanguageCapability {
+    pub language: &'static str,
+    pub frontend: Option<&'static str>,
+    pub declared_static_scope: &'static str,
+    pub activation_status: MicroNodeSupportStatus,
+    pub supported_node_kinds: &'static [MicroNodeKind],
+    pub canonical_node_kinds: &'static [MicroNodeKind],
+    pub source_role_behavior: &'static str,
+    pub parser_recovery_behavior: &'static str,
+    pub identity_builder: &'static str,
+    pub extraction_version: Option<&'static str>,
+    pub unsupported_reason: Option<&'static str>,
+}
+
+impl MicroNodeLanguageCapability {
+    pub const fn parser_facts_v1(contract: Mvp4LanguageFrontendContract) -> Self {
+        Self {
+            language: contract.language,
+            frontend: Some(contract.frontend),
+            declared_static_scope: contract.declared_static_scope,
+            activation_status: MicroNodeSupportStatus::ExactCapable,
+            supported_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            source_role_behavior: "production_only",
+            parser_recovery_behavior: "omit_exact_node_on_recovery_ambiguity",
+            identity_builder: "stable_source_spanned_parser_facts_v1_micro_node_identity",
+            extraction_version: Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION),
+            unsupported_reason: None,
+        }
+    }
+
+    pub const fn declared_not_implemented(contract: Mvp4LanguageFrontendContract) -> Self {
+        Self {
+            language: contract.language,
+            frontend: Some(contract.frontend),
+            declared_static_scope: contract.declared_static_scope,
+            activation_status: MicroNodeSupportStatus::NotImplemented,
+            supported_node_kinds: &[],
+            canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            source_role_behavior: "production_only_after_activation_gate",
+            parser_recovery_behavior: "adapter_inactive_no_rows_emitted",
+            identity_builder: "stable_micro_node_identity_contract_reserved",
+            extraction_version: None,
+            unsupported_reason: Some(
+                "micro-node adapter has declared scope but no fixture-gated executable semantics",
+            ),
+        }
+    }
+
+    pub const fn not_implemented(language: &'static str) -> Self {
+        Self {
+            language,
+            frontend: None,
+            declared_static_scope: "unregistered language; no declared MVP4 static scope",
+            activation_status: MicroNodeSupportStatus::NotImplemented,
+            supported_node_kinds: &[],
+            canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            source_role_behavior: "not_applicable",
+            parser_recovery_behavior: "unsupported",
+            identity_builder: "none",
+            extraction_version: None,
+            unsupported_reason: Some("language is not in the canonical MVP4 frontend registry"),
+        }
+    }
+
+    pub fn supports_node_kind(self, kind: MicroNodeKind) -> bool {
+        self.activation_status == MicroNodeSupportStatus::ExactCapable
+            && self.supported_node_kinds.contains(&kind)
+    }
+}
+
+pub const MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION: &str =
+    "mvp4.1-typescript-micro-nodes-v1";
+pub const MVP4_TYPESCRIPT_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability {
+        language: TYPESCRIPT_FRONTEND_CONTRACT.language,
+        frontend: Some(TYPESCRIPT_FRONTEND_CONTRACT.frontend),
+        declared_static_scope: TYPESCRIPT_FRONTEND_CONTRACT.declared_static_scope,
+        activation_status: MicroNodeSupportStatus::ExactCapable,
+        supported_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+        canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+        source_role_behavior: "production_only",
+        parser_recovery_behavior: "omit_exact_node_on_recovery_ambiguity",
+        identity_builder: "stable_source_spanned_typescript_micro_node_identity",
+        extraction_version: Some(MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION),
+        unsupported_reason: None,
+    };
+pub const MVP4_JAVASCRIPT_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(JAVASCRIPT_FRONTEND_CONTRACT);
+pub const MVP4_JSX_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(JSX_FRONTEND_CONTRACT);
+pub const MVP4_TYPESCRIPT_PARSER_FACTS_V1_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(TYPESCRIPT_FRONTEND_CONTRACT);
+pub const MVP4_TSX_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(TSX_FRONTEND_CONTRACT);
+pub const MVP4_PYTHON_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(PYTHON_FRONTEND_CONTRACT);
+pub const MVP4_GO_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT);
+pub const MVP4_RUST_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(RUST_FRONTEND_CONTRACT);
+pub const MVP4_JAVA_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(JAVA_FRONTEND_CONTRACT);
+pub const MVP4_CSHARP_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(CSHARP_FRONTEND_CONTRACT);
+pub const MVP4_C_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT);
+pub const MVP4_CPP_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(CPP_FRONTEND_CONTRACT);
+pub const MVP4_RUBY_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(RUBY_FRONTEND_CONTRACT);
+pub const MVP4_PHP_MICRO_NODE_CAPABILITY: MicroNodeLanguageCapability =
+    MicroNodeLanguageCapability::parser_facts_v1(PHP_FRONTEND_CONTRACT);
+pub const MVP4_MICRO_NODE_LANGUAGE_CAPABILITIES: &[MicroNodeLanguageCapability] = &[
+    MVP4_JAVASCRIPT_MICRO_NODE_CAPABILITY,
+    MVP4_JSX_MICRO_NODE_CAPABILITY,
+    MVP4_TYPESCRIPT_MICRO_NODE_CAPABILITY,
+    MVP4_TSX_MICRO_NODE_CAPABILITY,
+    MVP4_PYTHON_MICRO_NODE_CAPABILITY,
+    MVP4_GO_MICRO_NODE_CAPABILITY,
+    MVP4_RUST_MICRO_NODE_CAPABILITY,
+    MVP4_JAVA_MICRO_NODE_CAPABILITY,
+    MVP4_CSHARP_MICRO_NODE_CAPABILITY,
+    MVP4_C_MICRO_NODE_CAPABILITY,
+    MVP4_CPP_MICRO_NODE_CAPABILITY,
+    MVP4_RUBY_MICRO_NODE_CAPABILITY,
+    MVP4_PHP_MICRO_NODE_CAPABILITY,
+];
+pub const MVP4_ACTIVE_MICRO_NODE_LANGUAGE_CAPABILITIES: &[MicroNodeLanguageCapability] = &[
+    MVP4_JAVASCRIPT_MICRO_NODE_CAPABILITY,
+    MVP4_JSX_MICRO_NODE_CAPABILITY,
+    MVP4_TYPESCRIPT_MICRO_NODE_CAPABILITY,
+    MVP4_TSX_MICRO_NODE_CAPABILITY,
+    MVP4_PYTHON_MICRO_NODE_CAPABILITY,
+    MVP4_GO_MICRO_NODE_CAPABILITY,
+    MVP4_RUST_MICRO_NODE_CAPABILITY,
+    MVP4_JAVA_MICRO_NODE_CAPABILITY,
+    MVP4_CSHARP_MICRO_NODE_CAPABILITY,
+    MVP4_C_MICRO_NODE_CAPABILITY,
+    MVP4_CPP_MICRO_NODE_CAPABILITY,
+    MVP4_RUBY_MICRO_NODE_CAPABILITY,
+    MVP4_PHP_MICRO_NODE_CAPABILITY,
+];
+
+pub fn mvp4_micro_node_language_capability(language: &str) -> MicroNodeLanguageCapability {
+    let Some(contract) = mvp4_language_frontend_contract(language) else {
+        return MicroNodeLanguageCapability::not_implemented("unknown");
+    };
+    MVP4_MICRO_NODE_LANGUAGE_CAPABILITIES
+        .iter()
+        .copied()
+        .find(|capability| capability.language == contract.language)
+        .unwrap_or_else(|| MicroNodeLanguageCapability::not_implemented("unknown"))
+}
+
+pub fn mvp4_micro_node_language_capability_for_source(
+    language: &str,
+    source_path: &str,
+) -> MicroNodeLanguageCapability {
+    let Some(contract) = mvp4_language_frontend_contract(language) else {
+        return MicroNodeLanguageCapability::not_implemented("unknown");
+    };
+    match mvp4_micro_flow_source_adapter(language, source_path) {
+        Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1 => MVP4_TYPESCRIPT_MICRO_NODE_CAPABILITY,
+        Mvp4MicroFlowSourceAdapterKind::ParserFactsV1 => {
+            MicroNodeLanguageCapability::parser_facts_v1(contract)
+        }
+        Mvp4MicroFlowSourceAdapterKind::Inactive => {
+            MicroNodeLanguageCapability::declared_not_implemented(contract)
         }
     }
 }
@@ -308,13 +758,238 @@ impl MicroEdgeSupportStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct MicroEdgeEndpointPair {
+    pub head: MicroNodeKind,
+    pub tail: MicroNodeKind,
+}
+
+impl MicroEdgeEndpointPair {
+    pub const fn new(head: MicroNodeKind, tail: MicroNodeKind) -> Self {
+        Self { head, tail }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicroEdgeOwnershipPolicy {
+    SameFunction,
+    CallerToSameFileFunction,
+}
+
+impl MicroEdgeOwnershipPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SameFunction => "same_function",
+            Self::CallerToSameFileFunction => "caller_to_same_file_function",
+        }
+    }
+}
+
+const LOCAL_READS_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::LocalBinding),
+];
+const LOCAL_WRITES_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::AssignmentSite, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::AssignmentSite, MicroNodeKind::LocalBinding),
+];
+const LOCAL_FLOWS_TO_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::CallSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::CallSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::ReturnSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::ReturnSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::CallSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::ReturnSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::CallSite, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::CallSite, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::CallSite, MicroNodeKind::ReturnSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::SanitizerCall),
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::SanitizerCall),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::SanitizerCall),
+    MicroEdgeEndpointPair::new(MicroNodeKind::SanitizerCall, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::SanitizerCall, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::SanitizerCall, MicroNodeKind::ReturnSite),
+];
+const LOCAL_CALLS_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[MicroEdgeEndpointPair::new(
+    MicroNodeKind::CallSite,
+    MicroNodeKind::FunctionFrame,
+)];
+const LOCAL_RETURNS_TO_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[MicroEdgeEndpointPair::new(
+    MicroNodeKind::ReturnSite,
+    MicroNodeKind::FunctionFrame,
+)];
+const LOCAL_MUTATES_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::MutationSite, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::MutationSite, MicroNodeKind::PropertyAccess),
+];
+const LOCAL_CHECKS_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::ConditionSite, MicroNodeKind::ValueUse),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ConditionSite, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ConditionSite, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ConditionSite, MicroNodeKind::PropertyAccess),
+];
+const LOCAL_SANITIZES_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::LocalBinding),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::Parameter),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::LocalBinding),
+];
+const LOCAL_GUARDS_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::BranchArm, MicroNodeKind::AssignmentSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::BranchArm, MicroNodeKind::ReturnSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::BranchArm, MicroNodeKind::CallSite),
+    MicroEdgeEndpointPair::new(MicroNodeKind::BranchArm, MicroNodeKind::MutationSite),
+];
+const LOCAL_ASSERTS_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[
+    MicroEdgeEndpointPair::new(MicroNodeKind::ValueUse, MicroNodeKind::TestAssertion),
+    MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::TestAssertion),
+    MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::TestAssertion),
+];
+const LOCAL_BRANCHES_TO_ENDPOINT_PAIRS: &[MicroEdgeEndpointPair] = &[MicroEdgeEndpointPair::new(
+    MicroNodeKind::ConditionSite,
+    MicroNodeKind::BranchArm,
+)];
+
+const DIRECT_AST_DERIVATION: &[MicroDerivationKind] = &[MicroDerivationKind::DirectAstExtraction];
+const RESOLVER_BACKED_DERIVATION: &[MicroDerivationKind] =
+    &[MicroDerivationKind::ResolverBackedBinding];
+const LEGACY_TYPESCRIPT_LOCAL_BINDING_DERIVATIONS: &[MicroDerivationKind] = &[
+    MicroDerivationKind::DirectAstExtraction,
+    MicroDerivationKind::ResolverBackedBinding,
+];
+const LOCAL_SEQUENCE_DERIVATION: &[MicroDerivationKind] =
+    &[MicroDerivationKind::LocalSequenceDerivation];
+const LOCAL_ASSIGNMENT_CHAIN_DERIVATION: &[MicroDerivationKind] =
+    &[MicroDerivationKind::LocalAssignmentChainDerivation];
+const CALL_DERIVATIONS: &[MicroDerivationKind] = &[
+    MicroDerivationKind::ResolverBackedBinding,
+    MicroDerivationKind::CompilerLspBackedDerivation,
+];
+const SANITIZER_DERIVATIONS: &[MicroDerivationKind] = &[
+    MicroDerivationKind::LocalAssignmentChainDerivation,
+    MicroDerivationKind::CompilerLspBackedDerivation,
+];
+
+pub const fn mvp4_micro_edge_endpoint_pairs(
+    kind: MicroEdgeKind,
+) -> &'static [MicroEdgeEndpointPair] {
+    match kind {
+        MicroEdgeKind::LocalReads => LOCAL_READS_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalWrites => LOCAL_WRITES_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalFlowsTo => LOCAL_FLOWS_TO_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalCalls => LOCAL_CALLS_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalReturnsTo => LOCAL_RETURNS_TO_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalMutates => LOCAL_MUTATES_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalChecks => LOCAL_CHECKS_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalSanitizes => LOCAL_SANITIZES_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalGuards => LOCAL_GUARDS_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalAsserts => LOCAL_ASSERTS_ENDPOINT_PAIRS,
+        MicroEdgeKind::LocalBranchesTo => LOCAL_BRANCHES_TO_ENDPOINT_PAIRS,
+    }
+}
+
+pub const fn mvp4_micro_edge_ownership_policy(kind: MicroEdgeKind) -> MicroEdgeOwnershipPolicy {
+    match kind {
+        MicroEdgeKind::LocalCalls => MicroEdgeOwnershipPolicy::CallerToSameFileFunction,
+        _ => MicroEdgeOwnershipPolicy::SameFunction,
+    }
+}
+
+pub const fn mvp4_micro_edge_allowed_derivations(
+    kind: MicroEdgeKind,
+) -> &'static [MicroDerivationKind] {
+    match kind {
+        MicroEdgeKind::LocalReads | MicroEdgeKind::LocalWrites => RESOLVER_BACKED_DERIVATION,
+        MicroEdgeKind::LocalFlowsTo | MicroEdgeKind::LocalAsserts => {
+            LOCAL_ASSIGNMENT_CHAIN_DERIVATION
+        }
+        MicroEdgeKind::LocalCalls => CALL_DERIVATIONS,
+        MicroEdgeKind::LocalReturnsTo
+        | MicroEdgeKind::LocalChecks
+        | MicroEdgeKind::LocalBranchesTo => DIRECT_AST_DERIVATION,
+        MicroEdgeKind::LocalMutates | MicroEdgeKind::LocalGuards => LOCAL_SEQUENCE_DERIVATION,
+        MicroEdgeKind::LocalSanitizes => SANITIZER_DERIVATIONS,
+    }
+}
+
+const LOCAL_CALLS_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] =
+    &[MicroNodeKind::CallSite, MicroNodeKind::FunctionFrame];
+const LOCAL_MUTATES_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] = &[
+    MicroNodeKind::LocalBinding,
+    MicroNodeKind::PropertyAccess,
+    MicroNodeKind::MutationSite,
+];
+const LOCAL_CHECKS_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] = &[
+    MicroNodeKind::ConditionSite,
+    MicroNodeKind::ValueUse,
+    MicroNodeKind::Parameter,
+    MicroNodeKind::LocalBinding,
+    MicroNodeKind::PropertyAccess,
+];
+const LOCAL_SANITIZES_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] = &[
+    MicroNodeKind::ValueUse,
+    MicroNodeKind::Parameter,
+    MicroNodeKind::LocalBinding,
+];
+const LOCAL_GUARDS_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] = &[
+    MicroNodeKind::BranchArm,
+    MicroNodeKind::AssignmentSite,
+    MicroNodeKind::ReturnSite,
+    MicroNodeKind::CallSite,
+    MicroNodeKind::MutationSite,
+];
+const LOCAL_ASSERTS_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] = &[
+    MicroNodeKind::ValueUse,
+    MicroNodeKind::Parameter,
+    MicroNodeKind::LocalBinding,
+    MicroNodeKind::TestAssertion,
+];
+const LOCAL_BRANCHES_TO_ENDPOINT_REQUIREMENTS: &[MicroNodeKind] =
+    &[MicroNodeKind::ConditionSite, MicroNodeKind::BranchArm];
+
+const fn canonical_endpoint_node_requirements(kind: MicroEdgeKind) -> &'static [MicroNodeKind] {
+    match kind {
+        MicroEdgeKind::LocalReads => LOCAL_READS_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalWrites => LOCAL_WRITES_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalFlowsTo => &[
+            MicroNodeKind::Parameter,
+            MicroNodeKind::LocalBinding,
+            MicroNodeKind::ValueUse,
+            MicroNodeKind::CallSite,
+            MicroNodeKind::ReturnSite,
+            MicroNodeKind::SanitizerCall,
+        ],
+        MicroEdgeKind::LocalCalls => LOCAL_CALLS_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalReturnsTo => LOCAL_RETURNS_TO_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalMutates => LOCAL_MUTATES_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalChecks => LOCAL_CHECKS_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalSanitizes => LOCAL_SANITIZES_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalGuards => LOCAL_GUARDS_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalAsserts => LOCAL_ASSERTS_ENDPOINT_REQUIREMENTS,
+        MicroEdgeKind::LocalBranchesTo => LOCAL_BRANCHES_TO_ENDPOINT_REQUIREMENTS,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MicroEdgeLanguageCapability {
     pub language: &'static str,
     pub frontend: Option<&'static str>,
+    pub declared_static_scope: &'static str,
     pub micro_edge_kind: MicroEdgeKind,
     pub activation_status: MicroEdgeSupportStatus,
     pub endpoint_node_requirements: &'static [MicroNodeKind],
+    pub endpoint_pairs: &'static [MicroEdgeEndpointPair],
+    pub ownership_policy: MicroEdgeOwnershipPolicy,
+    pub allowed_derivations: &'static [MicroDerivationKind],
     pub resolver_requirements: &'static [&'static str],
     pub exactness_capability: MicroExactness,
     pub provenance_builder: &'static str,
@@ -327,13 +1002,54 @@ pub struct MicroEdgeLanguageCapability {
 }
 
 impl MicroEdgeLanguageCapability {
+    pub const fn parser_facts_v1(
+        contract: Mvp4LanguageFrontendContract,
+        kind: MicroEdgeKind,
+    ) -> Self {
+        let (activation_status, exactness_capability) = match kind {
+            MicroEdgeKind::LocalFlowsTo
+            | MicroEdgeKind::LocalMutates
+            | MicroEdgeKind::LocalSanitizes
+            | MicroEdgeKind::LocalGuards
+            | MicroEdgeKind::LocalAsserts => (
+                MicroEdgeSupportStatus::DerivedWithProvenanceCapable,
+                MicroExactness::DerivedWithProvenance,
+            ),
+            _ => (MicroEdgeSupportStatus::ExactCapable, MicroExactness::Exact),
+        };
+        Self {
+            language: contract.language,
+            frontend: Some(contract.frontend),
+            declared_static_scope: contract.declared_static_scope,
+            micro_edge_kind: kind,
+            activation_status,
+            endpoint_node_requirements: canonical_endpoint_node_requirements(kind),
+            endpoint_pairs: mvp4_micro_edge_endpoint_pairs(kind),
+            ownership_policy: mvp4_micro_edge_ownership_policy(kind),
+            allowed_derivations: mvp4_micro_edge_allowed_derivations(kind),
+            resolver_requirements: &["parser_facts_v1_same_file_intraprocedural_resolution"],
+            exactness_capability,
+            provenance_builder: "parser_facts_v1_source_spanned_same_file_intraprocedural",
+            parser_recovery_behavior: "omit_relation_on_recovery_or_resolution_ambiguity",
+            source_role_behavior: "production_only",
+            claimability_label: Some(MVP4_3_PARSER_FACTS_V1_CLAIMABILITY),
+            fixture_ids: &["parser_facts_v1_javascript_family_all_relations"],
+            extraction_version: Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION),
+            unsupported_reason: None,
+        }
+    }
+
     pub const fn not_implemented(kind: MicroEdgeKind) -> Self {
         Self {
             language: "any",
             frontend: None,
+            declared_static_scope: "unregistered language; no declared MVP4 static scope",
             micro_edge_kind: kind,
             activation_status: MicroEdgeSupportStatus::NotImplemented,
-            endpoint_node_requirements: &[],
+            endpoint_node_requirements: canonical_endpoint_node_requirements(kind),
+            endpoint_pairs: mvp4_micro_edge_endpoint_pairs(kind),
+            ownership_policy: mvp4_micro_edge_ownership_policy(kind),
+            allowed_derivations: mvp4_micro_edge_allowed_derivations(kind),
             resolver_requirements: &[],
             exactness_capability: MicroExactness::Unsupported,
             provenance_builder: "none",
@@ -346,6 +1062,43 @@ impl MicroEdgeLanguageCapability {
                 "no micro-edge adapter is implemented for this language/relation",
             ),
         }
+    }
+
+    pub const fn declared_not_implemented(
+        contract: Mvp4LanguageFrontendContract,
+        kind: MicroEdgeKind,
+    ) -> Self {
+        Self {
+            language: contract.language,
+            frontend: Some(contract.frontend),
+            declared_static_scope: contract.declared_static_scope,
+            micro_edge_kind: kind,
+            activation_status: MicroEdgeSupportStatus::NotImplemented,
+            endpoint_node_requirements: canonical_endpoint_node_requirements(kind),
+            endpoint_pairs: mvp4_micro_edge_endpoint_pairs(kind),
+            ownership_policy: mvp4_micro_edge_ownership_policy(kind),
+            allowed_derivations: mvp4_micro_edge_allowed_derivations(kind),
+            resolver_requirements: &[],
+            exactness_capability: MicroExactness::Unsupported,
+            provenance_builder: "inactive_contract_only_no_rows_emitted",
+            parser_recovery_behavior: "adapter_inactive_no_rows_emitted",
+            source_role_behavior: "production_only_after_activation_gate",
+            claimability_label: None,
+            fixture_ids: &[],
+            extraction_version: None,
+            unsupported_reason: Some(
+                "micro-edge adapter has declared endpoints but no fixture-gated executable semantics",
+            ),
+        }
+    }
+
+    pub fn supports_endpoint_pair(self, head: MicroNodeKind, tail: MicroNodeKind) -> bool {
+        self.endpoint_pairs
+            .contains(&MicroEdgeEndpointPair::new(head, tail))
+    }
+
+    pub fn allows_derivation(self, derivation: MicroDerivationKind) -> bool {
+        self.allowed_derivations.contains(&derivation)
     }
 
     pub fn matches_frontend(self, frontend: &str) -> bool {
@@ -422,9 +1175,13 @@ pub const MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY: MicroEdgeLanguageCapabili
     MicroEdgeLanguageCapability {
         language: "typescript",
         frontend: Some("tree-sitter-typescript"),
+        declared_static_scope: TYPESCRIPT_FRONTEND_CONTRACT.declared_static_scope,
         micro_edge_kind: MicroEdgeKind::LocalReturnsTo,
         activation_status: MicroEdgeSupportStatus::ExactCapable,
         endpoint_node_requirements: LOCAL_RETURNS_TO_ENDPOINT_REQUIREMENTS,
+        endpoint_pairs: LOCAL_RETURNS_TO_ENDPOINT_PAIRS,
+        ownership_policy: MicroEdgeOwnershipPolicy::SameFunction,
+        allowed_derivations: DIRECT_AST_DERIVATION,
         resolver_requirements: LOCAL_RETURNS_TO_RESOLVER_REQUIREMENTS,
         exactness_capability: MicroExactness::Exact,
         provenance_builder: "direct_ast_nearest_enclosing_function_ownership",
@@ -455,9 +1212,13 @@ pub const MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY: MicroEdgeLanguageCapability =
     MicroEdgeLanguageCapability {
         language: "typescript",
         frontend: Some("tree-sitter-typescript"),
+        declared_static_scope: TYPESCRIPT_FRONTEND_CONTRACT.declared_static_scope,
         micro_edge_kind: MicroEdgeKind::LocalReads,
         activation_status: MicroEdgeSupportStatus::ExactCapable,
         endpoint_node_requirements: LOCAL_READS_ENDPOINT_REQUIREMENTS,
+        endpoint_pairs: LOCAL_READS_ENDPOINT_PAIRS,
+        ownership_policy: MicroEdgeOwnershipPolicy::SameFunction,
+        allowed_derivations: LEGACY_TYPESCRIPT_LOCAL_BINDING_DERIVATIONS,
         resolver_requirements: LOCAL_BINDING_RESOLVER_REQUIREMENTS,
         exactness_capability: MicroExactness::Exact,
         provenance_builder: "direct_ast_resolver_proven_local_read",
@@ -473,9 +1234,13 @@ pub const MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY: MicroEdgeLanguageCapability =
     MicroEdgeLanguageCapability {
         language: "typescript",
         frontend: Some("tree-sitter-typescript"),
+        declared_static_scope: TYPESCRIPT_FRONTEND_CONTRACT.declared_static_scope,
         micro_edge_kind: MicroEdgeKind::LocalWrites,
         activation_status: MicroEdgeSupportStatus::ExactCapable,
         endpoint_node_requirements: LOCAL_WRITES_ENDPOINT_REQUIREMENTS,
+        endpoint_pairs: LOCAL_WRITES_ENDPOINT_PAIRS,
+        ownership_policy: MicroEdgeOwnershipPolicy::SameFunction,
+        allowed_derivations: LEGACY_TYPESCRIPT_LOCAL_BINDING_DERIVATIONS,
         resolver_requirements: LOCAL_BINDING_RESOLVER_REQUIREMENTS,
         exactness_capability: MicroExactness::Exact,
         provenance_builder: "direct_ast_resolver_proven_local_write",
@@ -503,9 +1268,18 @@ pub const MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY: MicroEdgeLanguageCapability
     MicroEdgeLanguageCapability {
         language: "typescript",
         frontend: Some("tree-sitter-typescript"),
+        declared_static_scope: TYPESCRIPT_FRONTEND_CONTRACT.declared_static_scope,
         micro_edge_kind: MicroEdgeKind::LocalFlowsTo,
         activation_status: MicroEdgeSupportStatus::DerivedWithProvenanceCapable,
         endpoint_node_requirements: LOCAL_FLOWS_TO_ENDPOINT_REQUIREMENTS,
+        endpoint_pairs: &[
+            MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::Parameter),
+            MicroEdgeEndpointPair::new(MicroNodeKind::Parameter, MicroNodeKind::LocalBinding),
+            MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::Parameter),
+            MicroEdgeEndpointPair::new(MicroNodeKind::LocalBinding, MicroNodeKind::LocalBinding),
+        ],
+        ownership_policy: MicroEdgeOwnershipPolicy::SameFunction,
+        allowed_derivations: LOCAL_ASSIGNMENT_CHAIN_DERIVATION,
         resolver_requirements: LOCAL_FLOWS_TO_RESOLVER_REQUIREMENTS,
         exactness_capability: MicroExactness::DerivedWithProvenance,
         provenance_builder: "derived_local_assignment_chain_value_flow",
@@ -518,11 +1292,443 @@ pub const MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY: MicroEdgeLanguageCapability
     };
 
 pub const MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES: &[MicroEdgeLanguageCapability] = &[
-    MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY,
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReads,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalWrites,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalCalls,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalChecks,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalGuards,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVASCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(JSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(JSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalWrites),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(JSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(JSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalChecks),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(JSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalGuards),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
     MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY,
     MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY,
     MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY,
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TYPESCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalCalls,
+    ),
+    MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY,
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TYPESCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TYPESCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalChecks,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TYPESCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TYPESCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalGuards,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TYPESCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TYPESCRIPT_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(TSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(TSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalWrites),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(TSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(TSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalChecks),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(TSX_FRONTEND_CONTRACT, MicroEdgeKind::LocalGuards),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        TSX_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReads,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalWrites,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalCalls,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalChecks,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalGuards,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PYTHON_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalWrites),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalFlowsTo),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        GO_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalMutates),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalChecks),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        GO_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalGuards),
+    MicroEdgeLanguageCapability::parser_facts_v1(GO_FRONTEND_CONTRACT, MicroEdgeKind::LocalAsserts),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        GO_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(RUST_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalWrites,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(RUST_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalChecks,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalGuards,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUST_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(JAVA_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalWrites,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(JAVA_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalChecks,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalGuards,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        JAVA_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReads,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalWrites,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalCalls,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalChecks,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalGuards,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CSHARP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalWrites),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalFlowsTo),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        C_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalMutates),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalChecks),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        C_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalGuards),
+    MicroEdgeLanguageCapability::parser_facts_v1(C_FRONTEND_CONTRACT, MicroEdgeKind::LocalAsserts),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        C_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(CPP_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(CPP_FRONTEND_CONTRACT, MicroEdgeKind::LocalWrites),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CPP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(CPP_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CPP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CPP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(CPP_FRONTEND_CONTRACT, MicroEdgeKind::LocalChecks),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CPP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(CPP_FRONTEND_CONTRACT, MicroEdgeKind::LocalGuards),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CPP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        CPP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(RUBY_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalWrites,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(RUBY_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalChecks,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalGuards,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        RUBY_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(PHP_FRONTEND_CONTRACT, MicroEdgeKind::LocalReads),
+    MicroEdgeLanguageCapability::parser_facts_v1(PHP_FRONTEND_CONTRACT, MicroEdgeKind::LocalWrites),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PHP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalFlowsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(PHP_FRONTEND_CONTRACT, MicroEdgeKind::LocalCalls),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PHP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalReturnsTo,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PHP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalMutates,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(PHP_FRONTEND_CONTRACT, MicroEdgeKind::LocalChecks),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PHP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalSanitizes,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(PHP_FRONTEND_CONTRACT, MicroEdgeKind::LocalGuards),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PHP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalAsserts,
+    ),
+    MicroEdgeLanguageCapability::parser_facts_v1(
+        PHP_FRONTEND_CONTRACT,
+        MicroEdgeKind::LocalBranchesTo,
+    ),
 ];
+
+pub const MVP4_3_PARSER_FACTS_V1_RELATIONS: &[MicroEdgeKind] = MicroEdgeKind::ALL;
 
 pub const MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS: &[MicroEdgeKind] = &[
     MicroEdgeKind::LocalReads,
@@ -535,17 +1741,69 @@ pub fn mvp4_micro_edge_language_capability(
     language: &str,
     kind: MicroEdgeKind,
 ) -> MicroEdgeLanguageCapability {
-    let normalized = language.trim().to_ascii_lowercase();
-    if normalized == "typescript" {
+    let contract = mvp4_language_frontend_contract(language);
+    if contract.is_some_and(|contract| {
+        matches!(
+            contract.language,
+            "javascript"
+                | "jsx"
+                | "tsx"
+                | "python"
+                | "go"
+                | "rust"
+                | "java"
+                | "csharp"
+                | "c"
+                | "cpp"
+                | "ruby"
+                | "php"
+        )
+    }) {
+        return MicroEdgeLanguageCapability::parser_facts_v1(contract.expect("contract"), kind);
+    }
+    if contract.is_some_and(|contract| contract.language == "typescript") {
         match kind {
             MicroEdgeKind::LocalReturnsTo => return MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY,
             MicroEdgeKind::LocalReads => return MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY,
             MicroEdgeKind::LocalWrites => return MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY,
             MicroEdgeKind::LocalFlowsTo => return MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY,
-            _ => {}
+            _ => {
+                return MicroEdgeLanguageCapability::parser_facts_v1(
+                    contract.expect("contract"),
+                    kind,
+                )
+            }
         }
     }
+    if let Some(contract) = contract {
+        return MicroEdgeLanguageCapability::declared_not_implemented(contract, kind);
+    }
     MicroEdgeLanguageCapability::not_implemented(kind)
+}
+
+pub fn mvp4_micro_edge_language_capability_for_source(
+    language: &str,
+    source_path: &str,
+    kind: MicroEdgeKind,
+) -> MicroEdgeLanguageCapability {
+    let Some(contract) = mvp4_language_frontend_contract(language) else {
+        return MicroEdgeLanguageCapability::not_implemented(kind);
+    };
+    match mvp4_micro_flow_source_adapter(language, source_path) {
+        Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1 => match kind {
+            MicroEdgeKind::LocalReturnsTo => MVP4_TYPESCRIPT_LOCAL_RETURNS_TO_CAPABILITY,
+            MicroEdgeKind::LocalReads => MVP4_TYPESCRIPT_LOCAL_READS_CAPABILITY,
+            MicroEdgeKind::LocalWrites => MVP4_TYPESCRIPT_LOCAL_WRITES_CAPABILITY,
+            MicroEdgeKind::LocalFlowsTo => MVP4_TYPESCRIPT_LOCAL_FLOWS_TO_CAPABILITY,
+            _ => MicroEdgeLanguageCapability::declared_not_implemented(contract, kind),
+        },
+        Mvp4MicroFlowSourceAdapterKind::ParserFactsV1 => {
+            MicroEdgeLanguageCapability::parser_facts_v1(contract, kind)
+        }
+        Mvp4MicroFlowSourceAdapterKind::Inactive => {
+            MicroEdgeLanguageCapability::declared_not_implemented(contract, kind)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1297,6 +2555,7 @@ pub enum LocalMicroFlowProofRequirement {
     ClaimableLifecyclePassport,
     DictV1LosslessToAuditOrderedSteps,
     NoPacketIntegrityFinding,
+    FlowConnectedToReturn,
     IncludesLocalFlowsTo,
     IncludesRequiredReadsAndWrites,
     NotLocalReturnsToOnly,
@@ -1320,6 +2579,7 @@ impl LocalMicroFlowProofRequirement {
         Self::ClaimableLifecyclePassport,
         Self::DictV1LosslessToAuditOrderedSteps,
         Self::NoPacketIntegrityFinding,
+        Self::FlowConnectedToReturn,
         Self::IncludesLocalFlowsTo,
         Self::IncludesRequiredReadsAndWrites,
         Self::NotLocalReturnsToOnly,
@@ -1343,6 +2603,7 @@ impl LocalMicroFlowProofRequirement {
             Self::ClaimableLifecyclePassport => "claimable_lifecycle_passport",
             Self::DictV1LosslessToAuditOrderedSteps => "dict_v1_lossless_to_audit_ordered_steps",
             Self::NoPacketIntegrityFinding => "no_packet_integrity_finding",
+            Self::FlowConnectedToReturn => "flow_connected_to_return",
             Self::IncludesLocalFlowsTo => "includes_local_flows_to",
             Self::IncludesRequiredReadsAndWrites => "includes_required_reads_and_writes",
             Self::NotLocalReturnsToOnly => "not_local_returns_to_only",
@@ -1368,6 +2629,7 @@ pub struct LocalMicroFlowProofEligibilityInput {
     pub claimable_lifecycle_passport: bool,
     pub dict_v1_lossless_to_audit_ordered_steps: bool,
     pub no_packet_integrity_finding: bool,
+    pub flow_connected_to_return: bool,
     pub includes_local_flows_to: bool,
     pub includes_required_reads_and_writes: bool,
     pub local_returns_to_only: bool,
@@ -1393,6 +2655,7 @@ impl LocalMicroFlowProofEligibilityInput {
             claimable_lifecycle_passport: true,
             dict_v1_lossless_to_audit_ordered_steps: true,
             no_packet_integrity_finding: true,
+            flow_connected_to_return: true,
             includes_local_flows_to: true,
             includes_required_reads_and_writes: true,
             local_returns_to_only: false,
@@ -1402,6 +2665,7 @@ impl LocalMicroFlowProofEligibilityInput {
 
     pub const fn local_returns_to_only() -> Self {
         Self {
+            flow_connected_to_return: false,
             includes_local_flows_to: false,
             includes_required_reads_and_writes: false,
             local_returns_to_only: true,
@@ -1475,6 +2739,10 @@ impl LocalMicroFlowProofEligibilityInput {
             (
                 LocalMicroFlowProofRequirement::NoPacketIntegrityFinding,
                 self.no_packet_integrity_finding,
+            ),
+            (
+                LocalMicroFlowProofRequirement::FlowConnectedToReturn,
+                self.flow_connected_to_return,
             ),
             (
                 LocalMicroFlowProofRequirement::IncludesLocalFlowsTo,
@@ -2685,23 +3953,635 @@ mod tests {
     }
 
     #[test]
-    fn micro_edge_language_capability_registry_defaults_to_not_implemented() {
-        let active = MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES;
-        // LOCAL_RETURNS_TO (MVP4.2) plus LOCAL_READS / LOCAL_WRITES (exact) and
-        // LOCAL_FLOWS_TO (derived_with_provenance) (MVP4.2b).
-        assert_eq!(active.len(), 4);
-        assert!(active.iter().all(|capability| {
-            capability.language == "typescript"
-                && matches!(
+    fn canonical_mvp4_frontend_registry_is_exactly_thirteen_and_scoped() {
+        assert_eq!(
+            MVP4_CANONICAL_LANGUAGE_FRONTENDS.len(),
+            MVP4_CANONICAL_FRONTEND_COUNT
+        );
+        let languages = MVP4_CANONICAL_LANGUAGE_FRONTENDS
+            .iter()
+            .map(|contract| contract.language)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(languages.len(), MVP4_CANONICAL_FRONTEND_COUNT);
+        assert!(!languages.contains("c_cpp"));
+        assert!(MVP4_CANONICAL_LANGUAGE_FRONTENDS.iter().all(|contract| {
+            !contract.frontend.is_empty()
+                && !contract.file_extensions.is_empty()
+                && !contract.declared_static_scope.is_empty()
+                && !contract.resolver_boundary.is_empty()
+                && !contract.dynamic_boundary.is_empty()
+        }));
+        let typescript = mvp4_language_frontend_contract(" TypeScript ").expect("typescript");
+        assert_eq!(typescript.file_extensions, &["ts", "mts", "cts"]);
+        assert!(typescript.declared_static_scope.contains(".ts legacy v1"));
+        assert!(typescript
+            .declared_static_scope
+            .contains(".mts/.cts ParserFactsV1"));
+        assert!(typescript.declared_static_scope.contains(".d.ts inactive"));
+        assert!(mvp4_language_frontend_contract("c_cpp").is_none());
+        for (alias, canonical) in [
+            ("js", "javascript"),
+            ("ts", "typescript"),
+            ("py", "python"),
+            ("rs", "rust"),
+            ("c#", "csharp"),
+            ("cs", "csharp"),
+            ("c++", "cpp"),
+            ("cc", "cpp"),
+            ("cxx", "cpp"),
+            ("hpp", "cpp"),
+            ("rb", "ruby"),
+        ] {
+            assert_eq!(
+                mvp4_language_frontend_contract(alias),
+                mvp4_language_frontend_contract(canonical),
+                "{alias} must normalize to {canonical}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp4_micro_flow_source_adapter_is_an_exact_active_extension_contract() {
+        for (language, path, expected) in [
+            (
+                "javascript",
+                "src/sample.js",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "js",
+                "src/sample.mjs",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "javascript",
+                "src/sample.cjs",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "jsx",
+                "src/sample.jsx",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "typescript",
+                "src/sample.ts",
+                Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1,
+            ),
+            (
+                "ts",
+                "src/sample.mts",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "typescript",
+                "src/sample.cts",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "tsx",
+                "src/sample.tsx",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "typescript",
+                "src/sample.d.ts",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "python",
+                "src/sample.py",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "py",
+                "src/sample.py",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "go",
+                "src/sample.go",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "rust",
+                "src/sample.rs",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "rs",
+                "src/sample.rs",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "python",
+                "src/sample.pyi",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "java",
+                "src/sample.java",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "cs",
+                "src/sample.cs",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "c",
+                "src/sample.c",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "c",
+                "include/sample.h",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "cpp",
+                "src/sample.cc",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "c++",
+                "src/sample.cpp",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "cxx",
+                "src/sample.cxx",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "cpp",
+                "include/sample.hpp",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "cpp",
+                "include/sample.hh",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "cpp",
+                "include/sample.hxx",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "cpp",
+                "include/sample.h",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "c",
+                "include/sample.hpp",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "ruby",
+                "src/sample.rb",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "rb",
+                "src/alias.rb",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            (
+                "php",
+                "src/sample.php",
+                Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+            ),
+            ("ruby", "bin/tool", Mvp4MicroFlowSourceAdapterKind::Inactive),
+            ("php", "bin/tool", Mvp4MicroFlowSourceAdapterKind::Inactive),
+            (
+                "ruby",
+                "Rakefile.rake",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "ruby",
+                "plugin.gemspec",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "ruby",
+                "config.ru",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "php",
+                "view.phtml",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "php",
+                "library.inc",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "php",
+                "legacy.php3",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "rb",
+                "src/sample.php",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "ruby",
+                "src/sample.php",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "php",
+                "src/sample.rb",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "c#",
+                "src/sample.java",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+            (
+                "javascript",
+                "src/sample.ts",
+                Mvp4MicroFlowSourceAdapterKind::Inactive,
+            ),
+        ] {
+            assert_eq!(mvp4_micro_flow_source_adapter(language, path), expected);
+        }
+        assert_eq!(
+            serde_json::to_string(&Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1).unwrap(),
+            "\"legacy_type_script_v1\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Mvp4MicroFlowSourceAdapterKind::ParserFactsV1).unwrap(),
+            "\"parser_facts_v1\""
+        );
+    }
+
+    #[test]
+    fn micro_node_registry_and_source_capabilities_preserve_active_language_boundaries() {
+        assert_eq!(
+            MVP4_MICRO_NODE_LANGUAGE_CAPABILITIES.len(),
+            MVP4_CANONICAL_FRONTEND_COUNT
+        );
+        assert_eq!(MVP4_ACTIVE_MICRO_NODE_LANGUAGE_CAPABILITIES.len(), 13);
+        assert_eq!(
+            MVP4_ACTIVE_MICRO_NODE_LANGUAGE_CAPABILITIES
+                .iter()
+                .map(|capability| capability.language)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                "go",
+                "c",
+                "cpp",
+                "javascript",
+                "java",
+                "jsx",
+                "python",
+                "rust",
+                "csharp",
+                "typescript",
+                "tsx",
+                "ruby",
+                "php",
+            ])
+        );
+        assert!(MVP4_ACTIVE_MICRO_NODE_LANGUAGE_CAPABILITIES
+            .iter()
+            .all(|capability| {
+                capability.activation_status == MicroNodeSupportStatus::ExactCapable
+                    && capability.supported_node_kinds == MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+                    && capability.canonical_node_kinds == MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+            }));
+
+        // The language-level TypeScript row stays on the frozen legacy v1 contract.
+        let typescript = mvp4_micro_node_language_capability("typescript");
+        assert_eq!(typescript, mvp4_micro_node_language_capability("ts"));
+        assert_eq!(
+            typescript.activation_status,
+            MicroNodeSupportStatus::ExactCapable
+        );
+        assert_eq!(
+            typescript.extraction_version,
+            Some(MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION)
+        );
+        assert_eq!(
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            &[
+                MicroNodeKind::FunctionFrame,
+                MicroNodeKind::Parameter,
+                MicroNodeKind::LocalBinding,
+                MicroNodeKind::PropertyAccess,
+                MicroNodeKind::CallSite,
+                MicroNodeKind::ReturnSite,
+                MicroNodeKind::AssignmentSite,
+                MicroNodeKind::ValueUse,
+                MicroNodeKind::MutationSite,
+                MicroNodeKind::ConditionSite,
+                MicroNodeKind::BranchArm,
+                MicroNodeKind::TestAssertion,
+                MicroNodeKind::SanitizerCall,
+            ]
+        );
+        assert_eq!(MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS.len(), 13);
+        assert_eq!(
+            typescript.supported_node_kinds,
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+        );
+        assert_eq!(
+            typescript.canonical_node_kinds,
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+        );
+        assert!(MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+            .iter()
+            .all(|kind| typescript.supports_node_kind(*kind)));
+        assert!(typescript.supports_node_kind(MicroNodeKind::BranchArm));
+        for non_local_kind in [
+            MicroNodeKind::LiteralKey,
+            MicroNodeKind::ImportBinding,
+            MicroNodeKind::ExportBinding,
+            MicroNodeKind::RouteLiteral,
+            MicroNodeKind::RouteBinding,
+            MicroNodeKind::AuthLiteral,
+        ] {
+            assert!(!typescript.supports_node_kind(non_local_kind));
+            assert!(!typescript.canonical_node_kinds.contains(&non_local_kind));
+        }
+        assert_eq!(MicroNodeKind::BranchArm.as_str(), "branch_arm");
+
+        let exact_ts =
+            mvp4_micro_node_language_capability_for_source("typescript", "src/sample.ts");
+        assert_eq!(exact_ts, typescript);
+        assert_eq!(
+            exact_ts.extraction_version,
+            Some(MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION)
+        );
+        for path in ["src/sample.mts", "src/sample.cts"] {
+            let generic_ts = mvp4_micro_node_language_capability_for_source("typescript", path);
+            assert_eq!(
+                generic_ts.activation_status,
+                MicroNodeSupportStatus::ExactCapable
+            );
+            assert_eq!(
+                generic_ts.extraction_version,
+                Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION)
+            );
+        }
+        let declarations =
+            mvp4_micro_node_language_capability_for_source("typescript", "src/sample.d.ts");
+        assert_eq!(
+            declarations.activation_status,
+            MicroNodeSupportStatus::NotImplemented
+        );
+        assert!(declarations.supported_node_kinds.is_empty());
+        assert!(declarations.extraction_version.is_none());
+
+        for (language, path) in [
+            ("javascript", "src/sample.js"),
+            ("javascript", "src/sample.mjs"),
+            ("javascript", "src/sample.cjs"),
+            ("jsx", "src/sample.jsx"),
+            ("tsx", "src/sample.tsx"),
+            ("python", "src/sample.py"),
+            ("go", "src/sample.go"),
+            ("rust", "src/sample.rs"),
+            ("java", "src/sample.java"),
+            ("csharp", "src/sample.cs"),
+            ("c", "src/sample.c"),
+            ("c", "include/sample.h"),
+            ("cpp", "src/sample.cc"),
+            ("cpp", "src/sample.cpp"),
+            ("cpp", "src/sample.cxx"),
+            ("cpp", "include/sample.hpp"),
+            ("cpp", "include/sample.hh"),
+            ("cpp", "include/sample.hxx"),
+            ("ruby", "src/sample.rb"),
+            ("php", "src/sample.php"),
+        ] {
+            let capability = mvp4_micro_node_language_capability_for_source(language, path);
+            assert_eq!(
+                capability.activation_status,
+                MicroNodeSupportStatus::ExactCapable
+            );
+            assert_eq!(
+                capability.extraction_version,
+                Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION)
+            );
+        }
+
+        for contract in MVP4_CANONICAL_LANGUAGE_FRONTENDS {
+            let capability = mvp4_micro_node_language_capability(contract.language);
+            assert_eq!(capability.frontend, Some(contract.frontend));
+            assert_eq!(
+                capability.declared_static_scope,
+                contract.declared_static_scope
+            );
+            if !matches!(
+                contract.language,
+                "javascript"
+                    | "jsx"
+                    | "typescript"
+                    | "tsx"
+                    | "python"
+                    | "go"
+                    | "rust"
+                    | "java"
+                    | "csharp"
+                    | "c"
+                    | "cpp"
+                    | "ruby"
+                    | "php"
+            ) {
+                assert_eq!(
                     capability.activation_status,
+                    MicroNodeSupportStatus::NotImplemented
+                );
+                assert!(capability.supported_node_kinds.is_empty());
+                assert!(capability.extraction_version.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn micro_edge_registry_and_source_capabilities_preserve_active_language_boundaries() {
+        let active = MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES;
+        assert_eq!(active.len(), 13 * MicroEdgeKind::ALL.len());
+        let expected_kinds = MicroEdgeKind::ALL
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for language in [
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php",
+        ] {
+            let rows = active
+                .iter()
+                .filter(|capability| capability.language == language)
+                .collect::<Vec<_>>();
+            assert_eq!(rows.len(), MicroEdgeKind::ALL.len(), "{language}");
+            assert_eq!(
+                rows.iter()
+                    .map(|capability| capability.micro_edge_kind)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                expected_kinds,
+                "{language} aggregate rows must have 11 unique relation names"
+            );
+            assert!(rows.iter().all(|capability| matches!(
+                capability.activation_status,
+                MicroEdgeSupportStatus::ExactCapable
+                    | MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+            )));
+        }
+
+        assert_eq!(MVP4_3_PARSER_FACTS_V1_RELATIONS, MicroEdgeKind::ALL);
+        for &kind in MicroEdgeKind::ALL {
+            let exact_ts =
+                mvp4_micro_edge_language_capability_for_source("typescript", "src/sample.ts", kind);
+            let legacy_extraction_version = match kind {
+                MicroEdgeKind::LocalReturnsTo => Some(MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION),
+                MicroEdgeKind::LocalReads => Some(MVP4_2B_LOCAL_READS_EXTRACTION_VERSION),
+                MicroEdgeKind::LocalWrites => Some(MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION),
+                MicroEdgeKind::LocalFlowsTo => Some(MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION),
+                _ => None,
+            };
+            if let Some(extraction_version) = legacy_extraction_version {
+                assert!(matches!(
+                    exact_ts.activation_status,
                     MicroEdgeSupportStatus::ExactCapable
                         | MicroEdgeSupportStatus::DerivedWithProvenanceCapable
-                )
-        }));
+                ));
+                assert_eq!(exact_ts.extraction_version, Some(extraction_version));
+                assert_ne!(
+                    exact_ts.extraction_version,
+                    Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION)
+                );
+            } else {
+                assert_eq!(
+                    exact_ts.activation_status,
+                    MicroEdgeSupportStatus::NotImplemented
+                );
+                assert!(exact_ts.extraction_version.is_none());
+            }
+        }
+
+        let generic_sources = [
+            ("javascript", "src/sample.js"),
+            ("javascript", "src/sample.mjs"),
+            ("javascript", "src/sample.cjs"),
+            ("jsx", "src/sample.jsx"),
+            ("typescript", "src/sample.mts"),
+            ("typescript", "src/sample.cts"),
+            ("tsx", "src/sample.tsx"),
+            ("python", "src/sample.py"),
+            ("go", "src/sample.go"),
+            ("rust", "src/sample.rs"),
+            ("java", "src/sample.java"),
+            ("csharp", "src/sample.cs"),
+            ("c", "src/sample.c"),
+            ("c", "include/sample.h"),
+            ("cpp", "src/sample.cc"),
+            ("cpp", "src/sample.cpp"),
+            ("cpp", "src/sample.cxx"),
+            ("cpp", "include/sample.hpp"),
+            ("cpp", "include/sample.hh"),
+            ("cpp", "include/sample.hxx"),
+            ("ruby", "src/sample.rb"),
+            ("php", "src/sample.php"),
+        ];
+        for (language, path) in generic_sources {
+            for &kind in MicroEdgeKind::ALL {
+                let capability =
+                    mvp4_micro_edge_language_capability_for_source(language, path, kind);
+                let expected_status = if matches!(
+                    kind,
+                    MicroEdgeKind::LocalFlowsTo
+                        | MicroEdgeKind::LocalMutates
+                        | MicroEdgeKind::LocalSanitizes
+                        | MicroEdgeKind::LocalGuards
+                        | MicroEdgeKind::LocalAsserts
+                ) {
+                    MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+                } else {
+                    MicroEdgeSupportStatus::ExactCapable
+                };
+                assert_eq!(
+                    capability.activation_status, expected_status,
+                    "{path}/{kind:?}"
+                );
+                assert_eq!(
+                    capability.extraction_version,
+                    Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION),
+                    "{path}/{kind:?} must not resolve a legacy TypeScript row"
+                );
+                assert_eq!(
+                    capability.claimability_label,
+                    Some(MVP4_3_PARSER_FACTS_V1_CLAIMABILITY)
+                );
+            }
+        }
+
+        for language in [
+            "javascript",
+            "jsx",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php",
+        ] {
+            for &kind in MicroEdgeKind::ALL {
+                let capability = mvp4_micro_edge_language_capability(language, kind);
+                assert_eq!(capability.language, language, "{language}/{kind:?}");
+                assert_eq!(
+                    capability.extraction_version,
+                    Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION),
+                    "{language}/{kind:?} language-only aggregate must expose ParserFactsV1"
+                );
+            }
+        }
+
+        for &kind in MicroEdgeKind::ALL {
+            let declarations = mvp4_micro_edge_language_capability_for_source(
+                "typescript",
+                "src/sample.d.ts",
+                kind,
+            );
+            assert_eq!(
+                declarations.activation_status,
+                MicroEdgeSupportStatus::NotImplemented
+            );
+            assert!(declarations.extraction_version.is_none());
+        }
 
         let returns_to =
             mvp4_micro_edge_language_capability("typescript", MicroEdgeKind::LocalReturnsTo);
         assert_eq!(returns_to.micro_edge_kind, MicroEdgeKind::LocalReturnsTo);
+        assert!(returns_to
+            .supports_endpoint_pair(MicroNodeKind::ReturnSite, MicroNodeKind::FunctionFrame));
+        assert!(!returns_to
+            .supports_endpoint_pair(MicroNodeKind::FunctionFrame, MicroNodeKind::ReturnSite));
+        assert!(returns_to.allows_derivation(MicroDerivationKind::DirectAstExtraction));
         assert_eq!(
             returns_to.endpoint_node_requirements,
             &[MicroNodeKind::ReturnSite, MicroNodeKind::FunctionFrame]
@@ -2716,6 +4596,10 @@ mod tests {
 
         let reads = mvp4_micro_edge_language_capability("typescript", MicroEdgeKind::LocalReads);
         assert_eq!(
+            reads,
+            mvp4_micro_edge_language_capability("ts", MicroEdgeKind::LocalReads)
+        );
+        assert_eq!(
             reads.activation_status,
             MicroEdgeSupportStatus::ExactCapable
         );
@@ -2726,6 +4610,8 @@ mod tests {
             MVP4_2B_LOCAL_READS_CLAIMABILITY,
             MVP4_2B_LOCAL_READS_EXTRACTION_VERSION,
         ));
+        assert!(reads.allows_derivation(MicroDerivationKind::DirectAstExtraction));
+        assert!(reads.allows_derivation(MicroDerivationKind::ResolverBackedBinding));
 
         let writes = mvp4_micro_edge_language_capability("typescript", MicroEdgeKind::LocalWrites);
         assert_eq!(
@@ -2739,6 +4625,13 @@ mod tests {
             MVP4_2B_LOCAL_WRITES_CLAIMABILITY,
             MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION,
         ));
+        assert!(writes.allows_derivation(MicroDerivationKind::DirectAstExtraction));
+        assert!(writes.allows_derivation(MicroDerivationKind::ResolverBackedBinding));
+
+        let javascript_reads =
+            mvp4_micro_edge_language_capability("javascript", MicroEdgeKind::LocalReads);
+        assert!(javascript_reads.allows_derivation(MicroDerivationKind::ResolverBackedBinding));
+        assert!(!javascript_reads.allows_derivation(MicroDerivationKind::DirectAstExtraction));
 
         // LOCAL_FLOWS_TO is DERIVED, not exact: it must NOT report exact support,
         // and carries derived_with_provenance exactness + binding endpoints.
@@ -2773,8 +4666,9 @@ mod tests {
             MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION,
         ));
 
-        // Other languages do not inherit TypeScript exact support for any kind.
-        for language in ["javascript", "rust", "python", "go", "java"] {
+        // Activated non-JavaScript ParserFacts frontends expose their language-level
+        // aggregate contract without inheriting the frozen TypeScript v1 versions.
+        for language in ["python", "go", "rust", "java", "csharp", "c", "cpp"] {
             for kind in [
                 MicroEdgeKind::LocalReturnsTo,
                 MicroEdgeKind::LocalReads,
@@ -2784,12 +4678,77 @@ mod tests {
                 let capability = mvp4_micro_edge_language_capability(language, kind);
                 assert_eq!(
                     capability.activation_status,
-                    MicroEdgeSupportStatus::NotImplemented,
-                    "{language}/{kind:?} should not inherit TypeScript exact support"
+                    if kind == MicroEdgeKind::LocalFlowsTo {
+                        MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+                    } else {
+                        MicroEdgeSupportStatus::ExactCapable
+                    },
+                    "{language}/{kind:?} must expose the active ParserFacts aggregate contract"
                 );
-                assert!(!capability.activation_status.default_exact_support());
+                assert_eq!(
+                    capability.activation_status.default_exact_support(),
+                    kind != MicroEdgeKind::LocalFlowsTo
+                );
+                assert_eq!(capability.language, language);
+                let contract = mvp4_language_frontend_contract(language).expect("contract");
+                assert_eq!(capability.frontend, Some(contract.frontend));
+                assert_eq!(
+                    capability.declared_static_scope,
+                    contract.declared_static_scope
+                );
+                assert!(!capability.endpoint_pairs.is_empty());
+                assert_eq!(
+                    capability.extraction_version,
+                    Some(MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION)
+                );
             }
         }
+
+        let javascript_calls =
+            mvp4_micro_edge_language_capability("javascript", MicroEdgeKind::LocalCalls);
+        assert_eq!(
+            javascript_calls.ownership_policy,
+            MicroEdgeOwnershipPolicy::CallerToSameFileFunction
+        );
+        assert!(javascript_calls
+            .supports_endpoint_pair(MicroNodeKind::CallSite, MicroNodeKind::FunctionFrame));
+        assert!(
+            javascript_calls.allows_derivation(MicroDerivationKind::CompilerLspBackedDerivation)
+        );
+        let python_branches =
+            mvp4_micro_edge_language_capability("python", MicroEdgeKind::LocalBranchesTo);
+        assert!(python_branches
+            .supports_endpoint_pair(MicroNodeKind::ConditionSite, MicroNodeKind::BranchArm));
+        assert_eq!(
+            python_branches.ownership_policy,
+            MicroEdgeOwnershipPolicy::SameFunction
+        );
+
+        let python_flows =
+            mvp4_micro_edge_language_capability("python", MicroEdgeKind::LocalFlowsTo);
+        assert!(
+            python_flows.supports_endpoint_pair(MicroNodeKind::ValueUse, MicroNodeKind::ReturnSite)
+        );
+        assert!(python_flows
+            .supports_endpoint_pair(MicroNodeKind::CallSite, MicroNodeKind::LocalBinding));
+        assert!(python_flows
+            .supports_endpoint_pair(MicroNodeKind::SanitizerCall, MicroNodeKind::ReturnSite));
+        assert!(
+            !flows_to.supports_endpoint_pair(MicroNodeKind::ValueUse, MicroNodeKind::ReturnSite)
+        );
+
+        let ruby_mutates = mvp4_micro_edge_language_capability("ruby", MicroEdgeKind::LocalMutates);
+        assert!(ruby_mutates
+            .supports_endpoint_pair(MicroNodeKind::MutationSite, MicroNodeKind::PropertyAccess));
+        assert!(!ruby_mutates
+            .supports_endpoint_pair(MicroNodeKind::PropertyAccess, MicroNodeKind::MutationSite));
+        let php_sanitizes =
+            mvp4_micro_edge_language_capability("php", MicroEdgeKind::LocalSanitizes);
+        assert!(php_sanitizes
+            .supports_endpoint_pair(MicroNodeKind::LocalBinding, MicroNodeKind::LocalBinding));
+        assert!(
+            php_sanitizes.allows_derivation(MicroDerivationKind::LocalAssignmentChainDerivation)
+        );
     }
 
     #[test]

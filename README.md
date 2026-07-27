@@ -189,11 +189,14 @@ When reading any CodeGraph output, keep the evidence boundary intact:
 ## Language Support
 
 Tree-sitter extraction covers JavaScript, JSX, TypeScript, TSX, Python, Go,
-Rust, Java, C#, C, C++, Ruby, and PHP. Support varies by language and extractor:
-JS/TS has the richest relation coverage, Python/Go/Rust have conservative
-caller/callee support, and several languages are syntax/entity-first. See
-[Language Frontends](docs/language-frontends.md) for the tiered support matrix,
-exactness labels, and known limitations.
+Rust, Java, C#, C, C++, Ruby, and PHP. All 13 canonical frontends report Tier 5
+and have passed the release-binary representative, source-aware, same-file
+intraprocedural local-flow gate. That is a scoped readiness claim, not a claim
+that every registered extension or project-wide compiler, runtime, framework,
+dynamic-dispatch, macro, preprocessor, alias-analysis, or security behavior is
+modeled. Broad relation coverage still varies by language and extractor. See
+[Language Frontends](docs/language-frontends.md#scoped-tier-5-mvp4-readiness) for the scoped readiness table,
+exactness labels, representative paths, and known limitations.
 
 ## Interfaces
 

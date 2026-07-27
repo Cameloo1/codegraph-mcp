@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://codegraph.local/schemas/agent-json/local_micro_flow_packet_agent_json.schema.json",
   "title": "local_micro_flow_packet_agent_json",
-  "$comment": "Opened packet-body contract for the verified MVP4.3 TypeScript .ts production local-flow packet slice. Unsupported languages, non-production source roles, route/bridge proof, mutation_proof, and context-entry behavior remain inactive/not_applicable. Compact packet bodies use dict_v1 dictionary compression; verbose ordered_steps are explain/audit expansion output.",
+  "$comment": "Opened packet-body contract for the verified MVP4.3 local-flow packet layer across the thirteen canonical production frontend adapters: JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++, Ruby, and PHP. Readiness is scoped to representative, source-aware, same-file intraprocedural local flow; it is not whole-language, cross-file, runtime, dynamic, framework, compiler, or LSP completeness. The TypeScript representative gate executes .mts for the production .mts/.cts ParserFactsV1 lane; ordinary .ts remains on the bounded legacy v1 adapter and .d.ts remains inactive. Non-production source roles, route/bridge proof, mutation_proof, context-entry behavior, and MVP4.4 AST skeleton compression remain inactive/not_applicable. Compact packet bodies use dict_v1 dictionary compression; verbose ordered_steps are explain/audit expansion output, and neither representation starts AST skeleton compression.",
   "type": "object",
   "required": [
     "schema_name",
@@ -143,19 +143,19 @@
       "properties": {
         "production_packet_generation_active": {
           "type": "boolean",
-          "description": "True only for the verified TypeScript .ts production MVP4.3 packet slice; false for unsupported languages, non-production roles, stale/corrupt packet layers, and inactive future surfaces."
+          "description": "True only for a verified canonical production adapter within the source-aware, same-file intraprocedural MVP4.3 packet scope; false for non-production roles, stale/corrupt packet layers, unsupported extensions or semantics, and inactive future surfaces."
         },
         "parser_emission_active": {
           "type": "boolean",
-          "description": "True only when the current parser/index path emitted the verified TypeScript .ts micro-node and micro-edge facts that back this packet."
+          "description": "True only when the current source-aware parser/index adapter emitted the verified micro-node and micro-edge facts that back this packet. For TypeScript, the representative v3 gate covers .mts for the .mts/.cts ParserFactsV1 lane; ordinary .ts remains on the bounded legacy v1 adapter and .d.ts is inactive."
         },
         "proof_strength_active": {
           "type": "boolean",
-          "description": "True only when this packet may carry active graph_relation_proof or flow_proof under the TypeScript .ts production packet contract."
+          "description": "True only when this production packet may carry graph_relation_proof or flow_proof under the scoped thirteen-adapter contract with current lifecycle, source spans, exact or derived-with-provenance steps, and zero unknown/unsupported gaps or omissions."
         },
         "context_entry_command_active": {
           "const": false,
-          "description": "Context-entry remains inactive even when TypeScript local-flow packets are active."
+          "description": "The separate context-entry command remains inactive even when local-flow packet query/open surfaces are active. MCP packet opening is explicit handle resolution, not context-entry activation."
         }
       }
     }
@@ -177,8 +177,22 @@
         },
         "language": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64
+          "enum": [
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php"
+          ],
+          "description": "Canonical frontend adapter that emitted this production packet. This identifier does not broaden the packet beyond verified same-file intraprocedural source behavior."
         },
         "source_role": {
           "$ref": "#/$defs/source_role"

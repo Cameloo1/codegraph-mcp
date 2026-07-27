@@ -328,16 +328,18 @@ runtime proof sources.
 The public agent JSON schemas live under `docs/schemas/agent-json/`, with the
 versioning policy in [agent-json.md](agent-json.md).
 
-MVP4.3 local micro-flow packets are active only for verified TypeScript `.ts`
-production source. Context, routing, validate-edit, watch, and MCP surfaces are
-handle-first: compact output carries packet handles and summary fields, while
-opened packets use `local_micro_flow_packet_agent_json` with
+MVP4.3 local micro-flow packets are active for production sources admitted by
+the 13 canonical, registry-aware adapters under the scoped same-file
+intraprocedural contract. Context, routing, validate-edit, watch, and MCP
+surfaces are handle-first: compact output carries packet handles and summary
+fields, while opened packets use `local_micro_flow_packet_agent_json` with
 `encoding: "dict_v1"` and a dictionary/path `packet_body`. Verbose
 `ordered_steps` are explain/audit expansion output, not the default agent-loop
-payload and not a stronger proof source. JavaScript, JSX, TSX, Python, Go,
-Rust, C, C++, Java, C#, Ruby, PHP, and unsupported/text-only files do not emit
-local-flow packet rows or `flow_proof` unless a later fixture-backed
-implementation explicitly changes that status.
+payload and not a stronger proof source. A packet may carry `flow_proof` only
+when its exact or derived-with-provenance path is current, source-spanned,
+production-role, complete, and free of gaps or omissions. Unsupported paths,
+non-production roles, and broad project/runtime behavior do not gain packet
+proof from the registry entry alone.
 
 Telemetry fields distinguish measured, unknown, and aggregated values. Memory
 is reported as `memory: "unknown"` with `memory_measured: false` unless it is
@@ -346,22 +348,25 @@ unknown or aggregated rather than presented as precise measurements.
 
 ## Language Support Boundary
 
-The Pre-MVP4.4 language hardening lane verified the current registered
+The scoped MVP4 language readiness gate verified the current registered
 frontends: JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++,
-Ruby, and PHP. Exact support is fixture-backed and surface-specific; registered
-does not mean every relation is exact.
+Ruby, and PHP. All 13 report Tier 5, but exact support remains fixture-backed,
+scope-specific, and capability-specific; Tier 5 alone does not make every
+relation exact.
 
 Current agent-use behavior:
 
-- TypeScript `.ts` production files have the active MVP4.3 local-flow packet
-  slice: local micro-nodes, local micro-edges, compact `dict_v1`
-  `local_flow_packets`, and `flow_proof` only for complete eligible local
-  chains.
-- TypeScript `.mts`/`.cts`, TSX, JavaScript, JSX, Python, Go, Rust, C, C++,
-  Java, C#, Ruby, and PHP remain useful through their verified parser, symbol,
-  text, source-role, unresolved-reference, context-pack, validate-edit, watch,
-  and MCP surfaces, but packet support is `not_implemented` unless the final
-  language matrix says otherwise.
+- Every canonical frontend has scoped `same_file_intraprocedural` readiness for
+  exact local binding resolution, exact read/write extraction,
+  derived-with-provenance local dataflow, and exact local-flow packet support.
+  The release gate executes one representative canonical source per frontend;
+  it does not certify every registered extension.
+- The representative TypeScript gate source is `.mts`. Ordinary `.ts` remains
+  active through the bounded legacy-v1 adapter, `.mts` and `.cts` use
+  ParserFactsV1, and `.d.ts` remains inactive.
+- Broad module/project resolution, cross-file flow, dynamic dispatch,
+  compiler/LSP semantics, framework behavior, macro/preprocessor expansion,
+  alias analysis, and runtime values remain outside this scoped packet proof.
 - Rust, Python, Go, TypeScript, and JavaScript have fixture-backed unresolved
   reference warning behavior where eligible. External, builtin/std,
   macro/codegen, dynamic, computed, runtime, compiler/LSP-required, and
@@ -492,10 +497,11 @@ output excludes them by default.
   source-navigation evidence cannot hard-interrupt by themselves.
 - Unknown, unsupported, degraded, and diagnostic-only findings do not interrupt
   by default. Unsafe DB state is a lifecycle blocker, not source-code proof.
-- MVP4.3 local micro-flow packets are active only for verified TypeScript `.ts`
-  production source. They do not create packet proof for TSX, JavaScript, JSX,
-  Python, Go, Rust, C, C++, Java, C#, Ruby, PHP, text-only files, or unsupported
-  source roles.
+- MVP4.3 local micro-flow packets are active for registry-admitted production
+  sources across all 13 canonical frontends, limited to the verified same-file
+  intraprocedural contract. They do not create proof for text-only files,
+  unsupported extensions, non-production roles, cross-file flow, or broader
+  compiler/runtime/framework behavior.
 - Local diagnostic metrics do not become public product claims unless they are
   intentionally promoted and claim-reviewed.
 

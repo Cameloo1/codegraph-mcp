@@ -42,8 +42,10 @@ release-binary smoke; compiler/LSP support requires the resolver to run and
 record provenance; parser-only call syntax is not exact caller/callee proof;
 framework conventions remain heuristic unless source-spanned exact mappings
 exist; dynamic, runtime, macro, and preprocessor behavior remains unknown or
-required until modeled. The TypeScript MVP4 local-flow packet capability is
-scoped to current production `.ts` packet paths only.
+required until modeled. Broad `language_frontend` capability rows and bounded
+`scoped_readiness` rows must be read together: an unsupported broad project
+capability does not erase an exact `same_file_intraprocedural` capability, and a
+scoped exact row must not be promoted into broad compiler/runtime support.
 
 ## Backward-Blocking Coverage (deleted-callee hard interrupts)
 
@@ -93,64 +95,69 @@ until a language gains exact resolver provenance for the unresolved lane.
 This is a product decision, not a gap: hallucination evidence escalates and
 labels, but only stored exact graph facts may hard-interrupt.
 
-## Pre-MVP4.4 Final Truth Gate
+## Scoped Tier 5 MVP4 readiness
 
-The full multi-language frontend and linter capability lane is closed by
-`reports/final/pre_mvp4_4_full_language_frontend_quality_gate.json`,
-`reports/final/pre_mvp4_4_full_language_linter_quality_gate.json`, and
-`reports/final/pre_mvp4_4_full_language_docs_truth_gate.json`.
+All 13 canonical frontends report Tier 5 and passed the release-binary
+representative, source-aware, same-file intraprocedural local-flow gate. Tier
+5/5 here is a bounded readiness label, not blanket language semantics. The
+broad `language_frontend` capability rows remain authoritative for project,
+module, compiler, LSP, runtime, framework, macro, preprocessor, alias-analysis,
+and dynamic-dispatch boundaries.
 
-Current machine-readable matrices live under
-`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/`:
+A frontend is scoped Tier 5 MVP4 ready only when its
+`same_file_intraprocedural` rows report the four statuses below and the
+production release path persists source-spanned, claimable, zero-omission
+`dict_v1` packets that can carry `flow_proof`. The gate also exercises the 13
+canonical micro-node kinds and 11 canonical micro-edge kinds. Query and handle
+surfaces expose persisted evidence; they do not create proof.
 
-- `final_language_capability_matrix.json`
-- `final_linter_capability_matrix.json`
-- `docs_claim_linter_results.json`
-- `product_readiness_update_summary.json`
+| Frontend | Representative gate source | `local_binding_resolved` | `read_write_extracted` | `local_dataflow_derived` | `local_flow_packet_supported` |
+| --- | --- | --- | --- | --- | --- |
+| JavaScript | `src/readiness.js` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| JSX | `src/readiness.jsx` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| TypeScript | `src/readiness.mts` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| TSX | `src/readiness.tsx` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| Python | `src/readiness.py` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| Go | `readiness/readiness.go` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| Rust | `src/lib.rs` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| Java | `src/main/java/Readiness.java` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| C# | `src/Readiness.cs` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| C | `src/readiness.c` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| C++ | `src/readiness.cpp` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| Ruby | `lib/readiness.rb` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
+| PHP | `src/Readiness.php` | `supported_exact` | `supported_exact` | `supported_derived_with_provenance` | `supported_exact` |
 
-These matrices are the canonical compact summary for the full language lane.
-They preserve the same boundary model as `languages --json`: capability flags
-are the source of truth, and old tier labels are compatibility summaries only.
-CodeGraph is not a compiler, typechecker, linter, test suite, runtime tracer, or
-security review replacement. Exact support is fixture-backed; resolver,
-compiler, and future LSP facts require recorded provenance from the resolver or
-compiler path that actually ran.
-
-Unsupported, dynamic, macro, preprocessor, runtime, generated, and
-framework-convention cases remain unknown, heuristic, warning-only,
-not-applicable, or non-proof unless an exact source-spanned gate proves them.
-Text, candidate, vector, binary, nuance, and source-navigation evidence can
-orient an agent, but they are not typed graph proof. The current MVP4 packet
-support remains TypeScript `.ts` production local-flow packets only; every other
-registered language remains `unsupported`, `not_implemented`, or
-`not_applicable` for packet rows and `flow_proof` unless a later exact gate
-changes that status. `public_claim=false`,
-`real_agent_patch_quality_claim=false`, and MVP4.4 was not started during this
-lane.
+These are representative canonical sources, not a per-extension certification.
+For TypeScript, the representative source is `.mts`; ordinary `.ts` remains on
+the bounded legacy-v1 adapter, `.mts` and `.cts` use ParserFactsV1, and `.d.ts`
+remains inactive. Unsupported extensions, non-production roles, partial or
+gap-bearing packets, and broad project/runtime behavior remain non-claimable.
+This capability result is not a benchmark, compiler-replacement, runtime, or
+real-agent patch-quality claim.
 
 ## Current Frontend Matrix
 
 Verified against the parser registry in
 `crates/codegraph-parser/src/lib.rs` (`LANGUAGE_FRONTENDS`), the release CLI
-surface exposed by `codegraph-mcp languages --json`, and the current
-pre-MVP4.4 language dogfood gate. Counts are registry counts, not public
+surface exposed by `codegraph-mcp languages --json`, and the current scoped
+MVP4 readiness gate. Counts are registry counts, not public
 benchmark scores.
 
 | Language | Extensions | Registry tier | Registry extractors | Entity kinds | Relation kinds | Validate-edit / linter surface | MVP4 local-flow packets |
 | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
-| JavaScript | `js`, `mjs`, `cjs` | 5 | 3 | 27 | 46 | Parser/source-span ESM import/export, CommonJS require/module.exports, direct-call, read/write, and heuristic local dataflow facts; package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence only; dynamic import, computed properties/calls, prototype mutation, monkeypatching, eval/reflection, framework conventions, and bundler/runtime aliases stay unknown/heuristic. | Not implemented |
-| JSX | `jsx` | 5 | 3 | 27 | 46 | Parser/source-span component declarations/usages, imports/exports, direct calls, event-handler syntax, props syntax, and heuristic local dataflow facts; package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence only; dynamic props, event handlers, component resolution, framework conventions, dynamic import, computed properties/calls, prototype mutation, monkeypatching, eval/reflection, and bundler/runtime aliases stay unknown/heuristic. | Not implemented |
-| TypeScript | `ts`, `mts`, `cts` | 5 | 4 | 27 | 46 | Parser/source-span/import/export/direct-call facts; compiler resolver facts require helper provenance; local binding, read/write, dataflow, and packet support are scoped to `.ts` production files. | `supported_exact` only at `type_script_production_ts_only` scope |
-| TSX | `tsx` | 5 | 4 | 27 | 46 | Parser/source-span/import/export/component/direct-call/props syntax facts; compiler resolver facts require helper provenance; event handler and React/framework runtime behavior stays unknown/heuristic; read/write is parser-only and local dataflow is heuristic. | Not implemented |
-| Python | `py` | 3 | 3 | 19 | 12 | Parser-only declarations/imports/from-import aliases/direct calls plus scoped exact repo-local cross-file CALLS for the deleted-callee blocker; diagnostic-only project dependency and sibling-module classification; `importlib`, `__import__`, `getattr`/`setattr`, monkeypatching, and runtime dispatch stay unknown/non-proof. | Not implemented |
-| Go | `go` | 3 | 3 | 19 | 20 | Package/import/function/method/struct/interface syntax, direct and selector calls, goroutine syntax, parser read/write/local-flow hints, and scoped exact same-package sibling CALLS for the deleted-callee blocker; diagnostic go.mod module/require classification; build tags, interfaces, channels, cgo, and imported package targets remain compiler/build/runtime required or unknown. | Not implemented |
-| Rust | `rs` | 3 | 3 | 19 | 13 | Parser-only modules, use imports, functions, methods, impl-local methods, traits, type aliases, direct/inherent calls, scoped exact crate-local `use`/`mod` CALLS for the deleted-callee blocker, and diagnostic Cargo.toml package/dependency plus sibling-module classification; cfg/features, macros, unsafe semantics, trait dispatch, cross-crate targets, and rust-analyzer/cargo metadata resolution remain build/compiler/macro/runtime required or unknown. | Not implemented |
-| Java | `java` | 1 | 2 | 19 | 14 | Parser package/import/static-import/type/field/annotation/direct-call evidence plus validate-edit warnings/text evidence; caller/callee/dataflow requires future compiler/build/LSP support. | Not implemented |
-| C# | `cs` | 1 | 2 | 19 | 14 | Parser namespace/using/static-using/alias/property/attribute/direct-call evidence plus validate-edit warnings/text evidence; caller/callee/dataflow requires future Roslyn/MSBuild/LSP support. | Not implemented |
-| C | `c`, `h` | 1 | 2 | 14 | 12 | Parser include/function/struct/typedef/direct-call syntax evidence plus validate-edit warnings/text evidence; compile database/include resolution, macro expansion, preprocessor branches, and function pointer targets stay required/unknown. | Not implemented |
-| C++ | `cc`, `cpp`, `cxx`, `hpp`, `hh`, `hxx` | 1 | 2 | 17 | 12 | Parser include/namespace/class/struct/function/method/constructor/destructor/operator/direct-call/member-call syntax evidence plus validate-edit warnings/text evidence; compile database/include resolution, overloads, ADL, templates, macros, preprocessor branches, virtual dispatch, and function pointers stay required/unknown. | Not implemented |
-| Ruby | `rb` | 1 | 2 | 18 | 14 | Parser-only module/class/method/singleton-method, require/load/require_relative, direct-call, constant-reference, spec/test-role, assertion/mock/stub evidence; runtime method lookup, open classes, Rails conventions, and load-path resolution stay unknown/heuristic. | Not implemented |
-| PHP | `php` | 1 | 2 | 20 | 14 | Parser namespace/use/include/require/class/interface/trait/function/method/direct-call/static-call/member-call syntax evidence plus validate-edit warnings/text evidence; Composer/autoload, magic methods, dynamic includes/functions, framework containers, and mixed PHP/HTML runtime behavior stay unknown/heuristic. | Not implemented |
+| JavaScript | `js`, `mjs`, `cjs` | 5 | 3 | 27 | 46 | Parser/source-span ESM import/export, CommonJS require/module.exports, direct-call, read/write, and heuristic broad local dataflow facts; package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence only; dynamic import, computed properties/calls, prototype mutation, monkeypatching, eval/reflection, framework conventions, and bundler/runtime aliases stay unknown/heuristic. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| JSX | `jsx` | 5 | 3 | 27 | 46 | Parser/source-span component declarations/usages, imports/exports, direct calls, event-handler syntax, props syntax, and heuristic broad local dataflow facts; package.json dependency/builtin classification and deterministic Node-style relative impact closure are diagnostic evidence only; dynamic props, event handlers, component resolution, framework conventions, dynamic import, computed properties/calls, prototype mutation, monkeypatching, eval/reflection, and bundler/runtime aliases stay unknown/heuristic. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| TypeScript | `ts`, `mts`, `cts` | 5 | 4 | 27 | 46 | Parser/source-span/import/export/direct-call facts; compiler resolver facts require helper provenance; `.ts` uses the bounded legacy-v1 local adapter, `.mts`/`.cts` use ParserFactsV1, and `.d.ts` is inactive. | Scoped exact for `.ts` legacy v1 and `.mts`/`.cts` ParserFactsV1; fresh representative: `.mts`; `.d.ts` inactive |
+| TSX | `tsx` | 5 | 4 | 27 | 46 | Parser/source-span/import/export/component/direct-call/props syntax facts; compiler resolver facts require helper provenance; event-handler and React/framework runtime behavior stays unknown/heuristic at broad scope. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| Python | `py` | 5 | 3 | 19 | 12 | Parser-only declarations/imports/from-import aliases/direct calls plus scoped exact repo-local cross-file CALLS for the deleted-callee blocker; diagnostic-only project dependency and sibling-module classification; `importlib`, `__import__`, `getattr`/`setattr`, monkeypatching, and runtime dispatch stay unknown/non-proof. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| Go | `go` | 5 | 3 | 19 | 20 | Package/import/function/method/struct/interface syntax, direct and selector calls, goroutine syntax, parser broad read/write/local-flow hints, and scoped exact same-package sibling CALLS for the deleted-callee blocker; diagnostic go.mod module/require classification; build tags, interfaces, channels, cgo, and imported package targets remain compiler/build/runtime required or unknown. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| Rust | `rs` | 5 | 3 | 19 | 13 | Parser-only modules, use imports, functions, methods, impl-local methods, traits, type aliases, direct/inherent calls, scoped exact crate-local `use`/`mod` CALLS for the deleted-callee blocker, and diagnostic Cargo.toml package/dependency plus sibling-module classification; cfg/features, macros, unsafe semantics, trait dispatch, cross-crate targets, and rust-analyzer/cargo metadata resolution remain build/compiler/macro/runtime required or unknown. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| Java | `java` | 5 | 2 | 19 | 14 | Parser package/import/static-import/type/field/annotation/direct-call evidence plus validate-edit warnings/text evidence; broad project/compiler-resolved caller/callee and dataflow require future compiler/build/LSP support. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| C# | `cs` | 5 | 2 | 19 | 14 | Parser namespace/using/static-using/alias/property/attribute/direct-call evidence plus validate-edit warnings/text evidence; broad project/compiler-resolved caller/callee and dataflow require future Roslyn/MSBuild/LSP support. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| C | `c`, `h` | 5 | 2 | 14 | 12 | Parser include/function/struct/typedef/direct-call syntax evidence plus validate-edit warnings/text evidence; broad compile-database/include resolution, macro expansion, preprocessor branches, and function-pointer targets stay required/unknown. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| C++ | `cc`, `cpp`, `cxx`, `hpp`, `hh`, `hxx` | 5 | 2 | 17 | 12 | Parser include/namespace/class/struct/function/method/constructor/destructor/operator/direct-call/member-call syntax evidence plus validate-edit warnings/text evidence; broad compile-database/include resolution, overloads, ADL, templates, macros, preprocessor branches, virtual dispatch, and function pointers stay required/unknown. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| Ruby | `rb` | 5 | 2 | 18 | 14 | Parser-only module/class/method/singleton-method, require/load/require_relative, direct-call, constant-reference, spec/test-role, assertion/mock/stub evidence; runtime method lookup, open classes, Rails conventions, and load-path resolution stay unknown/heuristic. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
+| PHP | `php` | 5 | 2 | 20 | 14 | Parser namespace/use/include/require/class/interface/trait/function/method/direct-call/static-call/member-call syntax evidence plus validate-edit warnings/text evidence; broad Composer/autoload, magic methods, dynamic includes/functions, framework containers, and mixed PHP/HTML runtime behavior stay unknown/heuristic. | Scoped exact at `same_file_intraprocedural`; broad/project behavior remains bounded |
 
 ## Tier Notes
 
@@ -169,10 +176,13 @@ benchmark scores.
 - TSX component declarations, JSX element references, props syntax, and local
   calls are parser facts unless compiler provenance proves stronger semantics.
   Event handlers and React/framework runtime behavior remain callback/unknown or
-  heuristic evidence. `local_binding_resolved` is `requires_compiler`;
-  `read_write_extracted` is `supported_parser_only`;
-  `local_dataflow_derived` is `supported_heuristic`; and
-  `local_flow_packet_supported` is `not_implemented`.
+  heuristic evidence. At broad `language_frontend` scope,
+  `local_binding_resolved` remains `requires_compiler`,
+  `read_write_extracted` remains `supported_parser_only`,
+  `local_dataflow_derived` remains `supported_heuristic`, and
+  `local_flow_packet_supported` remains `not_implemented`. The separate
+  `same_file_intraprocedural` readiness row is scoped exact for binding,
+  read/write, derived-with-provenance dataflow, and packet support.
 - JavaScript ESM imports/exports, CommonJS `require`/`module.exports`, direct
   calls, read/write syntax, and local dataflow hints are parser or heuristic
   facts. `package_or_module_resolved`, `require_resolved`, and
@@ -192,11 +202,13 @@ benchmark scores.
   framework conventions, dynamic import, computed property/call, prototype
   mutation, monkeypatching, eval/reflection, and bundler/runtime aliases stay
   unknown or heuristic.
-- The active MVP4 local-flow packet slice is narrower than the TypeScript
-  registry row: only verified TypeScript `.ts` production files can emit
-  claimable local binding/read-write/dataflow facts, local-flow packets, or
-  `flow_proof`. TSX, JavaScript, JSX, and every other language remain
-  `not_implemented` for local-flow packets.
+- The scoped MVP4 local-flow packet contract covers registry-admitted
+  production sources across all 13 canonical frontends at
+  `same_file_intraprocedural` scope: binding and read/write are exact,
+  local dataflow is derived with provenance, and packet support is exact.
+  Representative gate sources are listed above. For TypeScript, ordinary `.ts`
+  remains on the bounded legacy-v1 adapter, `.mts`/`.cts` use ParserFactsV1,
+  the fresh representative is `.mts`, and `.d.ts` remains inactive.
 - Python, Go, and Rust include syntax/entity/import-export facts plus
   conservative parser-level calls and caller/callee edges. Repo-local
   cross-file calls resolve to exact CALLS edges under the scopes in
@@ -215,42 +227,48 @@ benchmark scores.
   validate-edit surfaces are warning/unknown lanes unless exact graph/source
   evidence supports a stricter result.
 - Java now exposes parser-only package/import/static-import/type/field/annotation
-  and direct-call syntax facts. Java caller/callee exactness, classpath
-  resolution, overload/virtual dispatch, reflection, annotation processing, DI,
-  read/write, dataflow, and local-flow packets remain unsupported, unknown, or
-  compiler/build/runtime-required until a fixture-backed semantic pass exists.
+  and direct-call syntax facts. Broad project/compiler-resolved caller/callee
+  exactness, classpath resolution, overload/virtual dispatch, reflection,
+  annotation processing, DI, and broader dataflow remain unsupported, unknown,
+  or compiler/build/runtime-required. The scoped same-file intraprocedural
+  binding, read/write, derived-dataflow, and packet row remains exact as above.
 - C# now exposes parser-only namespace/using/static-using/alias/property,
-  attribute, direct invocation, and object-creation syntax facts. C# caller/
-  callee exactness, MSBuild/Roslyn resolution, overload/virtual dispatch,
-  reflection, DI, source generators, read/write, dataflow, and local-flow
-  packets remain unsupported, unknown, or compiler/build/runtime-required until
-  a fixture-backed semantic pass exists.
+  attribute, direct invocation, and object-creation syntax facts. Broad project/
+  compiler-resolved caller/callee exactness, MSBuild/Roslyn resolution, overload/
+  virtual dispatch, reflection, DI, source generators, and broader dataflow
+  remain unsupported, unknown, or compiler/build/runtime-required. The scoped
+  same-file intraprocedural binding, read/write, derived-dataflow, and packet row
+  remains exact as above.
 - C now exposes parser-only include/function/struct/typedef and direct-call
-  syntax facts. C caller/callee exactness, compile database/include resolution,
-  macro expansion, preprocessor branch proof, function pointer targets,
-  read/write, dataflow, and local-flow packets remain unsupported, unknown, or
-  compiler/preprocessor/runtime-required until a fixture-backed semantic pass
-  exists.
+  syntax facts. Broad project/compiler-resolved caller/callee exactness, compile
+  database/include resolution, macro expansion, preprocessor branch proof,
+  function-pointer targets, and broader dataflow remain unsupported, unknown,
+  or compiler/preprocessor/runtime-required. The scoped same-file
+  intraprocedural binding, read/write, derived-dataflow, and packet row remains
+  exact as above.
 - C++ now exposes parser-only include/namespace/class/struct/function/method/
-  constructor/destructor/operator and direct/member-call syntax facts. C++
-  caller/callee exactness, compile database/include resolution, overload/ADL/
-  template instantiation, macro expansion, preprocessor branch proof, virtual
-  dispatch, function pointer targets, read/write, dataflow, and local-flow
-  packets remain unsupported, unknown, or compiler/preprocessor/runtime-required
-  until a fixture-backed semantic pass exists.
+  constructor/destructor/operator and direct/member-call syntax facts. Broad
+  project/compiler-resolved caller/callee exactness, compile-database/include
+  resolution, overload/ADL/template instantiation, macro expansion,
+  preprocessor-branch proof, virtual dispatch, function-pointer targets, and
+  broader dataflow remain unsupported, unknown, or compiler/preprocessor/
+  runtime-required. The scoped same-file intraprocedural binding, read/write,
+  derived-dataflow, and packet row remains exact as above.
 - Ruby now exposes parser-only module/class/method/singleton-method,
   require/load/require_relative, direct-call, constant-reference, spec/test-role,
   assertion/mock/stub evidence. Runtime method lookup, open classes, autoload/
   load-path behavior, metaprogramming, and Rails route conventions remain
-  unsupported, unknown, or heuristic until a fixture-backed semantic pass
-  exists.
+  unsupported, unknown, or heuristic. The scoped same-file intraprocedural
+  binding, read/write, derived-dataflow, and packet row remains exact as above.
 - PHP now exposes parser-only namespace/use/include/require, class/interface/
   trait/function/method, direct function call, static call, member call,
-  object-creation, PHPUnit/test-role, assertion/mock/stub evidence. Composer
-  autoload, include-path resolution, magic methods, dynamic includes/functions,
-  framework containers, mixed PHP/HTML runtime behavior, read/write, dataflow,
-  and local-flow packets remain unsupported, unknown, runtime-required, or
-  heuristic until a fixture-backed semantic pass exists.
+  object-creation, PHPUnit/test-role, assertion/mock/stub evidence. Broad
+  Composer/autoload and include-path resolution, magic methods, dynamic
+  includes/functions, framework containers, mixed PHP/HTML runtime behavior,
+  project/compiler-resolved caller/callee semantics, and broader dataflow remain
+  unsupported, unknown, runtime-required, or heuristic. The scoped same-file
+  intraprocedural binding, read/write, derived-dataflow, and packet row remains
+  exact as above.
 
 ## Proof Rules
 
@@ -259,8 +277,9 @@ benchmark scores.
 - Future LSP facts must be `lsp_verified`.
 - Unresolved or best-effort fallback facts must be `static_heuristic`.
 - `flow_proof` is limited to current, lifecycle-safe, source-spanned,
-  production TypeScript `.ts` local-flow packet paths whose required
-  micro-node/micro-edge steps are complete and claimable.
+  production packets from registry-admitted canonical adapters whose required
+  same-file intraprocedural micro-node/micro-edge steps are complete,
+  claimable, provenance-safe, and free of gaps or omissions.
 - New language frontends must not claim dataflow, security, or test-impact support until fixture-backed extractors exist.
 - Macro expansion, C/C++ preprocessor branches, dependency injection,
   monkeypatching, dynamic dispatch, computed callback targets, JavaScript

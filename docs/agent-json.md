@@ -18,13 +18,16 @@ Schema files live in `docs/schemas/agent-json/`:
 - `status_compact_json.schema.json`
 - `doctor_compact_json.schema.json`
 - `validation_packet_agent_json.schema.json`
+- `validate_edit_agent_json.schema.json`
 - `common.schema.json`
 
 MVP4 packet schemas also live there. `local_micro_flow_packet_agent_json` is
-active only for the verified MVP4.3 TypeScript `.ts` production local-flow
-packet slice; unsupported languages and non-production source roles do not emit
-packet rows or `flow_proof`. `context_entry_packet_agent_json` remains dormant
-planning surface until its implementation gate passes.
+active for the verified same-file intraprocedural production local-flow slice
+across the 13 canonical language frontends. This is scoped coverage, not a
+claim that every extension variant, dynamic dispatch, runtime behavior,
+framework convention, compiler-dependent relation, or project-wide resolver
+path is implemented. `context_entry_packet_agent_json` remains dormant planning
+surface until its implementation gate passes.
 
 - `local_micro_flow_packet_agent_json.schema.json`
 - `query_local_flow_packets_agent_json.schema.json`
@@ -219,21 +222,29 @@ from core graph claimability.
 current packet layer. It reports packet-layer status, rows by language, proof
 status/strength counts, handles, truncation, and omitted counts without inlining
 full packet bodies by default. Query-level `graph_proof=false` means the query
-envelope itself is not a proof claim; individual TypeScript packet rows may
+envelope itself is not a proof claim; individual packet rows may
 carry `proof_strength: "flow_proof"` only when the packet is complete,
 current, source-spanned, provenance-safe, production-role, and eligible.
 
 `local_micro_flow_packet_agent_json` is the opened packet-body contract for the
-verified MVP4.3 TypeScript `.ts` production local-flow packet slice. Compact
-packet bodies use `encoding: "dict_v1"` plus a dictionary/path program
-(`packet_body`) so repeated source spans, micro-node refs, micro-edge refs,
-provenance, branch ids, return-path ids, and labels are interned once. Verbose
-`ordered_steps` are an explain/audit expansion of the same facts, not the
-default context/routing payload and not a stronger proof source. For
-JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, PHP, and
-text-only/unsupported files, packet support remains `not_implemented` or
-`not_applicable`; missing packet rows are not source errors and cannot create a
-hard interrupt.
+verified MVP4.3 production slice for JavaScript, JSX, TypeScript, TSX, Python,
+Go, Rust, C, C++, Java, C#, Ruby, and PHP canonical frontends. Compact packet
+bodies use `encoding: "dict_v1"` plus a dictionary/path program (`packet_body`)
+so repeated source spans, micro-node refs, micro-edge refs, provenance, branch
+ids, return-path ids, and labels are interned once. Verbose `ordered_steps` are
+an explain/audit expansion of the same facts, not the default context/routing
+payload and not a stronger proof source.
+
+The covered semantics are bounded to same-file, intraprocedural local bindings,
+reads/writes, derived local dataflow with provenance, and packet persistence,
+query, and open behavior on a representative canonical path for each frontend.
+TypeScript is not one uniform extension contract: the canonical readiness row
+uses `.mts`; `.mts`/`.cts` use ParserFactsV1, ordinary `.ts` remains on the
+bounded legacy v1 adapter, and declaration-only `.d.ts` is inactive. Text-only
+files, unsupported variants, non-production roles, and semantics that require
+dynamic/runtime/framework/compiler/project resolution remain conservative.
+Missing or downgraded packet rows outside the scoped contract are not source
+errors and cannot create a hard interrupt.
 
 `languages --json` is release capability metadata for language frontend
 support. It exposes the same capability flags and status values as
@@ -241,10 +252,7 @@ support. It exposes the same capability flags and status values as
 It is intentionally outside the agent JSON packet schema set unless a future
 release promotes it as a stable coding-agent packet surface.
 
-The final Pre-MVP4.4 docs truth gate writes review matrices at
-`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_language_capability_matrix.json`
-and
-`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/final_linter_capability_matrix.json`.
-Those artifacts summarize current language/query/context/linter/packet
-capability status. They do not add packet support beyond the verified
-TypeScript `.ts` production local-flow packet slice.
+The stable public readiness boundary is documented in
+[Scoped Tier 5 MVP4 readiness](language-frontends.md#scoped-tier-5-mvp4-readiness).
+Runtime `languages --json`, packet query/open output, lifecycle state, and
+source-spanned packet evidence remain authoritative for a particular DB.

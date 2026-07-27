@@ -2,7 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://codegraph.local/schemas/agent-json/query_local_flow_packets_agent_json.schema.json",
   "title": "query_local_flow_packets_agent_json",
-  "description": "Compact agent envelope for `agent-use query local-flow`: handle-first MVP4.3 local-flow packet rows. Packet bodies and ordered steps are inline only when explicitly requested or in full-detail modes; each row always carries an expansion handle. Individual packet bodies are described by local_micro_flow_packet_agent_json.schema.json.",
+  "description": "Compact agent envelope for `agent-use query local-flow`: handle-first MVP4.3 local-flow packet rows for the 13 canonical production frontend adapters. Packet bodies and ordered steps stay out of compact output; each row carries an expansion handle. Individual packet bodies are described by local_micro_flow_packet_agent_json.schema.json.",
+  "$comment": "The canonical production adapters are JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++, Ruby, and PHP. Accepted readiness is representative, source-aware, same-file intraprocedural local flow; it does not claim whole-language, cross-file, runtime, dynamic, framework, compiler, LSP, project-resolution, or build-database completeness. The TypeScript representative gate uses .mts; .mts/.cts use ParserFactsV1, ordinary .ts remains on bounded legacy v1, and .d.ts is inactive. Query/open MCP packet access is active, but context-entry activation, mutation proof, route/bridge proof, and MVP4.4 AST skeleton compression remain inactive.",
   "type": "object",
   "required": [
     "schema_version",
@@ -62,18 +63,80 @@
       "type": "boolean"
     },
     "packet_layer_status": {
-      "type": "string"
+      "type": "string",
+      "description": "Current persisted packet-layer status. This status reports availability and does not by itself create graph proof."
     },
     "packet_layer": {
       "type": "object",
+      "description": "Inspectable persisted local-flow packet-layer metadata, including capability and proof boundaries.",
       "additionalProperties": true
     },
     "capability_metadata": {
       "type": "object",
+      "description": "Frontend capability metadata. Broad capability rows and accepted scoped_readiness rows are distinct; metadata never creates proof.",
       "additionalProperties": true
     },
     "query": {
       "type": "object",
+      "description": "Optional bounded filters and inclusion controls for persisted packet lookup.",
+      "properties": {
+        "packet_id": {
+          "type": ["string", "null"]
+        },
+        "file": {
+          "type": ["string", "null"]
+        },
+        "function": {
+          "type": ["string", "null"]
+        },
+        "proof_status": {
+          "type": ["string", "null"]
+        },
+        "proof_strength": {
+          "type": ["string", "null"]
+        },
+        "language": {
+          "type": ["string", "null"],
+          "enum": [
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php",
+            null
+          ]
+        },
+        "source_role": {
+          "type": ["string", "null"]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "packet_body_included": {
+          "const": false,
+          "description": "Compact query rows are handle-first; opening the handle is required for a packet body."
+        },
+        "ordered_steps_included": {
+          "const": false,
+          "description": "Compact query rows never inline verbose ordered steps."
+        },
+        "include_packet_body": {
+          "type": "boolean"
+        },
+        "ordered_steps_default_inline": {
+          "const": false,
+          "description": "Verbose ordered steps are never a compact-query default."
+        }
+      },
       "additionalProperties": true
     },
     "result_count": {
@@ -168,7 +231,22 @@
             "type": "string"
           },
           "language": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "javascript",
+              "jsx",
+              "typescript",
+              "tsx",
+              "python",
+              "go",
+              "rust",
+              "java",
+              "csharp",
+              "c",
+              "cpp",
+              "ruby",
+              "php"
+            ]
           },
           "exactness": {
             "type": "string"
@@ -206,14 +284,18 @@
         }
       }
     },
+    "compact_default_packet_body_inline": {
+      "const": false
+    },
     "compact_default_ordered_steps_inline": {
-      "type": "boolean"
+      "const": false,
+      "description": "MCP query/open access is active, but the separate context-entry command remains inactive."
     },
     "full_source_body_output": {
-      "type": "boolean"
+      "const": false
     },
     "context_entry_command_activated": {
-      "type": "boolean"
+      "const": false
     },
     "agent_json_budget": {
       "$ref": "common.schema.json#/$defs/agent_json_budget"

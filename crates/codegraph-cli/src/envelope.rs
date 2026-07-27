@@ -303,6 +303,20 @@ pub(crate) fn compact_agent_use_agent_json_envelope(
     let enforcement_budget = max_output_bytes
         .saturating_sub(1024)
         .max(max_output_bytes.min(MIN_CONTEXT_AGENT_MAX_OUTPUT_BYTES));
+    if detail_mode.preserves_full_details() && serialized_json_len(value) > enforcement_budget {
+        // Registry capabilities are discoverable through `languages --json` and
+        // are lower-priority than actionable lifecycle recovery evidence. Shed
+        // that repeated detail first, then bound lifecycle rows without dropping
+        // the reasons an agent needs to recover.
+        agent_use_compact_local_flow_packet_visibility_field(
+            value,
+            &mut truncated_sections,
+            &mut omitted_count,
+        );
+        if serialized_json_len(value) > enforcement_budget {
+            agent_use_compact_lifecycle_fields(value, &mut truncated_sections, &mut omitted_count);
+        }
+    }
     agent_use_enforce_total_output_budget(
         value,
         enforcement_budget,
@@ -609,6 +623,17 @@ pub(crate) fn agent_use_compact_lifecycle_fields(
 }
 
 pub(crate) fn compact_agent_use_lifecycle_summary(lifecycle: &Value) -> Value {
+    const REASON_LIMIT: usize = 8;
+    let all_reasons = lifecycle
+        .get("reasons")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let reason_count = all_reasons.len();
+    let reasons = all_reasons
+        .into_iter()
+        .take(REASON_LIMIT)
+        .collect::<Vec<_>>();
     json!({
         "claimable": lifecycle.get("claimable").cloned().unwrap_or_else(|| json!(false)),
         "diagnostic_only": lifecycle.get("diagnostic_only").cloned().unwrap_or_else(|| json!(true)),
@@ -627,6 +652,9 @@ pub(crate) fn compact_agent_use_lifecycle_summary(lifecycle: &Value) -> Value {
         "db_path_outside_workspace": lifecycle.get("db_path_outside_workspace").cloned().unwrap_or(Value::Null),
         "allow_stale_read": lifecycle.get("allow_stale_read").cloned().unwrap_or(Value::Null),
         "allow_foreign_db": lifecycle.get("allow_foreign_db").cloned().unwrap_or(Value::Null),
+        "reasons": reasons,
+        "reason_count": reason_count,
+        "reasons_truncated": reason_count > REASON_LIMIT,
         "blocker_count": lifecycle.get("blockers").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
         "blockers_ref": "errors",
         "warning_count": lifecycle.get("warnings").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
@@ -694,6 +722,24 @@ pub(crate) fn agent_use_compact_local_flow_packet_visibility_field(
 }
 
 pub(crate) fn compact_agent_use_local_flow_packet_visibility_summary(layer: &Value) -> Value {
+    let registry = layer
+        .get("packet_language_registry")
+        .unwrap_or(&Value::Null);
+    let active_packet_languages = layer
+        .get("active_packet_languages")
+        .or_else(|| registry.get("active_packet_languages"))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let active_packet_language_count = layer
+        .get("active_packet_language_count")
+        .or_else(|| registry.get("active_packet_language_count"))
+        .cloned()
+        .unwrap_or_else(|| {
+            json!(active_packet_languages
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or_default())
+        });
     json!({
         "status": layer.get("status").cloned().unwrap_or(Value::Null),
         "ready": layer.get("ready").cloned().unwrap_or_else(|| json!(false)),
@@ -702,6 +748,13 @@ pub(crate) fn compact_agent_use_local_flow_packet_visibility_summary(layer: &Val
         "cap_hit_count": layer.get("cap_hit_count").cloned().unwrap_or_else(|| json!(0)),
         "omitted_count": layer.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
         "currentness_status": layer.get("currentness_status").cloned().unwrap_or(Value::Null),
+        "supported_language_slice": layer.get("supported_language_slice").cloned().unwrap_or(Value::Null),
+        "active_packet_languages": active_packet_languages,
+        "active_packet_language_count": active_packet_language_count,
+        "default_packet_query_language": layer.get("default_packet_query_language").or_else(|| registry.get("default_packet_query_language")).cloned().unwrap_or(Value::Null),
+        "typescript_packet_handles_preserved": layer.get("typescript_packet_handles_preserved").or_else(|| registry.get("typescript_packet_handles_preserved")).cloned().unwrap_or_else(|| json!(false)),
+        "registry_detail_inline": false,
+        "registry_detail_ref": "languages --json",
         "ordered_steps_inline": false,
         "packet_body_inline": false,
         "proof_boundary_ref": "audit local-flow-packets",
@@ -1664,7 +1717,9 @@ pub(crate) fn agent_use_finalize_agent_json_budget(
             {
                 continue;
             }
-            if preserve_status_safety_state && key == "stale_candidate_layers" {
+            if preserve_status_safety_state
+                && matches!(key, "stale_candidate_layers" | "db_lifecycle_read")
+            {
                 continue;
             }
             if key == "instrumentation" && compact_agent_use_instrumentation_marker(value) {

@@ -5598,6 +5598,80 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn mvp4_phase5e_activation_keeps_thirteen_source_aware_frontends() {
+        let expected_active_languages = vec![
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php",
+        ];
+        assert_eq!(
+            crate::MVP4_ACTIVE_MICRO_NODE_LANGUAGE_CAPABILITIES
+                .iter()
+                .map(|capability| capability.language)
+                .collect::<Vec<_>>(),
+            expected_active_languages
+        );
+        assert_eq!(
+            crate::MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES.len(),
+            13 * crate::MicroEdgeKind::ALL.len()
+        );
+        assert_eq!(
+            crate::mvp4_3_local_micro_flow_packet_active_languages(),
+            expected_active_languages
+        );
+
+        for (language, path) in [
+            ("c", "src/phase5d/sample.c"),
+            ("c", "src/phase5d/sample.h"),
+            ("cpp", "src/phase5d/sample.cc"),
+            ("cpp", "src/phase5d/sample.cpp"),
+            ("cpp", "src/phase5d/sample.cxx"),
+            ("cpp", "src/phase5d/sample.hpp"),
+            ("cpp", "src/phase5d/sample.hh"),
+            ("cpp", "src/phase5d/sample.hxx"),
+            ("ruby", "src/phase5e/sample.rb"),
+            ("php", "src/phase5e/sample.php"),
+        ] {
+            assert_eq!(
+                crate::mvp4_micro_flow_source_adapter(language, path),
+                crate::Mvp4MicroFlowSourceAdapterKind::ParserFactsV1,
+                "{language}/{path}"
+            );
+        }
+        for (language, path) in [
+            ("cpp", "src/phase5d/sample.h"),
+            ("c", "src/phase5d/sample.hpp"),
+            ("ruby", "bin/sample"),
+            ("php", "bin/sample"),
+            ("ruby", "src/phase5e/sample.rake"),
+            ("ruby", "src/phase5e/sample.gemspec"),
+            ("ruby", "src/phase5e/sample.ru"),
+            ("php", "src/phase5e/sample.phtml"),
+            ("php", "src/phase5e/sample.inc"),
+            ("php", "src/phase5e/sample.php3"),
+            ("rb", "src/phase5e/sample.php"),
+            ("ruby", "src/phase5e/sample.php"),
+            ("php", "src/phase5e/sample.rb"),
+        ] {
+            assert_eq!(
+                crate::mvp4_micro_flow_source_adapter(language, path),
+                crate::Mvp4MicroFlowSourceAdapterKind::Inactive,
+                "{language}/{path}"
+            );
+        }
+    }
+
     fn exact_calls_rule() -> ValidationRule {
         ValidationRule::exact_blocking(
             "mvp3_3.calls.dangling_target",
@@ -5812,9 +5886,12 @@ mod tests {
     }
 
     #[test]
-    fn typescript_packet_flow_proof_does_not_generalize_to_other_languages() {
+    fn active_packet_flow_proof_is_scoped_to_thirteen_languages() {
         use crate::{
-            mvp4_3_local_micro_flow_packet_language_capability, MicroSourceRole, ProofLadderLevel,
+            mvp4_3_default_local_micro_flow_packet_query_language,
+            mvp4_3_local_micro_flow_packet_language_capability,
+            mvp4_3_local_micro_flow_packet_language_capability_for_source, MicroSourceRole,
+            ProofLadderLevel,
         };
 
         let dataflow = fact_contract(LanguageFactFamily::Dataflow);
@@ -5826,27 +5903,73 @@ mod tests {
             LanguageFactLinterConsumption::BlockOnlyWhenExactCurrentSourceSpannedAndPolicyAllows
         );
 
-        let typescript = mvp4_3_local_micro_flow_packet_language_capability("typescript");
-        assert!(typescript.supports_claimable_packets(MicroSourceRole::Production));
-
-        for language in [
-            "javascript",
-            "jsx",
-            "tsx",
-            "python",
-            "go",
-            "rust",
-            "java",
-            "csharp",
-            "c",
-            "cpp",
-            "ruby",
-            "php",
+        for (language, source_path) in [
+            ("javascript", "src/active.js"),
+            ("jsx", "src/active.jsx"),
+            ("typescript", "src/active.ts"),
+            ("tsx", "src/active.tsx"),
+            ("python", "src/active.py"),
+            ("go", "src/active.go"),
+            ("rust", "src/active.rs"),
+            ("java", "src/active.java"),
+            ("csharp", "src/active.cs"),
+            ("c", "src/active.c"),
+            ("cpp", "src/active.cpp"),
+            ("ruby", "src/active.rb"),
+            ("php", "src/active.php"),
         ] {
             let capability = mvp4_3_local_micro_flow_packet_language_capability(language);
             assert!(
+                capability.supports_claimable_packets(MicroSourceRole::Production),
+                "{language} is fixture-gated active for scoped local flow proof"
+            );
+            assert!(!capability.supports_claimable_packets(MicroSourceRole::Test));
+
+            let source_capability = mvp4_3_local_micro_flow_packet_language_capability_for_source(
+                language,
+                source_path,
+            );
+            assert!(
+                source_capability.supports_claimable_packets(MicroSourceRole::Production),
+                "{language}/{source_path} must select its active packet adapter"
+            );
+            assert!(!source_capability.supports_claimable_packets(MicroSourceRole::Test));
+        }
+
+        assert_eq!(
+            mvp4_3_default_local_micro_flow_packet_query_language(),
+            None
+        );
+
+        for (language, source_path) in [
+            ("python", "src/inactive.pyi"),
+            ("python", "src/mismatch.rs"),
+            ("go", "src/mismatch.py"),
+            ("rust", "src/mismatch.go"),
+            ("java", "src/mismatch.cs"),
+            ("csharp", "src/mismatch.java"),
+            ("c", "src/mismatch.hpp"),
+            ("cpp", "src/mismatch.h"),
+            ("typescript", "src/inactive.d.ts"),
+            ("ruby", "bin/inactive"),
+            ("php", "bin/inactive"),
+            ("ruby", "src/inactive.rake"),
+            ("ruby", "src/inactive.gemspec"),
+            ("ruby", "src/inactive.ru"),
+            ("php", "src/inactive.phtml"),
+            ("php", "src/inactive.inc"),
+            ("php", "src/inactive.php3"),
+            ("rb", "src/mismatch.php"),
+            ("ruby", "src/mismatch.php"),
+            ("php", "src/mismatch.rb"),
+        ] {
+            let capability = mvp4_3_local_micro_flow_packet_language_capability_for_source(
+                language,
+                source_path,
+            );
+            assert!(
                 !capability.supports_claimable_packets(MicroSourceRole::Production),
-                "{language} must not inherit TypeScript flow_proof"
+                "{language}/{source_path} must not bypass the exact extension contract"
             );
         }
     }

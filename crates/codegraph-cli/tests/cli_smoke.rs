@@ -564,10 +564,62 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
     assert!(stdout.contains("Language"));
     assert!(stdout.contains("typescript"));
     assert!(stdout.contains("python"));
+    assert!(stdout.contains("java"));
+    assert!(stdout.contains("csharp"));
     assert!(stdout.contains("static_heuristic"));
 
     let json = stdout_json(&run_codegraph(&["languages", "--json"]));
     assert_eq!(json["status"].as_str(), Some("ok"));
+    assert_eq!(
+        json["source_of_truth"].as_str(),
+        Some("parser_frontend_registry")
+    );
+    assert_eq!(
+        json["capability_model"]["source_of_truth"].as_str(),
+        Some("language_frontends.capabilities_and_scoped_readiness")
+    );
+    assert_eq!(
+        json["capability_model"]["promotion_gate"].as_str(),
+        Some("mvp4_3l_all_language_static_flow_readiness")
+    );
+    for contract in [
+        &json["readiness_contract"],
+        &json["capability_model"]["promotion_gate_contract"],
+    ] {
+        assert_eq!(
+            contract["gate_id"].as_str(),
+            Some("mvp4_3l_all_language_static_flow_readiness")
+        );
+        assert_eq!(
+            contract["contract_id"].as_str(),
+            Some("mvp4_3l_all_language_static_flow_readiness_v3")
+        );
+        assert_eq!(contract["runner"].as_str(), Some("mvp4_language_readiness"));
+        assert_eq!(
+            contract["manifest"].as_str(),
+            Some("fixtures/mvp4_micro_flow_oracles/manifest.json")
+        );
+        assert_eq!(
+            contract["public_contract"].as_str(),
+            Some("docs/language-frontends.md#scoped-tier-5-mvp4-readiness")
+        );
+        assert_eq!(
+            contract["capabilities"].as_str(),
+            Some("frontends[].capabilities")
+        );
+        assert_eq!(
+            contract["scoped_readiness"].as_str(),
+            Some("frontends[].scoped_readiness")
+        );
+    }
+    assert_eq!(
+        json["capability_model"]["authoritative_fields"]["capabilities"].as_str(),
+        Some("frontends[].capabilities")
+    );
+    assert_eq!(
+        json["capability_model"]["authoritative_fields"]["scoped_readiness"].as_str(),
+        Some("frontends[].scoped_readiness")
+    );
     assert_eq!(
         json["capability_model"]["old_tier_alone_drives_proof"].as_bool(),
         Some(false)
@@ -587,9 +639,45 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
         .iter()
         .any(|status| status.as_str() == Some("supported_exact")));
     let frontends = json["frontends"].as_array().expect("frontends");
+    let assert_scoped_packet_support =
+        |frontend: &Value, limitation_marker: &str| {
+            assert!(frontend["capabilities"]
+                .as_array()
+                .expect("frontend capabilities")
+                .iter()
+                .any(|capability| capability["flag"].as_str()
+                    == Some("local_flow_packet_supported")
+                    && capability["status"].as_str() == Some("not_implemented")
+                    && capability["scope"].as_str() == Some("language_frontend")));
+            let scoped_readiness = frontend["scoped_readiness"]
+                .as_array()
+                .expect("frontend scoped readiness");
+            assert_eq!(
+                scoped_readiness
+                    .iter()
+                    .filter(|readiness| readiness["scope"].as_str()
+                        == Some("same_file_intraprocedural"))
+                    .count(),
+                4,
+                "Tier 5 must expose exactly four same-file intraprocedural readiness rows"
+            );
+            assert!(scoped_readiness
+                .iter()
+                .any(|readiness| readiness["flag"].as_str()
+                    == Some("local_flow_packet_supported")
+                    && readiness["status"].as_str() == Some("supported_exact")
+                    && readiness["scope"].as_str() == Some("same_file_intraprocedural")));
+            assert!(frontend["known_limitations"]
+                .as_array()
+                .expect("frontend limitations")
+                .iter()
+                .any(|limitation| limitation
+                    .as_str()
+                    .is_some_and(|text| text.contains(limitation_marker))));
+        };
     assert!(frontends.iter().any(
         |frontend| frontend["language_id"].as_str() == Some("python")
-            && frontend["support_tier"].as_str() == Some("tier3_calls_caller_callee")
+            && frontend["support_tier"].as_str() == Some("tier5_dataflow_security_test_impact")
     ));
     let typescript = frontends
         .iter()
@@ -680,7 +768,7 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
         .iter()
         .any(|limitation| limitation
             .as_str()
-            .is_some_and(|text| text.contains("not_implemented for TSX"))));
+            .is_some_and(|text| text.contains("same-file intraprocedural .tsx"))));
     let javascript = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("javascript"))
@@ -719,7 +807,7 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
         .iter()
         .any(|limitation| limitation
             .as_str()
-            .is_some_and(|text| text.contains("not_implemented for JavaScript"))));
+            .is_some_and(|text| text.contains("same-file intraprocedural .js/.mjs/.cjs"))));
     let jsx = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("jsx"))
@@ -758,7 +846,7 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
         .iter()
         .any(|limitation| limitation
             .as_str()
-            .is_some_and(|text| text.contains("not_implemented for JSX"))));
+            .is_some_and(|text| text.contains("same-file intraprocedural .jsx"))));
     let python = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("python"))
@@ -777,7 +865,7 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
         .expect("go frontend");
     assert_eq!(
         go["support_tier"].as_str(),
-        Some("tier3_calls_caller_callee")
+        Some("tier5_dataflow_security_test_impact")
     );
     assert!(go["capabilities"]
         .as_array()
@@ -809,7 +897,7 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
         .expect("rust frontend");
     assert_eq!(
         rust["support_tier"].as_str(),
-        Some("tier3_calls_caller_callee")
+        Some("tier5_dataflow_security_test_impact")
     );
     assert!(rust["capabilities"]
         .as_array()
@@ -855,7 +943,10 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("java"))
         .expect("java frontend");
-    assert_eq!(java["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert_eq!(
+        java["support_tier"].as_str(),
+        Some("tier5_dataflow_security_test_impact")
+    );
     assert!(java["capabilities"]
         .as_array()
         .expect("java capabilities")
@@ -880,13 +971,24 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
             capability["flag"].as_str() == Some("local_flow_packet_supported")
                 && capability["status"].as_str() == Some("not_implemented")
         }));
+    assert_scoped_packet_support(
+        java,
+        ".java ParserFactsV1 local-flow packets are supported only for the same-file method-local intraprocedural scoped contract",
+    );
+    assert!(java["known_limitations"]
+        .as_array()
+        .expect("java limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("reflection/DI"))));
     let csharp = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("csharp"))
         .expect("csharp frontend");
     assert_eq!(
         csharp["support_tier"].as_str(),
-        Some("tier1_syntax_entities")
+        Some("tier5_dataflow_security_test_impact")
     );
     assert!(csharp["capabilities"]
         .as_array()
@@ -912,11 +1014,25 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
             capability["flag"].as_str() == Some("local_flow_packet_supported")
                 && capability["status"].as_str() == Some("not_implemented")
         }));
+    assert_scoped_packet_support(
+        csharp,
+        ".cs ParserFactsV1 local-flow packets are supported only for the same-file method-local intraprocedural scoped contract",
+    );
+    assert!(csharp["known_limitations"]
+        .as_array()
+        .expect("csharp limitations")
+        .iter()
+        .any(|limitation| limitation
+            .as_str()
+            .is_some_and(|text| text.contains("Roslyn semantic model"))));
     let c = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("c"))
         .expect("c frontend");
-    assert_eq!(c["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert_eq!(
+        c["support_tier"].as_str(),
+        Some("tier5_dataflow_security_test_impact")
+    );
     assert!(c["capabilities"]
         .as_array()
         .expect("c capabilities")
@@ -949,11 +1065,27 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
             capability["flag"].as_str() == Some("local_flow_packet_supported")
                 && capability["status"].as_str() == Some("not_implemented")
         }));
+    assert_scoped_packet_support(
+        c,
+        ".c/.h ParserFactsV1 local-flow packets are supported only for the same-file function-local intraprocedural scoped contract",
+    );
+    for marker in ["compile database", "macro expansion", "function pointer"] {
+        assert!(c["known_limitations"]
+            .as_array()
+            .expect("c limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains(marker))));
+    }
     let cpp = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("cpp"))
         .expect("cpp frontend");
-    assert_eq!(cpp["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert_eq!(
+        cpp["support_tier"].as_str(),
+        Some("tier5_dataflow_security_test_impact")
+    );
     assert!(cpp["capabilities"]
         .as_array()
         .expect("cpp capabilities")
@@ -986,11 +1118,34 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
             capability["flag"].as_str() == Some("local_flow_packet_supported")
                 && capability["status"].as_str() == Some("not_implemented")
         }));
+    assert_scoped_packet_support(
+        cpp,
+        ".cc/.cpp/.cxx/.hpp/.hh/.hxx ParserFactsV1 local-flow packets are supported only for the same-file function-local intraprocedural scoped contract",
+    );
+    for marker in [
+        "compile database",
+        "overload resolution",
+        "ADL",
+        "template instantiation",
+        "macro expansion",
+        "function pointer",
+    ] {
+        assert!(cpp["known_limitations"]
+            .as_array()
+            .expect("cpp limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains(marker))));
+    }
     let ruby = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("ruby"))
         .expect("ruby frontend");
-    assert_eq!(ruby["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert_eq!(
+        ruby["support_tier"].as_str(),
+        Some("tier5_dataflow_security_test_impact")
+    );
     assert!(ruby["capabilities"]
         .as_array()
         .expect("ruby capabilities")
@@ -1023,11 +1178,27 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
             capability["flag"].as_str() == Some("local_flow_packet_supported")
                 && capability["status"].as_str() == Some("not_implemented")
         }));
+    assert_scoped_packet_support(
+        ruby,
+        ".rb ParserFactsV1 local-flow packets are supported only for the same-file",
+    );
+    for marker in ["method_missing", "open classes"] {
+        assert!(ruby["known_limitations"]
+            .as_array()
+            .expect("ruby limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains(marker))));
+    }
     let php = frontends
         .iter()
         .find(|frontend| frontend["language_id"].as_str() == Some("php"))
         .expect("php frontend");
-    assert_eq!(php["support_tier"].as_str(), Some("tier1_syntax_entities"));
+    assert_eq!(
+        php["support_tier"].as_str(),
+        Some("tier5_dataflow_security_test_impact")
+    );
     assert!(php["capabilities"]
         .as_array()
         .expect("php capabilities")
@@ -1068,6 +1239,19 @@ fn languages_command_reports_frontend_tiers_and_exactness() {
             capability["flag"].as_str() == Some("local_flow_packet_supported")
                 && capability["status"].as_str() == Some("not_implemented")
         }));
+    assert_scoped_packet_support(
+        php,
+        ".php ParserFactsV1 local-flow packets are supported only for the same-file",
+    );
+    for marker in ["magic methods", "include", "variable functions"] {
+        assert!(php["known_limitations"]
+            .as_array()
+            .expect("php limitations")
+            .iter()
+            .any(|limitation| limitation
+                .as_str()
+                .is_some_and(|text| text.contains(marker))));
+    }
 }
 
 #[test]
@@ -7332,6 +7516,7 @@ fn command_help_is_successful() {
         "init",
         "index",
         "status",
+        "agent-use",
         "query",
         "impact",
         "context-pack",
@@ -7363,6 +7548,60 @@ fn command_help_is_successful() {
                 "index --help must not describe --include as restrictive: {stdout}"
             );
         }
+        if matches!(command, "agent-use" | "query") {
+            for filter in [
+                "--file <path>",
+                "--function <id>",
+                "--packet-id <id>",
+                "--proof-status <status>",
+                "--proof-strength <strength>",
+                "--language <language>",
+                "--source-role <role>",
+                "--include-packet-body",
+                "--limit <n>",
+            ] {
+                assert!(
+                    stdout.contains(filter),
+                    "{command} --help must advertise local-flow filter {filter}: {stdout}"
+                );
+            }
+        }
+        if command == "audit" {
+            assert!(stdout.contains("audit local-flow-packets"), "{stdout}");
+            for flag in [
+                "--db <path>",
+                "--json <path>",
+                "--markdown <path>",
+                "--sample <n>|--limit <n>",
+                "--packet-id <id>",
+                "--expand|--ordered-steps",
+            ] {
+                assert!(
+                    stdout.contains(flag),
+                    "audit --help missing {flag}: {stdout}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn agent_use_query_usage_advertises_every_local_flow_filter() {
+    let output = run_codegraph(&["agent-use", "query"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for filter in [
+        "--file <path>",
+        "--function <id>",
+        "--packet-id <id>",
+        "--proof-status <status>",
+        "--proof-strength <strength>",
+        "--language <language>",
+        "--source-role <role>",
+        "--include-packet-body",
+        "--limit <n>",
+    ] {
+        assert!(stderr.contains(filter), "missing {filter}: {stderr}");
     }
 }
 

@@ -67,6 +67,8 @@ cwd = "<repo>"
 - `codegraph.search_text`
 - `codegraph.search_semantic`
 - `codegraph.context_pack`
+- `codegraph.query_local_flow_packets`
+- `codegraph.open_local_flow_packet`
 - `codegraph.trace_path`
 - `codegraph.impact_analysis`
 - `codegraph.find_callers`
@@ -105,11 +107,10 @@ current tool, resource, prompt, and safety metadata. `codegraph://languages`
 mirrors the release CLI language capability model with `capability_flags`,
 `capability_status_values`, and per-frontend `capabilities`; tier numbers
 remain compatibility summaries only.
-The final Pre-MVP4.4 docs/readiness matrices under
-`reports/audit/artifacts/pre_mvp4_4_full_language_frontends/` summarize that
-same language and linter capability truth for review artifacts. MCP clients
-should still read `codegraph://languages` or tool output for live runtime
-metadata.
+The stable public boundary is documented in
+[Scoped Tier 5 MVP4 readiness](language-frontends.md#scoped-tier-5-mvp4-readiness).
+MCP clients should read `codegraph://languages` and current tool/lifecycle
+output for live runtime metadata.
 
 ## Prompts
 
@@ -177,21 +178,38 @@ MVP4.2 micro-edge fields report exact `LOCAL_RETURNS_TO` graph-relation deltas
 and proof-integrity state. Normal add/remove/move deltas are not validation
 errors. Reverified persisted-edge contradictions are tool graph/proof integrity
 findings with a reindex/repair recovery action; they are not automatically
-source-code edit instructions. These fields activate `flow_proof` only through
-the verified MVP4.3 TypeScript `.ts` production local-flow packet layer; they
-do not activate `mutation_proof`, route/auth semantics, context-entry, or
-packet support for other languages.
+source-code edit instructions. Micro-edge visibility alone does not create
+`flow_proof`, `mutation_proof`, route/auth semantics, or context-entry proof.
 
-MVP4.3 packet surfaces are handle-first in MCP results for TypeScript `.ts`
-production packets only. A context or validation packet may expose a
-micro-flow handle and bounded summary only; the opened packet body uses
-`encoding: "dict_v1"` and `packet_body` in
-`local_micro_flow_packet_agent_json`. JavaScript, JSX, TSX, Python, Go, Rust,
-C, C++, Java, C#, Ruby, PHP, and text-only/unsupported files do not emit
-local-flow packets or `flow_proof`. Missing packet support is
-`not_implemented`/`not_applicable`, not a source-code validation failure. MCP
-context-entry handles remain inactive and must not inline `packet_body`,
-`ordered_steps`, or a full packet body.
+MVP4.3 local-flow packets are active for representative canonical JavaScript,
+JSX, TypeScript, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, and PHP
+production paths under the same-file intraprocedural contract. This does not
+claim every extension variant or dynamic, runtime, framework, compiler,
+cross-file, or project-resolution behavior. TypeScript is split: the canonical
+readiness row uses `.mts`; `.mts`/`.cts` use ParserFactsV1, ordinary `.ts`
+remains on the bounded legacy v1 adapter, and declaration-only `.d.ts` is
+inactive. Missing support outside the scoped contract is
+`not_implemented`/`not_applicable`, not a source-code validation failure.
+
+`codegraph.query_local_flow_packets` performs a bounded read-only lookup over
+persisted packets. Bounded filters are `file` (`path` alias), `function`
+(`symbol` alias), `packet_id`, `proof_status`, `proof_strength`, `language`,
+and `source_role`. File, packet, proof, language, and source-role filters match
+persisted values exactly; the function filter is an exact-or-substring entity or
+frame query. The source role defaults to `production`. `limit` defaults to 20
+and is bounded from 1 through 100. Results are compact and handle-first:
+packet bodies and `ordered_steps` are not included.
+
+`codegraph.open_local_flow_packet` requires one exact `packet_id`, returns that
+persisted packet's `encoding: "dict_v1"` `packet_body`, and leaves decoded
+`ordered_steps` out unless `include_ordered_steps: true` is explicitly set.
+Context-pack packet handles set `mcp_expansion.tool` to
+`codegraph.open_local_flow_packet` and include the repo, DB path, exact packet id, and
+the default `include_ordered_steps: false`, so clients can resolve a compact
+handle without guessing. Querying or opening a packet does not create proof;
+any `flow_proof` strength belongs to the already persisted, lifecycle-safe,
+complete, source-spanned, provenance-safe production packet. MCP context-entry
+handles remain inactive and must not inline packet bodies.
 
 Unresolved-reference findings are surfaced as non-graph evidence. They may warn
 or, under explicit policy, become blocking validation findings, but they are not
