@@ -30,19 +30,23 @@ use codegraph_bench::{
 };
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role, classify_validation_finding,
-    combine_evidence_roles, mvp4_micro_edge_language_capability, normalize_repo_relative_path,
-    stable_edge_id, ContextPacket, ContextSnippet, Edge, EdgeClass, EdgeContext, Entity,
-    EntityKind, EvidenceRole, EvidenceRoleDecision, Exactness, FileRecord, Metadata, MicroEdgeKind,
-    MicroExactness, MicroSourceRole, PathEvidence, RelationKind, RepoIndexState,
-    RetrievalCandidate, RetrievalCandidateSource, RetrievalProofStatus,
-    RetrievalVerificationStatus, SourceSpan, SupportedRelationStatus, ValidationBlockingLevel,
-    ValidationClassification, ValidationEvidenceItem, ValidationEvidenceKind, ValidationFinding,
-    ValidationLifecycleRequirement, ValidationLifecycleState, ValidationPacket,
-    ValidationProofRequirement, ValidationProofStatus, ValidationProvenanceRequirement,
-    ValidationReverificationInput, ValidationRule, ValidationRuleKind,
-    ValidationSourceRoleRequirement, ValidationSourceSpanRequirement, VectorEmbeddingSource,
-    MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION, MVP4_2_MICRO_EDGE_PAYLOAD_VERSION,
-    MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    combine_evidence_roles, mvp4_3_default_local_micro_flow_packet_query_language,
+    mvp4_3_local_micro_flow_packet_active_languages,
+    mvp4_3_local_micro_flow_packet_language_capability, mvp4_micro_edge_language_capability,
+    normalize_repo_relative_path, stable_edge_id, ContextPacket, ContextSnippet, Edge, EdgeClass,
+    EdgeContext, Entity, EntityKind, EvidenceRole, EvidenceRoleDecision, Exactness, FileRecord,
+    Metadata, MicroEdgeKind, MicroEdgeSupportStatus, MicroExactness, MicroSourceRole, PathEvidence,
+    RelationKind, RepoIndexState, RetrievalCandidate, RetrievalCandidateSource,
+    RetrievalProofStatus, RetrievalVerificationStatus, SourceSpan, SupportedRelationStatus,
+    ValidationBlockingLevel, ValidationClassification, ValidationEvidenceItem,
+    ValidationEvidenceKind, ValidationFinding, ValidationLifecycleRequirement,
+    ValidationLifecycleState, ValidationPacket, ValidationProofRequirement, ValidationProofStatus,
+    ValidationProvenanceRequirement, ValidationReverificationInput, ValidationRule,
+    ValidationRuleKind, ValidationSourceRoleRequirement, ValidationSourceSpanRequirement,
+    VectorEmbeddingSource, MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
+    MVP4_2_MICRO_EDGE_PAYLOAD_VERSION, MVP4_2_MICRO_EDGE_ROW_SCHEMA_VERSION,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES,
     MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
     MVP4_ACTIVE_MICRO_EDGE_LANGUAGE_CAPABILITIES,
 };
@@ -71,15 +75,18 @@ pub use codegraph_index::{
     ValidateEditChangedFilesPreflight, VectorChunkArtifactFormat, VectorChunkIndexArtifactOptions,
     VectorChunkIndexBuildOptions, DEFAULT_ENTITY_SOURCE_ROLE_DELTA_TOP_LIMIT,
     DEFAULT_INDEX_BATCH_MAX_FILES, DEFAULT_INDEX_BATCH_MAX_SOURCE_BYTES, DEFAULT_STORAGE_POLICY,
-    INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, REFERENCE_CLASS_BUILTIN_OR_STD,
+    INCLUDE_SEMANTICS_DEFAULT_SCOPE_PLUS_OVERRIDES, REFERENCE_CLASS_ALL,
+    REFERENCE_CLASS_BUILTIN_OR_STD, REFERENCE_CLASS_COMPILER_REQUIRED,
     REFERENCE_CLASS_DYNAMIC_OR_COMPUTED, REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
-    REFERENCE_CLASS_MACRO_OR_CODEGEN, REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+    REFERENCE_CLASS_LSP_REQUIRED, REFERENCE_CLASS_MACRO_OR_CODEGEN,
+    REFERENCE_CLASS_REPO_LOCAL_CANDIDATE, REFERENCE_CLASS_RUNTIME_REQUIRED,
+    REFERENCE_CLASS_UNKNOWN, REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION,
     SCOPE_POLICY_KIND_DEFAULT_WITH_OVERRIDES, SCOPE_TRUTH_STATUS_OVERRIDE_ONLY,
     UNBOUNDED_STORE_READ_LIMIT,
 };
 use codegraph_parser::{
     content_hash, detect_language, extract_entities_and_relations, language_frontends,
-    LanguageParser, TreeSitterParser,
+    LanguageParser, TreeSitterParser, LANGUAGE_CAPABILITY_FLAGS, LANGUAGE_CAPABILITY_STATUS_VALUES,
 };
 use codegraph_query::{
     extract_prompt_seed_provenance, extract_prompt_seeds, plan_task_retrieval, ContextPackRequest,
@@ -147,6 +154,12 @@ const AGENT_USE_PROFILE_PARENT_FILESYSTEM_INACCESSIBLE_FAILPOINT: &str =
 const MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION: u32 = 1;
 const MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION: u32 = 1;
 const MVP4_1_TYPESCRIPT_MICRO_NODE_EXTRACTION_VERSION: &str = "mvp4.1-typescript-micro-nodes-v1";
+pub(crate) const MVP4_3_LOCAL_FLOW_PACKET_SUPPORTED_LANGUAGE_SLICE: &str =
+    "registry_active_source_aware_local_flow_packets_v1";
+pub(crate) const MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT: &str =
+    "not_implemented_outside_registry_active_source_gate";
+pub(crate) const MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT: &str =
+    "registry_active_source_aware_exact_capability_only";
 const AGENT_USE_GIT_METADATA_UNAVAILABLE_FAILPOINT: &str = "agent_use_git_metadata_unavailable";
 const AGENT_USE_WATCH_AFTER_DELTA_COMMIT_BEFORE_STATE_CLEAR_FAILPOINT: &str =
     "agent_use_watch_after_delta_commit_before_state_clear";
@@ -327,7 +340,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "agent-use",
-        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
+        usage: "codegraph-mcp agent-use <status|index|query|context-pack|mcp-config|watch|validate-edit> --repo <repo> --json\n  codegraph-mcp agent-use status --repo <repo> --json\n  codegraph-mcp agent-use index --repo <repo> [--fresh|--rebuild|--incremental] [--json]\n  codegraph-mcp agent-use query symbols|text|files|references|definitions|callers|callees|path|chain <args> --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [<function-or-file>] [--file <path>] [--function <id>] [--packet-id <id>] [--proof-status <status>] [--proof-strength <strength>] [--language <language>] [--source-role <role>] [--include-packet-body] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] --agent-json\n  codegraph-mcp agent-use context-pack --repo <repo> --task <task> --agent-json\n  codegraph-mcp agent-use mcp-config --repo <repo> --json\n  codegraph-mcp agent-use watch --repo <repo> --json [--debounce-ms <ms>]\n  codegraph-mcp agent-use watch --repo <repo> --once --changed <path> [--changed <path>] --json\n  codegraph-mcp agent-use validate-edit --repo <repo> --changed <path> [--changed <path>] --agent-json [--fail-on-blocking]",
         description: "Use the production agent profile outside the source tree.",
     },
     CommandSpec {
@@ -342,7 +355,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "query",
-        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--db <path>]",
+        usage: "codegraph-mcp query <symbols|text|files|references|definitions|callers|callees|chain|unresolved-calls|path> [ARGS]\n  codegraph-mcp query symbols|text|files <query> [--limit <n>] [--candidate-spool <path> --early-candidates] [--concise|--agent-json] [--verbose|--debug|--explain]\n  codegraph-mcp query callers|callees [--entity-id <id>|--exact-resolved|--fuzzy] [--limit <n>] [--concise|--agent-json] [--verbose|--debug|--explain] <symbol>\n  codegraph-mcp agent-use query local-flow [<function-or-file>] [--file <path>] [--function <id>] [--packet-id <id>] [--proof-status <status>] [--proof-strength <strength>] [--language <language>] [--source-role <role>] [--include-packet-body] --repo <repo> [--limit <n>] --agent-json\n  codegraph-mcp query unresolved-calls [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] [--offset <n>] [--json|--agent-json] [--no-snippets] [--db <path>]",
         description: "Query symbols, text, files, references, definitions, calls, chains, or relation paths.",
     },
     CommandSpec {
@@ -402,7 +415,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "audit",
-        usage: "codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded]\n  codegraph-mcp audit vector-chunks --artifact <path> [--db <path>] [--repo <path>] [--json [path]] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit vector-chunks --db <path> [--vectors <path>] [--json [path]] [--sample <n>]\n  codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit micro-nodes --db <path> [--json <path>] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit micro-edges --db <path> [--json <path>] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
+        usage: "codegraph-mcp audit index-scope <repo> [--json [path]] [--markdown <path>] [--include-ignored] [--include <pattern>] [--exclude <pattern>] [--no-default-excludes] [--respect-gitignore true|false] [--explain-scope] [--print-included] [--print-excluded]\n  codegraph-mcp audit vector-chunks --artifact <path> [--db <path>] [--repo <path>] [--json [path]] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit vector-chunks --db <path> [--vectors <path>] [--json [path]] [--sample <n>]\n  codegraph-mcp audit storage --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit storage-micro --out <dir> [--cases simple,expression,inline-tests,duplicates,excluded-junk,all] [--batch-sizes 1,10,100] [--keep-artifacts] [--json [path]] [--markdown [path]] [--no-context-pack] [--respect-gitignore true|false] [--max-db-mib <n>] [--max-artifacts-mib <n>] [--min-free-disk-gib <n>] [--extended] [--stress-corpus buildroot|linux]\n  codegraph-mcp audit schema-check --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit micro-nodes --db <path> [--json <path>] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit micro-edges --db <path> [--json <path>] [--markdown <path>] [--sample <n>]\n  codegraph-mcp audit local-flow-packets [--db <path>] [--json <path>] [--markdown <path>] [--sample <n>|--limit <n>] [--packet-id <id>] [--expand|--ordered-steps]\n  codegraph-mcp audit storage-experiments --db <path> [--workdir <dir>] [--json <path>] [--markdown <path>] [--keep-copies]\n  codegraph-mcp audit sample-edges --db <path> [--relation <RELATION>] [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets]\n  codegraph-mcp audit sample-paths --db <path> [--limit <n>] [--seed <n>] [--json <path>] [--markdown <path>] [--include-snippets] [--max-edge-load <n>] [--timeout-ms <ms>] [--mode <proof|audit|debug>]\n  codegraph-mcp audit relation-counts --db <path> [--json <path>] [--markdown <path>]\n  codegraph-mcp audit label-samples --edges-json <path> [--edges-md <path>] [--paths-json <path>] [--paths-md <path>] [--json <path>] [--markdown <path>]\n  codegraph-mcp audit summarize-labels [--labels <path>] [--dir <path>] [--json <path>] [--markdown <path>]",
         description: "Run read-only audit inspections for vector chunks, storage, sampled edges, relation counts, and manual sample labels.",
     },
     CommandSpec {
@@ -1763,7 +1776,7 @@ fn mvp4_micro_node_visibility_for_preflight(preflight: &DbLifecyclePreflight) ->
         "feature_status": status,
         "ready": false,
         "feature": "mvp4_1_ast_micro_nodes",
-        "supported_language_slice": "typescript_ts_production_function_local_micro_nodes_v1",
+        "supported_language_slice": "registry_active_source_aware_function_local_micro_nodes_v1",
         "schema_version": preflight.db_health.schema_version,
         "row_schema_version": MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION,
         "payload_version": MVP4_1_AST_MICRO_NODE_PAYLOAD_VERSION,
@@ -1816,7 +1829,7 @@ fn mvp4_micro_node_status_from_preflight(preflight: &DbLifecyclePreflight) -> &'
 fn mvp4_micro_node_recovery_action(status: &str) -> &'static str {
     match status {
         "ready" => "none",
-        "not_applicable" => "run an MVP4.1-enabled index on production TypeScript .ts files if micro-node visibility is expected",
+        "not_applicable" => "run an MVP4.1-enabled index on production source files for a registry-active frontend if micro-node visibility is expected",
         "unavailable" => "re-run index with a current writable schema if this DB should expose MVP4.1 micro-node availability",
         "stale" => "refresh the DB for the current repo/head before trusting micro-node availability",
         "incompatible" => "open with a writer/index path that performs the explicit schema migration, or rebuild the DB",
@@ -1887,7 +1900,7 @@ fn mvp4_micro_node_visibility_from_store(
         "feature_status": status,
         "ready": status == "ready",
         "feature": "mvp4_1_ast_micro_nodes",
-        "supported_language_slice": "typescript_ts_production_function_local_micro_nodes_v1",
+        "supported_language_slice": "registry_active_source_aware_function_local_micro_nodes_v1",
         "schema_version": preflight.db_health.schema_version,
         "row_schema_version": summary.row_schema_versions.first().copied().unwrap_or(MVP4_1_AST_MICRO_NODE_ROW_SCHEMA_VERSION),
         "row_schema_versions": summary.row_schema_versions,
@@ -2040,8 +2053,8 @@ fn mvp4_micro_edge_visibility_for_preflight(preflight: &DbLifecyclePreflight) ->
         "feature_status": status,
         "ready": false,
         "feature": "mvp4_2_ast_micro_edges",
-        "supported_language_slice": "typescript_ts_local_returns_to_v1",
-        "supported_relation_slice": "local_returns_to",
+        "supported_language_slice": "registry_active_source_aware_local_micro_edges_v1",
+        "supported_relation_slice": "registry_active_11_relation_local_micro_edges_v1",
         "relation_kinds_active": [],
         "languages_active": [],
         "schema_version": preflight.db_health.schema_version,
@@ -2063,7 +2076,7 @@ fn mvp4_micro_edge_visibility_for_preflight(preflight: &DbLifecyclePreflight) ->
         "availability_separate_from_graph_claimability": true,
         "graph_claimability_unchanged": true,
         "micro_node_availability_separate": true,
-        "local_flow_packet_availability": "not_applicable",
+        "local_flow_packet_availability": "reported_separately",
         "default_full_table_scan": false,
         "bounded_summary": true,
         "sample_available_in_audit": true,
@@ -2097,7 +2110,7 @@ fn mvp4_micro_edge_recovery_action(status: &str) -> &'static str {
     match status {
         "ready" => "none",
         "not_applicable" => {
-            "run an MVP4.2-enabled index on production TypeScript .ts files if micro-edge visibility is expected"
+            "run an MVP4.2-enabled index on production source files for a registry-active frontend if micro-edge visibility is expected"
         }
         "unavailable" => {
             "re-run index with a current writable schema if this DB should expose MVP4.2 micro-edge availability"
@@ -2177,8 +2190,8 @@ fn mvp4_micro_edge_visibility_from_store(
         "feature_status": status,
         "ready": status == "ready",
         "feature": "mvp4_2_ast_micro_edges",
-        "supported_language_slice": "typescript_ts_local_returns_to_v1",
-        "supported_relation_slice": "local_returns_to",
+        "supported_language_slice": "registry_active_source_aware_local_micro_edges_v1",
+        "supported_relation_slice": "registry_active_11_relation_local_micro_edges_v1",
         "relation_kinds_active": relation_kinds_active,
         "languages_active": languages_active,
         "schema_version": preflight.db_health.schema_version,
@@ -2210,7 +2223,7 @@ fn mvp4_micro_edge_visibility_from_store(
         "availability_separate_from_graph_claimability": true,
         "graph_claimability_unchanged": true,
         "micro_node_availability_separate": true,
-        "local_flow_packet_availability": "not_applicable",
+        "local_flow_packet_availability": "reported_separately",
         "default_full_table_scan": summary.default_full_table_scan,
         "bounded_summary": true,
         "sample_limit": summary.sample_limit,
@@ -2300,14 +2313,121 @@ pub(crate) fn mvp4_local_flow_packet_proof_boundary_json() -> Value {
     })
 }
 
+pub(crate) fn mvp4_local_flow_packet_language_set_summary(
+    requested_active_languages: &[&str],
+) -> Value {
+    let mut requested = requested_active_languages
+        .iter()
+        .map(|language| language.trim().to_ascii_lowercase())
+        .filter(|language| !language.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut active_packet_languages = Vec::new();
+    for capability in MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES {
+        if requested.remove(capability.language) {
+            active_packet_languages.push(capability.language.to_string());
+        }
+    }
+    active_packet_languages.extend(requested);
+    let default_packet_query_language = match active_packet_languages.as_slice() {
+        [language] => Value::String(language.clone()),
+        _ => Value::Null,
+    };
+    let active_non_typescript_packet_languages = active_packet_languages
+        .iter()
+        .filter(|language| language.as_str() != "typescript")
+        .cloned()
+        .collect::<Vec<_>>();
+    let selection_state = match active_packet_languages.len() {
+        0 => "no_active_packet_language",
+        1 => "exactly_one_active_packet_language",
+        _ => "multiple_active_packet_languages_no_default",
+    };
+    let typescript_packet_handles_preserved = active_packet_languages
+        .iter()
+        .any(|language| language == "typescript");
+    json!({
+        "active_packet_languages": active_packet_languages,
+        "active_packet_language_count": active_packet_languages.len(),
+        "active_non_typescript_packet_languages": active_non_typescript_packet_languages,
+        "active_non_typescript_packet_language_count": active_non_typescript_packet_languages.len(),
+        "default_packet_query_language": default_packet_query_language,
+        "selection_state": selection_state,
+        "typescript_packet_handles_preserved": typescript_packet_handles_preserved,
+    })
+}
+
+pub(crate) fn mvp4_local_flow_packet_language_registry_json() -> Value {
+    let active_languages = mvp4_3_local_micro_flow_packet_active_languages();
+    let mut summary = mvp4_local_flow_packet_language_set_summary(&active_languages);
+    let active_capabilities = active_languages
+        .iter()
+        .map(|language| {
+            let capability = mvp4_3_local_micro_flow_packet_language_capability(language);
+            json!({
+                "language": capability.language,
+                "activation_status": capability.activation_status.as_str(),
+                "adapter_id": capability.adapter_id,
+                "declared_static_scope": capability.declared_static_scope,
+                "packet_kind": capability.packet_kind,
+                "extraction_version": capability.extraction_version,
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(object) = summary.as_object_mut() {
+        object.insert(
+            "default_packet_query_language".to_string(),
+            mvp4_3_default_local_micro_flow_packet_query_language()
+                .map(Value::from)
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "active_packet_language_capabilities".to_string(),
+            Value::Array(active_capabilities),
+        );
+        object.insert(
+            "registry_source".to_string(),
+            json!("MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES"),
+        );
+    }
+    summary
+}
+
+fn mvp4_local_flow_packet_capability_recovery_action(status: &str) -> String {
+    if status != "not_applicable" {
+        return mvp4_local_flow_packet_recovery_action(status).to_string();
+    }
+    let registry = mvp4_local_flow_packet_language_registry_json();
+    let active_languages = registry["active_packet_languages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if active_languages.is_empty() {
+        "no active local-flow packet language adapter is registered; packet proof remains unavailable"
+            .to_string()
+    } else {
+        format!(
+            "run an MVP4.3-enabled index for registry-active packet language adapters ({}) if packet visibility is expected",
+            active_languages.join(", ")
+        )
+    }
+}
+
 fn mvp4_local_flow_packet_visibility_for_preflight(preflight: &DbLifecyclePreflight) -> Value {
     let status = mvp4_local_flow_packet_status_from_preflight(preflight);
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
     json!({
         "status": status,
         "feature_status": status,
         "ready": false,
         "feature": "mvp4_3_local_flow_packets",
-        "supported_language_slice": "typescript_ts_function_local_packets_v1",
+        "supported_language_slice": MVP4_3_LOCAL_FLOW_PACKET_SUPPORTED_LANGUAGE_SLICE,
+        "packet_language_registry": packet_language_registry,
+        "active_packet_languages": packet_language_registry["active_packet_languages"],
+        "active_packet_language_capabilities": packet_language_registry["active_packet_language_capabilities"],
+        "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+        "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
         "supported_packet_kind": "local_micro_flow_packet",
         "schema_version": preflight.db_health.schema_version,
         "row_schema_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
@@ -2341,6 +2461,7 @@ fn mvp4_local_flow_packet_visibility_for_preflight(preflight: &DbLifecyclePrefli
         "ordered_steps_default_inline": false,
         "context_entry_command_activated": false,
         "recovery_action": mvp4_local_flow_packet_recovery_action(status),
+        "capability_recovery_action": mvp4_local_flow_packet_capability_recovery_action(status),
         "proof_boundary": mvp4_local_flow_packet_proof_boundary_json(),
     })
 }
@@ -2367,7 +2488,7 @@ fn mvp4_local_flow_packet_recovery_action(status: &str) -> &'static str {
     match status {
         "ready" => "none",
         "not_applicable" => {
-            "run an MVP4.3-enabled index on production TypeScript .ts files if packet visibility is expected"
+            "run an MVP4.3-enabled index on registry-active production source paths if packet visibility is expected"
         }
         "unavailable" => {
             "re-run index with a current writable schema if this DB should expose MVP4.3 packet availability"
@@ -2399,6 +2520,12 @@ fn mvp4_local_flow_packet_visibility_from_store(
                 json!(mvp4_local_flow_packet_recovery_action("unavailable")),
             );
             object.insert(
+                "capability_recovery_action".to_string(),
+                json!(mvp4_local_flow_packet_capability_recovery_action(
+                    "unavailable"
+                )),
+            );
+            object.insert(
                 "missing_reason".to_string(),
                 json!("local_flow_packets table missing"),
             );
@@ -2416,6 +2543,12 @@ fn mvp4_local_flow_packet_visibility_from_store(
             object.insert(
                 "recovery_action".to_string(),
                 json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+            );
+            object.insert(
+                "capability_recovery_action".to_string(),
+                json!(mvp4_local_flow_packet_capability_recovery_action(
+                    "unavailable"
+                )),
             );
             object.insert(
                 "missing_reason".to_string(),
@@ -2448,6 +2581,7 @@ fn mvp4_local_flow_packet_visibility_layer(
         "ready"
     };
     let languages_active = summary.rows_by_language.keys().cloned().collect::<Vec<_>>();
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
     let proof_strength_counts = summary.rows_by_proof_strength.clone();
     let sample_count = summary.sample.len();
     let mut layer = json!({
@@ -2455,7 +2589,12 @@ fn mvp4_local_flow_packet_visibility_layer(
         "feature_status": status,
         "ready": status == "ready",
         "feature": "mvp4_3_local_flow_packets",
-        "supported_language_slice": "typescript_ts_function_local_packets_v1",
+        "supported_language_slice": MVP4_3_LOCAL_FLOW_PACKET_SUPPORTED_LANGUAGE_SLICE,
+        "packet_language_registry": packet_language_registry,
+        "active_packet_languages": packet_language_registry["active_packet_languages"],
+        "active_packet_language_capabilities": packet_language_registry["active_packet_language_capabilities"],
+        "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+        "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
         "supported_packet_kind": "local_micro_flow_packet",
         "schema_version": preflight.db_health.schema_version,
         "row_schema_version": summary.row_schema_versions.first().copied().unwrap_or(MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION),
@@ -2501,6 +2640,7 @@ fn mvp4_local_flow_packet_visibility_layer(
         "ordered_steps_default_inline": summary.ordered_steps_default_inline,
         "query_plan": summary.query_plan,
         "recovery_action": mvp4_local_flow_packet_recovery_action(status),
+        "capability_recovery_action": mvp4_local_flow_packet_capability_recovery_action(status),
         "proof_boundary": mvp4_local_flow_packet_proof_boundary_json(),
         "context_entry_command_activated": false,
     });
@@ -2572,7 +2712,38 @@ fn run_languages_command(args: &[String]) -> CliOutput {
         [flag] if flag == "--json" => success(json_line(json!({
             "status": "ok",
             "phase": PHASE,
-            "source_of_truth": "MVP.md Prompt 27",
+            "source_of_truth": "parser_frontend_registry",
+            "readiness_contract": {
+                "gate_id": "mvp4_3l_all_language_static_flow_readiness",
+                "contract_id": "mvp4_3l_all_language_static_flow_readiness_v3",
+                "runner": "mvp4_language_readiness",
+                "manifest": "fixtures/mvp4_micro_flow_oracles/manifest.json",
+                "public_contract": "docs/language-frontends.md#scoped-tier-5-mvp4-readiness",
+                "capabilities": "frontends[].capabilities",
+                "scoped_readiness": "frontends[].scoped_readiness"
+            },
+            "capability_model": {
+                "source_of_truth": "language_frontends.capabilities_and_scoped_readiness",
+                "authoritative_fields": {
+                    "capabilities": "frontends[].capabilities",
+                    "scoped_readiness": "frontends[].scoped_readiness"
+                },
+                "old_tiers_backward_compatible": true,
+                "old_tier_alone_drives_proof": false,
+                "old_tier_alone_drives_linter_blocking": false,
+                "promotion_gate": "mvp4_3l_all_language_static_flow_readiness",
+                "promotion_gate_contract": {
+                    "gate_id": "mvp4_3l_all_language_static_flow_readiness",
+                    "contract_id": "mvp4_3l_all_language_static_flow_readiness_v3",
+                    "runner": "mvp4_language_readiness",
+                    "manifest": "fixtures/mvp4_micro_flow_oracles/manifest.json",
+                    "public_contract": "docs/language-frontends.md#scoped-tier-5-mvp4-readiness",
+                    "capabilities": "frontends[].capabilities",
+                    "scoped_readiness": "frontends[].scoped_readiness"
+                }
+            },
+            "capability_flags": LANGUAGE_CAPABILITY_FLAGS,
+            "capability_status_values": LANGUAGE_CAPABILITY_STATUS_VALUES,
             "frontends": language_frontends(),
         }))),
         _ => command_error(
@@ -2843,6 +3014,12 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
                         "recovery_action".to_string(),
                         json!(mvp4_local_flow_packet_recovery_action("unavailable")),
                     );
+                    object.insert(
+                        "capability_recovery_action".to_string(),
+                        json!(mvp4_local_flow_packet_capability_recovery_action(
+                            "unavailable"
+                        )),
+                    );
                 }
                 layer
             }),
@@ -2857,6 +3034,12 @@ fn run_doctor_command(args: &[String]) -> Result<Value, String> {
                     object.insert(
                         "recovery_action".to_string(),
                         json!(mvp4_local_flow_packet_recovery_action("unavailable")),
+                    );
+                    object.insert(
+                        "capability_recovery_action".to_string(),
+                        json!(mvp4_local_flow_packet_capability_recovery_action(
+                            "unavailable"
+                        )),
                     );
                 }
                 layer
@@ -3137,6 +3320,7 @@ fn render_languages_table() -> String {
     }
     rows.push(String::new());
     rows.push("Support tiers: 0=file discovery, 1=syntax/entities, 2=imports/exports/packages, 3=calls, 4=compiler/LSP verification, 5=dataflow/security/test impact.".to_string());
+    rows.push("Capability flags in `codegraph-mcp languages --json` are the source of truth for proof, linter, context, and packet support; old tiers are compatibility summaries.".to_string());
     rows.push("Unsupported capabilities are explicit in `codegraph-mcp languages --json`; new language frontends do not fake call/dataflow/security support.".to_string());
     format!("{}\n", rows.join("\n"))
 }
@@ -5359,6 +5543,18 @@ fn context_pack_patch_assist_packet_from_response(
             "signals": [],
         })),
         "task_roles": routing.get("task_roles").cloned().unwrap_or_else(|| json!([])),
+        "language_capability_plan": routing.get("language_capability_plan").cloned().unwrap_or_else(|| json!({
+            "status": "unavailable",
+            "proof_boundary": {
+                "capability_metadata_does_not_create_graph_proof": true,
+                "unsupported_relations_are_not_blockers": true
+            },
+            "local_flow_packet_boundary": {
+                "non_typescript_packet_overclaim_count": 0,
+                "packet_handles_do_not_create_proof": true,
+                "context_entry_command_activated": false
+            }
+        })),
         "first_use_state": first_use_state,
         "critical_files": critical_files,
         "critical_symbols": critical_symbols,
@@ -5372,6 +5568,8 @@ fn context_pack_patch_assist_packet_from_response(
         "unknowns": unknowns,
         "risks": risks,
         "validation_steps": validation_steps,
+        "language_validation_steps": routing_take_array(routing, "language_validation_steps", PATCH_ASSIST_PACKET_QUERY_LIMIT),
+        "validation_steps_language_aware": routing.get("validation_steps_language_aware").cloned().unwrap_or_else(|| json!(true)),
         "follow_up_queries": follow_up_queries,
         "expansion_handles": expansion_handles,
         "artifact_or_db_inspection_requirements": artifact_or_db_inspection_requirements,

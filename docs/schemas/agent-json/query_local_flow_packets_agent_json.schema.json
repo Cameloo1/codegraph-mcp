@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/agent-json/query_local_flow_packets_agent_json.schema.json",
+  "title": "query_local_flow_packets_agent_json",
+  "description": "Compact agent envelope for `agent-use query local-flow`: handle-first MVP4.3 local-flow packet rows for the 13 canonical production frontend adapters. Packet bodies and ordered steps stay out of compact output; each row carries an expansion handle. Individual packet bodies are described by local_micro_flow_packet_agent_json.schema.json.",
+  "$comment": "The canonical production adapters are JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++, Ruby, and PHP. Accepted readiness is representative, source-aware, same-file intraprocedural local flow; it does not claim whole-language, cross-file, runtime, dynamic, framework, compiler, LSP, project-resolution, or build-database completeness. The TypeScript representative gate uses .mts; .mts/.cts use ParserFactsV1, ordinary .ts remains on bounded legacy v1, and .d.ts is inactive. Query/open MCP packet access is active, but context-entry activation, mutation proof, route/bridge proof, and MVP4.4 AST skeleton compression remain inactive.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "command",
+    "claimable",
+    "diagnostic_only",
+    "result_count",
+    "results",
+    "warnings",
+    "errors"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_name": {
+      "const": "query_local_flow_packets_agent_json"
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/status"
+    },
+    "command": {
+      "type": "string"
+    },
+    "command_namespace": {
+      "type": "string"
+    },
+    "repo": {
+      "$ref": "common.schema.json#/$defs/repo"
+    },
+    "db": {
+      "$ref": "common.schema.json#/$defs/db"
+    },
+    "resolved_repo": {
+      "type": "string"
+    },
+    "resolved_db": {
+      "type": "string"
+    },
+    "output_mode": {
+      "type": "string"
+    },
+    "lifecycle": {
+      "$ref": "common.schema.json#/$defs/lifecycle_summary"
+    },
+    "db_lifecycle_read": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "claimable": {
+      "type": "boolean"
+    },
+    "diagnostic_only": {
+      "type": "boolean"
+    },
+    "packet_layer_status": {
+      "type": "string",
+      "description": "Current persisted packet-layer status. This status reports availability and does not by itself create graph proof."
+    },
+    "packet_layer": {
+      "type": "object",
+      "description": "Inspectable persisted local-flow packet-layer metadata, including capability and proof boundaries.",
+      "additionalProperties": true
+    },
+    "capability_metadata": {
+      "type": "object",
+      "description": "Frontend capability metadata. Broad capability rows and accepted scoped_readiness rows are distinct; metadata never creates proof.",
+      "additionalProperties": true
+    },
+    "query": {
+      "type": "object",
+      "description": "Optional bounded filters and inclusion controls for persisted packet lookup.",
+      "properties": {
+        "packet_id": {
+          "type": ["string", "null"]
+        },
+        "file": {
+          "type": ["string", "null"]
+        },
+        "function": {
+          "type": ["string", "null"]
+        },
+        "proof_status": {
+          "type": ["string", "null"]
+        },
+        "proof_strength": {
+          "type": ["string", "null"]
+        },
+        "language": {
+          "type": ["string", "null"],
+          "enum": [
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php",
+            null
+          ]
+        },
+        "source_role": {
+          "type": ["string", "null"]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "packet_body_included": {
+          "const": false,
+          "description": "Compact query rows are handle-first; opening the handle is required for a packet body."
+        },
+        "ordered_steps_included": {
+          "const": false,
+          "description": "Compact query rows never inline verbose ordered steps."
+        },
+        "include_packet_body": {
+          "type": "boolean"
+        },
+        "ordered_steps_default_inline": {
+          "const": false,
+          "description": "Verbose ordered steps are never a compact-query default."
+        }
+      },
+      "additionalProperties": true
+    },
+    "result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "packet_results_compacted": {
+      "type": "boolean"
+    },
+    "packet_result_omitted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "packet_result_truncation_reason": {
+      "type": "string"
+    },
+    "packet_result_expansion_handle": {
+      "type": "string"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "packet_id",
+          "file",
+          "proof_status",
+          "proof_strength",
+          "exactness",
+          "claimability",
+          "expansion_handle"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "packet_id": {
+            "type": "string"
+          },
+          "packet_kind": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "function_entity_id": {
+            "type": "string"
+          },
+          "function_frame_micro_node_id": {
+            "type": ["string", "null"]
+          },
+          "primary_source_span_id": {
+            "type": ["string", "null"]
+          },
+          "source_span_ref_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "source_span_ids_handle": {
+            "type": "string"
+          },
+          "proof_status": {
+            "type": "string"
+          },
+          "proof_strength": {
+            "type": "string"
+          },
+          "packet_status": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "packet_body_hash": {
+            "type": ["string", "null"]
+          },
+          "packet_summary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "source_role": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "javascript",
+              "jsx",
+              "typescript",
+              "tsx",
+              "python",
+              "go",
+              "rust",
+              "java",
+              "csharp",
+              "c",
+              "cpp",
+              "ruby",
+              "php"
+            ]
+          },
+          "exactness": {
+            "type": "string"
+          },
+          "claimability": {
+            "type": "string"
+          },
+          "versions": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "expansion_handle": {
+            "type": "string"
+          },
+          "ordered_steps_inline": {
+            "type": "boolean"
+          },
+          "full_source_body_output": {
+            "type": "boolean"
+          },
+          "packet_body_included": {
+            "type": "boolean"
+          },
+          "packet_body": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "ordered_steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    },
+    "compact_default_packet_body_inline": {
+      "const": false
+    },
+    "compact_default_ordered_steps_inline": {
+      "const": false,
+      "description": "MCP query/open access is active, but the separate context-entry command remains inactive."
+    },
+    "full_source_body_output": {
+      "const": false
+    },
+    "context_entry_command_activated": {
+      "const": false
+    },
+    "agent_json_budget": {
+      "$ref": "common.schema.json#/$defs/agent_json_budget"
+    },
+    "read_path_metrics": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "warnings": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "errors": {
+      "$ref": "common.schema.json#/$defs/bounded_messages"
+    },
+    "timings": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

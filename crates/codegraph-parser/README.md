@@ -5,20 +5,23 @@ Parser abstraction crate.
 `MVP.md` is the source of truth for this crate's phase boundary and acceptance
 criteria.
 
-Phase 04 implemented `LanguageParser`, `ParsedFile`, owned syntax-node
-metadata, file-type detection, robust syntax diagnostics, and tree-sitter
-parsing for JavaScript, JSX, TypeScript, and TSX.
+The release registry covers JavaScript, JSX, TypeScript, TSX, Python, Go, Rust,
+Java, C#, C, C++, Ruby, and PHP. Each frontend publishes broad capability rows
+and a separate `scoped_readiness` contract. All 13 canonical production
+frontends pass the representative, source-aware, same-file intraprocedural
+local-flow gate with exact local binding/read-write support, derived flow with
+provenance, and exact local-flow packet support.
 
-Phase 05 added basic extraction for file/module/declaration/import/export facts
-and structural edges.
+That scoped Tier 5 result does not imply project-wide, compiler, runtime,
+framework, dynamic-dispatch, macro, preprocessor, alias-analysis, or security
+completeness. Broad capability rows preserve those conservative boundaries.
+See [Language Frontends](../../docs/language-frontends.md#scoped-tier-5-mvp4-readiness).
 
-Phase 06 adds conservative `CallSite`/`ReturnSite` creation and core
-syntax-derived relations for calls, callees, arguments, returns, reads, writes,
-mutations, assignments, and direct flows.
+The parser emits owned syntax metadata, source-spanned entities and relations,
+micro-nodes, and micro-edges for downstream indexing. TypeScript `.ts` uses the
+bounded legacy-v1 local adapter; `.mts` and `.cts` use `ParserFactsV1`; `.d.ts`
+remains inactive. Parser recovery, unsupported syntax, and dynamic behavior
+must fail closed rather than fabricate exact facts.
 
-Phase 07 adds best-effort pattern extractors for common TS/JS auth/security,
-event/async, persistence/schema, and Jest/Vitest-style test relations. Every
-Phase 07 edge is `static_heuristic` and carries pattern/framework metadata.
-
-Guardrail: no exact graph query APIs, vector retrieval, MCP behavior, UI
-behavior, or benchmark execution lives here.
+Guardrail: graph query APIs, persistence, vector retrieval, MCP behavior, UI
+behavior, and benchmark execution do not live in this crate.

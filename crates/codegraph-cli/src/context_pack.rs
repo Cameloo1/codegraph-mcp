@@ -9,9 +9,12 @@ use std::time::{Duration, Instant};
 
 use codegraph_core::{
     classify_edge_evidence_role, classify_entity_source_role,
-    mvp4_3_local_micro_flow_packet_active_languages, ContextPacket, Edge, Entity, EntityKind,
-    EvidenceRole, Exactness, FileRecord, Metadata, RelationKind, RetrievalCandidate, SourceSpan,
+    mvp4_3_local_micro_flow_packet_active_languages,
+    mvp4_3_local_micro_flow_packet_source_supported_for_source, ContextPacket, Edge, Entity,
+    EntityKind, EvidenceRole, Exactness, FileRecord, Metadata, MicroSourceRole, RelationKind,
+    RetrievalCandidate, SourceSpan,
 };
+use codegraph_parser::detect_language;
 use codegraph_query::{PromptSeed, PromptSeedKind};
 use codegraph_store::{
     GraphStore, LocalFlowPacketQueryOptions, LocalFlowPacketRow, SqliteGraphStore,
@@ -3477,6 +3480,14 @@ pub(crate) fn fallback_evidence_json(evidence: &ContextPackFallbackEvidence) -> 
         "score": evidence.score,
         "claimable_for_text": evidence_role == "text_evidence",
         "claimable_for_graph": false,
+        "language_capability": context_pack_source_language_capability_json(
+            Some(&evidence.source_span.repo_relative_path),
+            if evidence_role == "text_evidence" { "text_evidence" } else { "source_navigation_evidence" },
+            proof_status,
+            false,
+            "source_text",
+            evidence_role,
+        ),
     });
     if let Some(claimability) = evidence.claimability.as_ref() {
         if let Some(object) = value.as_object_mut() {
@@ -3557,6 +3568,17 @@ pub(crate) fn text_evidence_retrieval_candidate_json(
         "verification_status": proof_status,
         "graph_verification_status": proof_status,
         "text_evidence_status": proof_status,
+        "language_capability": evidence
+            .get("language_capability")
+            .cloned()
+            .unwrap_or_else(|| context_pack_source_language_capability_json(
+                Some(file),
+                "text_evidence",
+                proof_status,
+                false,
+                "source_text",
+                "text_evidence",
+            )),
         "reason": evidence
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -4062,6 +4084,7 @@ pub(crate) fn copy_context_candidate_degradation_fields(
         "diagnostic_only",
         "degraded_output_not_complete_graph_proof",
         "claimability",
+        "language_capability",
     ] {
         if let Some(value) = from.get(key).cloned() {
             object.insert(key.to_string(), value);
@@ -4297,7 +4320,7 @@ pub(crate) fn path_evidence_retrieval_candidate_json(
         ],
         "candidate_source_label": "graph_verified_path_evidence",
         "file_id": file.clone().map(Value::from).unwrap_or(Value::Null),
-        "path": file.map(Value::from).unwrap_or(Value::Null),
+        "path": file.clone().map(Value::from).unwrap_or(Value::Null),
         "entity_id": graph_entity_id.map(Value::from).unwrap_or(Value::Null),
         "span": first_span,
         "evidence_role": evidence_role,
@@ -4315,6 +4338,17 @@ pub(crate) fn path_evidence_retrieval_candidate_json(
         "verification_status": if proof_path_available { "graph_verified" } else { "candidate_only" },
         "graph_verification_status": if proof_path_available { "graph_verified" } else { "candidate_only" },
         "text_evidence_status": "absent",
+        "language_capability": path
+            .get("language_capability")
+            .cloned()
+            .unwrap_or_else(|| context_pack_source_language_capability_json(
+                file.as_deref(),
+                "graph_path",
+                if proof_path_available { "proof_path_found" } else { "candidate_only" },
+                proof_path_available,
+                path.get("exactness").and_then(Value::as_str).unwrap_or("unknown"),
+                evidence_role,
+            )),
         "reason": path
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -4394,6 +4428,20 @@ pub(crate) fn no_proof_fallback_retrieval_candidate_json(
         "verification_status": "no_proof_path_found",
         "graph_verification_status": "no_proof_path_found",
         "text_evidence_status": "absent",
+        "language_capability": evidence
+            .get("language_capability")
+            .cloned()
+            .unwrap_or_else(|| context_pack_source_language_capability_json(
+                file,
+                "source_navigation_evidence",
+                evidence
+                    .get("proof_status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("no_proof_path_found"),
+                false,
+                "source_navigation",
+                evidence_role,
+            )),
         "reason": evidence
             .get("classification_reason")
             .and_then(Value::as_str)
@@ -6227,7 +6275,7 @@ pub(crate) fn context_pack_retrieval_explain_budget_summary(
     full_explain_bytes: usize,
     max_output_bytes: usize,
 ) -> Value {
-    json!({
+    let mut summary = json!({
         "schema_version": 1,
         "diagnostic_only": true,
         "budget_limited": true,
@@ -6273,7 +6321,35 @@ pub(crate) fn context_pack_retrieval_explain_budget_summary(
             "normal agent-json evidence budget enforced before diagnostic explain attachment",
             "fallback snippets and likely files are not pruned to make room for full explain payload"
         ]
-    })
+    });
+    // Vector operability diagnostics stay visible in the bounded summary:
+    // index/runtime status and candidate counts are how an agent tells "vector
+    // lane is down" apart from "vector lane found nothing".
+    if let Some(vector_trace) = retrieval_explain.get("vector_trace") {
+        if let Some(object) = summary.as_object_mut() {
+            let mut compact_vector_trace = json!({
+                "diagnostic_only": true,
+                "compacted": true,
+                "vector_index_status": vector_trace.get("vector_index_status").cloned().unwrap_or(Value::Null),
+                "vector_runtime_status": vector_trace.get("vector_runtime_status").cloned().unwrap_or(Value::Null),
+                "vector_candidate_count": vector_trace.get("vector_candidate_count").cloned().unwrap_or(Value::Null),
+                "graph_verification_status_for_vector_candidates": vector_trace
+                    .get("graph_verification_status_for_vector_candidates")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            });
+            if let Some(stale_reason) = vector_trace.get("stale_missing_vector_index_reason") {
+                if let Some(compact_object) = compact_vector_trace.as_object_mut() {
+                    compact_object.insert(
+                        "stale_missing_vector_index_reason".to_string(),
+                        stale_reason.clone(),
+                    );
+                }
+            }
+            object.insert("vector_trace".to_string(), compact_vector_trace);
+        }
+    }
+    summary
 }
 
 pub(crate) fn context_pack_seed_hygiene_summary_json(retrieval_explain: &Value) -> Option<Value> {
@@ -6495,16 +6571,28 @@ pub(crate) fn context_pack_compact_candidate_json(candidate: &Value) -> Value {
         "matched_seeds": candidate.get("matched_seeds").cloned().unwrap_or_else(|| json!([])),
         "proof_status": candidate.get("proof_status").cloned().unwrap_or(Value::Null),
         "graph_proof": candidate.get("graph_proof").cloned().unwrap_or(Value::Null),
+        "claimable": candidate.get("claimable").cloned().unwrap_or(Value::Null),
         "claimable_for_graph": candidate.get("claimable_for_graph").cloned().unwrap_or(Value::Null),
         "claimable_for_text": candidate.get("claimable_for_text").cloned().unwrap_or(Value::Null),
         "requires_graph_verification": candidate.get("requires_graph_verification").cloned().unwrap_or(Value::Null),
         "verification_status": candidate.get("verification_status").cloned().unwrap_or(Value::Null),
         "graph_verification_status": candidate.get("graph_verification_status").cloned().unwrap_or(Value::Null),
+        "text_evidence_status": candidate.get("text_evidence_status").cloned().unwrap_or(Value::Null),
+        "reason": candidate.get("reason").cloned().unwrap_or(Value::Null),
         "rank": candidate.get("rank").cloned().unwrap_or(Value::Null),
         "score": candidate.get("score").cloned().unwrap_or(Value::Null),
+        "language_capability": candidate.get("language_capability").cloned().unwrap_or(Value::Null),
     });
     if let Some(object) = value.as_object_mut() {
         copy_context_candidate_degradation_fields(candidate, object);
+    }
+    value
+}
+
+pub(crate) fn context_pack_budget_candidate_json(candidate: &Value) -> Value {
+    let mut value = context_pack_compact_candidate_json(candidate);
+    if let Some(object) = value.as_object_mut() {
+        object.remove("language_capability");
     }
     value
 }
@@ -6540,6 +6628,214 @@ pub(crate) fn context_pack_metadata_u64(packet: &ContextPacket, key: &str) -> Va
         .unwrap_or(Value::Null)
 }
 
+pub(crate) fn context_pack_capability_metadata_json(db_path: &Path) -> Value {
+    match SqliteGraphStore::open_read_only(db_path) {
+        Ok(store) => query_capability_metadata_summary_json(&store),
+        Err(error) => json!({
+            "status": "unavailable",
+            "error": error.to_string(),
+            "not_graph_proof": true,
+            "proof_boundary": "capability metadata summary unavailable; context-pack evidence must rely on per-evidence proof labels only",
+        }),
+    }
+}
+
+pub(crate) fn context_pack_language_capability_context_json(
+    capability_metadata: &Value,
+    packet: &ContextPacket,
+    proof_status: &str,
+    graph_proof: bool,
+    evidence_status: &str,
+    proof_strength: &str,
+) -> Value {
+    let summary = capability_metadata
+        .get("summary")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let unknown_boundary_rows = capability_metadata
+        .pointer("/summary/unknown_boundary_rows")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resolver_metadata_rows = capability_metadata
+        .pointer("/summary/resolver_metadata_rows")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let missing_provenance_rows = capability_metadata
+        .pointer("/summary/exact_or_derived_rows_missing_provenance")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let fallback_evidence_count = packet
+        .metadata
+        .get("fallback_evidence")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let micro_flow_summary = packet
+        .metadata
+        .get("micro_flow_packet_summary")
+        .cloned()
+        .unwrap_or_else(|| context_pack_micro_flow_handle_summary_json(&[]));
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
+    json!({
+        "status": if capability_metadata.get("status").and_then(Value::as_str) == Some("ok") {
+            "available"
+        } else {
+            "unavailable"
+        },
+        "capability_metadata_status": capability_metadata.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "rows_by_language": summary
+            .get("rows_by_language")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "rows_by_capability_status": summary
+            .get("rows_by_capability_status")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "proof_status": proof_status,
+        "proof_strength": proof_strength,
+        "graph_proof": graph_proof,
+        "evidence_status": evidence_status,
+        "resolver_metadata_rows": resolver_metadata_rows,
+        "exact_or_derived_rows_missing_provenance": missing_provenance_rows,
+        "unknown_boundary_rows": unknown_boundary_rows,
+        "fallback_evidence_count": fallback_evidence_count,
+        "evidence_ladder": [
+            {
+                "layer": "resolver_backed_graph_proof",
+                "status": if graph_proof && resolver_metadata_rows > 0 { "available_when_path_provenance_matches" } else { "not_present_or_not_required" },
+                "proof_boundary": "compiler/LSP/resolver facts require recorded resolver provenance before semantic exactness is claimable"
+            },
+            {
+                "layer": "parser_graph_or_source_facts",
+                "status": if graph_proof { "graph_path_found" } else { "parser_or_source_facts_require_fallback_labels" },
+                "proof_boundary": "parser facts can support source-spanned facts; caller/callee proof still requires exact graph relation evidence"
+            },
+            {
+                "layer": "source_text_evidence",
+                "status": if fallback_evidence_count > 0 { "available" } else { "not_returned" },
+                "proof_boundary": "text/source-navigation evidence is useful context but not graph relation proof"
+            },
+            {
+                "layer": "unknown_dynamic_runtime_macro",
+                "status": if unknown_boundary_rows > 0 { "present" } else { "none_in_bounded_metadata_summary" },
+                "proof_boundary": "unknown, dynamic, runtime, macro, preprocessor, compiler_required, and lsp_required facts stay non-blocking/non-proof"
+            }
+        ],
+        "local_flow_packet_boundary": {
+            "active_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "active_non_typescript_packet_languages": packet_language_registry["active_non_typescript_packet_languages"],
+            "active_non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "packet_language_registry": packet_language_registry,
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_languages_seen": [],
+            "inactive_packet_language_count": 0,
+            "inactive_packet_support": MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT,
+            "inactive_packet_overclaim_count": 0,
+            "active_non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "active_non_typescript_packet_overclaim_count": 0,
+            "non_typescript_packet_languages_seen": packet_language_registry["active_non_typescript_packet_languages"],
+            "non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "non_typescript_packet_overclaim_count": 0,
+            "compatibility_aliases": {
+                "non_typescript_packet_languages_seen": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_languages"
+                },
+                "non_typescript_packet_language_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_language_count"
+                },
+                "non_typescript_packet_support": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_support"
+                },
+                "non_typescript_packet_overclaim_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_overclaim_count"
+                }
+            },
+            "micro_flow_packet_summary": micro_flow_summary,
+            "handles_do_not_create_proof": true,
+            "context_entry_command_activated": false
+        },
+        "compact_output_contract": {
+            "evidence_first": true,
+            "source_spans_required_for_claimable_facts": true,
+            "capability_metadata_does_not_create_graph_proof": true,
+            "candidate_vector_nuance_evidence_not_graph_proof": true
+        }
+    })
+}
+
+pub(crate) fn context_pack_source_language_capability_json(
+    file: Option<&str>,
+    evidence_kind: &str,
+    proof_status: &str,
+    graph_proof: bool,
+    exactness: &str,
+    source_role: &str,
+) -> Value {
+    let language = file
+        .and_then(context_pack_frontend_from_repo_relative_path)
+        .unwrap_or_else(|| "unknown".to_string());
+    let proof_strength = if graph_proof {
+        "graph_relation_proof"
+    } else if evidence_kind == "text_evidence" {
+        "text_evidence_non_graph"
+    } else if evidence_kind == "source_navigation_evidence" {
+        "source_navigation_evidence"
+    } else if matches!(exactness, "exact" | "parser_verified") {
+        "parser_source_fact"
+    } else {
+        "unknown_non_graph"
+    };
+    let claimable_as = if graph_proof {
+        vec!["graph_relation_proof", "source_text_existence"]
+    } else if evidence_kind == "text_evidence" {
+        vec!["source_text_existence"]
+    } else {
+        Vec::<&str>::new()
+    };
+    json!({
+        "language": language,
+        "frontend": language,
+        "source_role": source_role,
+        "capability_flags": [evidence_kind],
+        "capability_status": match evidence_kind {
+            "text_evidence" => "source_text_evidence",
+            "source_navigation_evidence" => "source_navigation_evidence",
+            "graph_path" => "graph_relation_evidence",
+            _ => "unknown",
+        },
+        "exactness": exactness,
+        "resolver_status": "not_claimed_by_context_pack",
+        "proof_status": proof_status,
+        "proof_strength": proof_strength,
+        "claimability": {
+            "claimable": !claimable_as.is_empty(),
+            "claimable_as": claimable_as,
+            "not_claimable_as": if graph_proof { Vec::<&str>::new() } else { vec!["typed_graph_relation", "caller_callee_proof", "resolver_exactness"] },
+            "graph_proof": graph_proof
+        },
+        "source_span_available": file.is_some(),
+        "not_graph_proof": !graph_proof
+    })
+}
+
+pub(crate) fn context_pack_frontend_from_repo_relative_path(path: &str) -> Option<String> {
+    let language = detect_language(path)?.as_str();
+    mvp4_3_local_micro_flow_packet_source_supported_for_source(
+        language,
+        path,
+        MicroSourceRole::Production,
+    )
+    .then(|| language.to_string())
+}
+
 pub(crate) const CONTEXT_PACK_MICRO_FLOW_HANDLE_LIMIT: usize = 4;
 
 pub(crate) fn attach_context_pack_micro_flow_handles(
@@ -6573,6 +6869,8 @@ pub(crate) fn attach_context_pack_micro_flow_handles(
         json!({
             "compact_default_full_packet_body_inline": false,
             "compact_default_ordered_steps_inline": false,
+            "exact_function_seeds_prioritized": true,
+            "compact_first_handle_preserves_seed_priority": true,
             "packet_handles_do_not_create_proof": true,
             "context_entry_command_activated": false,
             "proof_boundary": "handles reference persisted local_flow_packets only; opening the audit handle is required for dict_v1 body or ordered_steps expansion"
@@ -6593,27 +6891,12 @@ fn load_context_pack_micro_flow_packet_rows(
     if active_languages.is_empty() {
         return Ok(Vec::new());
     }
-    let mut rows = BTreeMap::<String, LocalFlowPacketRow>::new();
-    for file in context_pack_micro_flow_relevant_files(packet) {
-        for language in &active_languages {
-            let query = LocalFlowPacketQueryOptions {
-                limit,
-                file_id: Some(file.clone()),
-                language: Some((*language).to_string()),
-                source_role: Some("production".to_string()),
-                ..LocalFlowPacketQueryOptions::default()
-            };
-            for row in store
-                .query_local_flow_packets(&query)
-                .map_err(|error| error.to_string())?
-            {
-                rows.entry(row.packet_id.clone()).or_insert(row);
-                if rows.len() >= limit {
-                    return Ok(rows.into_values().collect());
-                }
-            }
-        }
-    }
+    let mut rows = Vec::<LocalFlowPacketRow>::new();
+    let mut seen_packet_ids = BTreeSet::<String>::new();
+
+    // Exact function/entity seeds are the narrowest user-selected evidence.
+    // Preserve them ahead of broader file matches so the bounded collection and
+    // the compact one-handle envelope cannot shed the requested packet.
     for function in context_pack_micro_flow_relevant_functions(packet) {
         for language in &active_languages {
             let query = LocalFlowPacketQueryOptions {
@@ -6623,18 +6906,62 @@ fn load_context_pack_micro_flow_packet_rows(
                 source_role: Some("production".to_string()),
                 ..LocalFlowPacketQueryOptions::default()
             };
-            for row in store
+            let candidates = store
                 .query_local_flow_packets(&query)
-                .map_err(|error| error.to_string())?
-            {
-                rows.entry(row.packet_id.clone()).or_insert(row);
-                if rows.len() >= limit {
-                    return Ok(rows.into_values().collect());
-                }
+                .map_err(|error| error.to_string())?;
+            if extend_context_pack_micro_flow_packet_rows(
+                &mut rows,
+                &mut seen_packet_ids,
+                candidates,
+                limit,
+            ) {
+                return Ok(rows);
             }
         }
     }
-    Ok(rows.into_values().collect())
+    for file in context_pack_micro_flow_relevant_files(packet) {
+        for language in &active_languages {
+            let query = LocalFlowPacketQueryOptions {
+                limit,
+                file_id: Some(file.clone()),
+                language: Some((*language).to_string()),
+                source_role: Some("production".to_string()),
+                ..LocalFlowPacketQueryOptions::default()
+            };
+            let candidates = store
+                .query_local_flow_packets(&query)
+                .map_err(|error| error.to_string())?;
+            if extend_context_pack_micro_flow_packet_rows(
+                &mut rows,
+                &mut seen_packet_ids,
+                candidates,
+                limit,
+            ) {
+                return Ok(rows);
+            }
+        }
+    }
+    Ok(rows)
+}
+
+pub(crate) fn extend_context_pack_micro_flow_packet_rows(
+    rows: &mut Vec<LocalFlowPacketRow>,
+    seen_packet_ids: &mut BTreeSet<String>,
+    candidates: impl IntoIterator<Item = LocalFlowPacketRow>,
+    limit: usize,
+) -> bool {
+    if rows.len() >= limit {
+        return true;
+    }
+    for row in candidates {
+        if seen_packet_ids.insert(row.packet_id.clone()) {
+            rows.push(row);
+        }
+        if rows.len() >= limit {
+            return true;
+        }
+    }
+    false
 }
 
 fn context_pack_micro_flow_relevant_files(packet: &ContextPacket) -> Vec<String> {
@@ -6910,6 +7237,15 @@ pub(crate) fn context_pack_agent_json_response(
         &snippets,
         &candidate_set,
     );
+    let capability_metadata = context_pack_capability_metadata_json(db_path);
+    let language_capability_context = context_pack_language_capability_context_json(
+        &capability_metadata,
+        packet,
+        proof_status,
+        graph_proof,
+        evidence_status,
+        proof_strength,
+    );
     let staged_availability = staged_availability_for_packet(packet, db_lifecycle_read);
     let staged_fields = if options.explain {
         staged_availability_top_level_fields(&staged_availability)
@@ -6978,7 +7314,7 @@ pub(crate) fn context_pack_agent_json_response(
         .get("claimable")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let planning_packet = context_pack_planning_packet_json(
+    let mut planning_packet = context_pack_planning_packet_json(
         options,
         packet,
         &paths,
@@ -6989,7 +7325,13 @@ pub(crate) fn context_pack_agent_json_response(
         graph_proof,
         omitted_paths + omitted_snippets + omitted_fallback_evidence,
     );
-    let routing_packet = context_pack_routing_packet_json(
+    if let Some(object) = planning_packet.as_object_mut() {
+        object.insert(
+            "language_capability_context".to_string(),
+            language_capability_context.clone(),
+        );
+    }
+    let mut routing_packet = context_pack_routing_packet_json(
         options,
         packet,
         db_lifecycle_read,
@@ -6997,6 +7339,7 @@ pub(crate) fn context_pack_agent_json_response(
         &candidate_set,
         &paths,
         &fallback_evidence,
+        &all_fallback_evidence,
         &snippets,
         lifecycle_claimable,
         proof_status,
@@ -7004,6 +7347,12 @@ pub(crate) fn context_pack_agent_json_response(
         evidence_status,
         omitted_paths + omitted_snippets + omitted_fallback_evidence,
     );
+    if let Some(object) = routing_packet.as_object_mut() {
+        object.insert(
+            "language_capability_context".to_string(),
+            language_capability_context.clone(),
+        );
+    }
     let fallback_snippets = snippets
         .iter()
         .filter(|snippet| snippet.get("fallback_source").is_some())
@@ -7079,6 +7428,8 @@ pub(crate) fn context_pack_agent_json_response(
         "graph_proof": graph_proof,
         "evidence_status": evidence_status,
         "graph_verification": graph_verification,
+        "capability_metadata": capability_metadata,
+        "language_capability_context": language_capability_context,
         "micro_flow_handles": micro_flow_handles,
         "micro_flow_packet_summary": micro_flow_packet_summary,
         "micro_flow_packet_proof_boundary": {
@@ -7286,33 +7637,61 @@ pub(crate) fn context_pack_agent_json_response(
         if serialized_json_len(&candidate_response) <= max_output_bytes {
             response = candidate_response;
         } else {
-            for keep_count in (1..=candidate_values_vec.len()).rev() {
-                let mut compact_candidate_response = response.clone();
-                if let Some(object) = compact_candidate_response.as_object_mut() {
-                    object.insert(
-                        "candidates".to_string(),
-                        Value::Array(
-                            candidate_values_vec
-                                .iter()
-                                .take(keep_count)
-                                .cloned()
-                                .collect(),
-                        ),
-                    );
-                    object.insert("candidate_count".to_string(), json!(keep_count));
-                    object.insert("candidate_payload_compacted".to_string(), json!(true));
-                    object.insert(
-                        "candidate_omitted_count".to_string(),
-                        json!(candidate_total_count.saturating_sub(keep_count)),
-                    );
-                    object.insert(
-                        "candidate_omitted_reason".to_string(),
-                        json!("candidate_budget_compacted_to_fit_max_output_bytes"),
-                    );
+            // Candidate rows are evidence-adjacent: under the evidence-first
+            // budget contract they outrank routing/metadata boilerplate. When
+            // even one candidate cannot fit, escalate routing reduction
+            // (slim rows -> compact -> minimize -> handle compaction -> stub)
+            // and retry before giving up on candidates entirely.
+            let routing_reduction_steps: [fn(&mut Value) -> bool; 5] = [
+                slim_context_agent_routing_row_boilerplate,
+                compact_context_agent_routing_packet,
+                compact_context_agent_routing_packet,
+                compact_context_agent_micro_flow_handles,
+                stub_context_agent_routing_packet,
+            ];
+            let mut next_reduction_step = 0;
+            'candidate_fit: loop {
+                for keep_count in (1..=candidate_values_vec.len()).rev() {
+                    let mut compact_candidate_response = response.clone();
+                    if let Some(object) = compact_candidate_response.as_object_mut() {
+                        object.insert(
+                            "candidates".to_string(),
+                            Value::Array(
+                                candidate_set
+                                    .candidates
+                                    .iter()
+                                    .take(keep_count)
+                                    .map(context_pack_budget_candidate_json)
+                                    .collect(),
+                            ),
+                        );
+                        object.insert("candidate_count".to_string(), json!(keep_count));
+                        object.insert("candidate_payload_compacted".to_string(), json!(true));
+                        object.insert(
+                            "candidate_omitted_count".to_string(),
+                            json!(candidate_total_count.saturating_sub(keep_count)),
+                        );
+                        object.insert(
+                            "candidate_omitted_reason".to_string(),
+                            json!("candidate_budget_compacted_to_fit_max_output_bytes"),
+                        );
+                    }
+                    if serialized_json_len(&compact_candidate_response) <= max_output_bytes {
+                        response = compact_candidate_response;
+                        break 'candidate_fit;
+                    }
                 }
-                if serialized_json_len(&compact_candidate_response) <= max_output_bytes {
-                    response = compact_candidate_response;
-                    break;
+                let mut reduced = false;
+                while next_reduction_step < routing_reduction_steps.len() {
+                    let step = routing_reduction_steps[next_reduction_step];
+                    next_reduction_step += 1;
+                    if step(&mut response) {
+                        reduced = true;
+                        break;
+                    }
+                }
+                if !reduced {
+                    break 'candidate_fit;
                 }
             }
         }
@@ -7764,6 +8143,9 @@ pub(crate) fn context_planning_evidence_items(
         if let Some(reason) = path.get("classification_reason").cloned() {
             item.insert("reason".to_string(), reason);
         }
+        if let Some(capability) = path.get("language_capability").cloned() {
+            item.insert("language_capability".to_string(), capability);
+        }
         items.push(Value::Object(item));
     }
 
@@ -7828,6 +8210,9 @@ pub(crate) fn context_planning_evidence_items(
                 item.insert(key.to_string(), value);
             }
         }
+        if let Some(capability) = evidence.get("language_capability").cloned() {
+            item.insert("language_capability".to_string(), capability);
+        }
         items.push(Value::Object(item));
     }
 
@@ -7848,7 +8233,7 @@ pub(crate) fn context_planning_evidence_items(
             "fallback"
         };
         let planning_role = context_planning_role_for_value(snippet);
-        items.push(json!({
+        let mut item = json!({
             "id": format!("snippet://{}:{}", file, snippet.get("lines").and_then(Value::as_str).unwrap_or("unknown")),
             "rank": items.len() + 1,
             "evidence_type": evidence_type,
@@ -7862,7 +8247,13 @@ pub(crate) fn context_planning_evidence_items(
             "lines": snippet.get("lines").cloned().unwrap_or_else(|| json!("unknown")),
             "text_preview": snippet.get("text").and_then(Value::as_str).unwrap_or_default().chars().take(160).collect::<String>(),
             "reason": snippet.get("reason").and_then(Value::as_str).unwrap_or("context snippet"),
-        }));
+        });
+        if let Some(object) = item.as_object_mut() {
+            if let Some(capability) = snippet.get("language_capability").cloned() {
+                object.insert("language_capability".to_string(), capability);
+            }
+        }
+        items.push(item);
     }
     items
 }
@@ -8424,16 +8815,34 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.retrieval_architecture += 1;
             continue;
         }
-        // Only drop retrieval_explain if it is the full (large) explain. Once it
-        // has been reduced to the bounded budget summary (`budget_limited: true`),
-        // keep it: it is small and is the explain-mode contract surface.
-        if response
+        // Downgrade a full explain to its bounded summary before generic field
+        // removal. Patch-assist is attached after the first explain budget
+        // decision, so it can push a previously fitting full explain over the
+        // final cap. The summary preserves vector operability status/counts and
+        // remains the explain-mode contract surface under that later pressure.
+        let full_retrieval_explain = response
             .get("retrieval_explain")
-            .and_then(|explain| explain.get("budget_limited"))
-            .and_then(Value::as_bool)
-            != Some(true)
-            && remove_context_agent_field(response, "retrieval_explain")
-        {
+            .filter(|explain| explain.get("budget_limited").and_then(Value::as_bool) != Some(true))
+            .cloned();
+        if let Some(full_retrieval_explain) = full_retrieval_explain {
+            let full_explain_bytes = serialized_json_len(&full_retrieval_explain);
+            let summary = context_pack_retrieval_explain_budget_summary(
+                &full_retrieval_explain,
+                full_explain_bytes,
+                max_output_bytes,
+            );
+            if let Some(object) = response.as_object_mut() {
+                object.insert("retrieval_explain".to_string(), summary);
+                object.insert(
+                    "explain_budget_status".to_string(),
+                    json!({
+                        "enabled": true,
+                        "status": "summary_included_full_explain_omitted_by_explain_budget",
+                        "separate_from_evidence_budget": true,
+                        "full_explain_bytes": full_explain_bytes,
+                    }),
+                );
+            }
             omitted.retrieval_architecture += 1;
             continue;
         }
@@ -8459,6 +8868,17 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
         }
         if pop_context_agent_planning_array_item(response, "do_not_touch_areas") {
             omitted.planning_packet += 1;
+            continue;
+        }
+        if compact_context_agent_routing_packet(response) {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        // Top-level micro_flow_handles carry full expandable handle bodies; the
+        // agent-use wrapper already compacts them before shedding evidence, but
+        // the direct builder path reached the evidence pops with them intact.
+        if compact_context_agent_micro_flow_handles(response) {
+            omitted.retrieval_architecture += 1;
             continue;
         }
         if pop_context_agent_routing_array_item(response, "expansion_handles") {
@@ -8494,6 +8914,25 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.routing_packet += 1;
             continue;
         }
+        if compact_context_agent_capability_metadata(response) {
+            omitted.retrieval_architecture += 1;
+            continue;
+        }
+        if compact_context_agent_db_lifecycle_read(response) {
+            omitted.retrieval_architecture += 1;
+            continue;
+        }
+        if compact_context_agent_staged_availability(response) {
+            omitted.retrieval_architecture += 1;
+            continue;
+        }
+        // Per-row policy boilerplate and duplicated full path bodies inside the
+        // routing packet are metadata weight, not evidence: slim them before any
+        // evidence section below is popped.
+        if slim_context_agent_routing_row_boilerplate(response) {
+            omitted.routing_packet += 1;
+            continue;
+        }
         if compact_context_agent_routing_packet(response) {
             omitted.routing_packet += 1;
             continue;
@@ -8510,11 +8949,11 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.routing_packet += 1;
             continue;
         }
-        if compact_context_agent_graph_verification(response) {
+        if strip_context_agent_evidence_language_capabilities(response) {
             omitted.retrieval_architecture += 1;
             continue;
         }
-        if pop_context_agent_candidate_item(response) {
+        if compact_context_agent_graph_verification(response) {
             omitted.retrieval_architecture += 1;
             continue;
         }
@@ -8533,6 +8972,7 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             "candidate_cap_policy",
             "selected_role_coverage",
             "evidence_budget_status",
+            "dirty_evidence_summary",
             // NOTE: fallback_snippets and explain_budget_status are intentionally
             // NOT in this early-removal list. fallback_snippets is reduced via
             // pop-preserve-one below (and only fully removed at last resort), and
@@ -8545,6 +8985,17 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             }
         }
         if removed_compact_field {
+            continue;
+        }
+        if compact_context_agent_planning_packet_minimal(response) {
+            omitted.planning_packet += 1;
+            continue;
+        }
+        // Candidate rows are evidence-adjacent: pop them only after the compact
+        // metadata fields above are gone, so an exact-seed candidate survives
+        // budget pressure that pure metadata could have absorbed.
+        if pop_context_agent_candidate_item(response) {
+            omitted.retrieval_architecture += 1;
             continue;
         }
         if pop_context_agent_array_item_preserve_one(response, "recommended_tests") {
@@ -8563,7 +9014,12 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.snippets += 1;
             continue;
         }
-        if pop_context_agent_array_item(response, "fallback_evidence") {
+        // fallback_evidence is the source/text evidence surface when there is no
+        // graph proof: keep at least one row through normal pressure (full
+        // removal stays available in the last-resort section for extreme
+        // budgets), so `result_count` cannot silently drop to zero while
+        // metadata survives.
+        if pop_context_agent_array_item_preserve_one(response, "fallback_evidence") {
             omitted.fallback_evidence += 1;
             if let Some(object) = response.as_object_mut() {
                 let fallback_count = object
@@ -8592,10 +9048,6 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             }
             continue;
         }
-        if remove_context_agent_field(response, "routing_packet") {
-            omitted.routing_packet += 1;
-            continue;
-        }
         // Last-resort trims under extreme budgets (e.g. 4 KiB). These are not in
         // the always-protected scalar set (claimability, graph_verification,
         // lifecycle, proof_status/strength, graph_proof) the contract guarantees,
@@ -8622,6 +9074,24 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
             omitted.planning_packet += 1;
             continue;
         }
+        // The minimal routing packet still keeps a multi-kilobyte floor
+        // (preserved evidence arrays + capability plan). Under budgets that
+        // floor cannot fit, reduce it to a stub BEFORE any remaining source/
+        // text evidence is dropped — routing guidance is metadata, snippets
+        // are what the agent actually reads.
+        if stub_context_agent_routing_packet(response) {
+            omitted.routing_packet += 1;
+            continue;
+        }
+        // Extreme budgets only: the preserve-one fallback rows above may still
+        // not fit; drop them entirely before the snippet evidence goes.
+        if remove_context_agent_field(response, "fallback_evidence") {
+            omitted.fallback_evidence += 1;
+            if let Some(object) = response.as_object_mut() {
+                object.insert("fallback_evidence_count".to_string(), json!(0));
+            }
+            continue;
+        }
         if remove_context_agent_field(response, "fallback_snippets") {
             omitted.snippets += 1;
             continue;
@@ -8634,6 +9104,166 @@ pub(crate) fn enforce_context_agent_max_output_bytes(
         break;
     }
     omitted
+}
+
+pub(crate) fn compact_context_agent_capability_metadata(response: &mut Value) -> bool {
+    let mut changed = false;
+    let metadata_compacted = response
+        .get("capability_metadata")
+        .and_then(|metadata| metadata.get("compacted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if metadata_compacted {
+        if let Some(object) = response.as_object_mut() {
+            object.remove("capability_metadata");
+            changed = true;
+        }
+    } else if let Some(metadata) = response.get_mut("capability_metadata") {
+        let compact = json!({
+            "status": metadata.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "bounded": metadata.get("bounded").cloned().unwrap_or_else(|| json!(true)),
+            "not_graph_proof": true,
+            "proof_boundary": metadata.get("proof_boundary").cloned().unwrap_or_else(|| json!("capability metadata labels facts; it does not create graph proof")),
+            "compacted": true,
+        });
+        *metadata = compact;
+        changed = true;
+    }
+    changed |= compact_context_agent_language_capability_context(response);
+    if let Some(planning) = response.get_mut("planning_packet") {
+        changed |= compact_nested_language_capability_context(planning);
+        changed |= remove_compacted_nested_language_capability_context(planning);
+    }
+    if let Some(routing) = response.get_mut("routing_packet") {
+        changed |= compact_nested_language_capability_context(routing);
+        changed |= remove_compacted_nested_language_capability_context(routing);
+    }
+    changed
+}
+
+pub(crate) fn compact_context_agent_language_capability_context(value: &mut Value) -> bool {
+    compact_nested_language_capability_context(value)
+}
+
+fn compact_nested_language_capability_context(value: &mut Value) -> bool {
+    let Some(context) = value.get_mut("language_capability_context") else {
+        return false;
+    };
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
+    if context
+        .get("compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if context
+            .get("minimal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let minimal = json!({
+            "status": context.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "proof_status": context.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
+            "proof_strength": context.get("proof_strength").cloned().unwrap_or_else(|| json!("unknown")),
+            "graph_proof": context.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+            "capability_metadata_does_not_create_graph_proof": true,
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_overclaim_count": 0,
+            "non_typescript_packet_overclaim_count": 0,
+            "context_entry_command_activated": false,
+            "compacted": true,
+            "minimal": true,
+        });
+        *context = minimal;
+        return true;
+    }
+    let compact = json!({
+        "status": context.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_status": context.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "proof_strength": context.get("proof_strength").cloned().unwrap_or_else(|| json!("unknown")),
+        "graph_proof": context.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+        "evidence_status": context.get("evidence_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "unknown_boundary_rows": context.get("unknown_boundary_rows").cloned().unwrap_or_else(|| json!(0)),
+        "resolver_metadata_rows": context.get("resolver_metadata_rows").cloned().unwrap_or_else(|| json!(0)),
+        "local_flow_packet_boundary": context.get("local_flow_packet_boundary").cloned().unwrap_or_else(|| json!({
+            "active_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_overclaim_count": 0,
+            "non_typescript_packet_overclaim_count": 0,
+            "handles_do_not_create_proof": true,
+            "context_entry_command_activated": false
+        })),
+        "capability_metadata_does_not_create_graph_proof": true,
+        "compacted": true,
+    });
+    *context = compact;
+    true
+}
+
+fn remove_compacted_nested_language_capability_context(value: &mut Value) -> bool {
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+    let should_remove = object
+        .get("language_capability_context")
+        .and_then(|context| context.get("compacted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if should_remove {
+        object.remove("language_capability_context");
+        return true;
+    }
+    false
+}
+
+pub(crate) fn strip_context_agent_evidence_language_capabilities(response: &mut Value) -> bool {
+    let mut changed = false;
+    for key in [
+        "paths",
+        "snippets",
+        "fallback_evidence",
+        "fallback_snippets",
+        "candidates",
+    ] {
+        changed |= strip_language_capability_from_array(response, key);
+    }
+    if let Some(planning) = response.get_mut("planning_packet") {
+        changed |= strip_language_capability_from_array(planning, "evidence_items");
+    }
+    if let Some(routing) = response.get_mut("routing_packet") {
+        for key in [
+            "critical_files",
+            "verified_paths",
+            "text_evidence",
+            "source_navigation_evidence",
+            "fallback_snippets",
+        ] {
+            changed |= strip_language_capability_from_array(routing, key);
+        }
+    }
+    changed
+}
+
+fn strip_language_capability_from_array(value: &mut Value, key: &str) -> bool {
+    let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for item in items {
+        if let Some(object) = item.as_object_mut() {
+            if object.remove("language_capability").is_some() {
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 pub(crate) fn compact_context_agent_graph_verification(response: &mut Value) -> bool {
@@ -8649,9 +9279,11 @@ pub(crate) fn compact_context_agent_graph_verification(response: &mut Value) -> 
     }
     let compact = json!({
         "status": graph.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "candidate_count": graph.get("candidate_count").cloned().unwrap_or_else(|| json!(0)),
         "proof_status": graph.get("proof_status").cloned().unwrap_or_else(|| json!("unknown")),
         "graph_proof": graph.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
         "evidence_status": graph.get("evidence_status").cloned().unwrap_or_else(|| json!("unknown")),
+        "reason": graph.get("reason").cloned().unwrap_or_else(|| json!("graph verification reason unavailable")),
         "proof_failure_reason": graph.get("proof_failure_reason").cloned().unwrap_or(Value::Null),
         "compacted": true,
         "contract": {
@@ -8747,6 +9379,7 @@ pub(crate) fn compact_context_agent_db_lifecycle_read(response: &mut Value) -> b
         "claimable": lifecycle.get("claimable").cloned().unwrap_or_else(|| json!(false)),
         "diagnostic_only": lifecycle.get("diagnostic_only").cloned().unwrap_or_else(|| json!(true)),
         "decision": lifecycle.get("decision").cloned().unwrap_or_else(|| json!("unknown")),
+        "exact_db_path_checked": lifecycle.get("exact_db_path_checked").cloned().unwrap_or(Value::Null),
         "artifact_freshness": lifecycle.get("artifact_freshness").cloned().unwrap_or(Value::Null),
         "passport_status": lifecycle.get("passport_status").cloned().unwrap_or(Value::Null),
         "path_access_status": lifecycle.get("path_access_status").cloned().unwrap_or(Value::Null),
@@ -8905,10 +9538,33 @@ pub(crate) fn pop_context_agent_routing_array_item(response: &mut Value, key: &s
     else {
         return false;
     };
+    let preserve_limit = match key {
+        "critical_files" => Some(8),
+        "critical_symbols" => Some(12),
+        "verified_paths" => Some(3),
+        "text_evidence" => Some(5),
+        "source_navigation_evidence" => Some(6),
+        "fallback_snippets" => Some(3),
+        "micro_flow_handles" => Some(4),
+        "risks" => Some(8),
+        "validation_steps" => Some(6),
+        "language_validation_steps" => Some(6),
+        "follow_up_queries" => Some(6),
+        "artifact_inspection_requirements" => Some(3),
+        "db_inspection_requirements" => Some(3),
+        "formulas_or_accounting_notes" => Some(4),
+        "unknowns" => Some(3),
+        _ => None,
+    };
     let popped = packet
         .get_mut(key)
         .and_then(Value::as_array_mut)
-        .is_some_and(|array| array.pop().is_some());
+        .is_some_and(|array| {
+            if preserve_limit.is_some_and(|limit| array.len() <= limit) {
+                return false;
+            }
+            array.pop().is_some()
+        });
     if popped {
         let omitted_count = packet
             .get("omitted_count")
@@ -8942,7 +9598,7 @@ pub(crate) fn compact_context_agent_routing_packet(response: &mut Value) -> bool
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        return false;
+        return minimize_context_agent_routing_packet(packet);
     }
     let query_atom_roles = packet
         .pointer("/retrieval_plan_summary/query_atoms")
@@ -8971,14 +9627,16 @@ pub(crate) fn compact_context_agent_routing_packet(response: &mut Value) -> bool
         "task_roles": packet.get("task_roles").cloned().unwrap_or_else(|| json!([])),
         "retrieval_plan_summary": compact_retrieval_plan,
         "claimability": packet.get("claimability").cloned().unwrap_or(Value::Null),
-        "critical_files": routing_take_array(packet, "critical_files", 4),
-        "critical_symbols": routing_take_array(packet, "critical_symbols", 4),
-        "verified_paths": routing_take_array(packet, "verified_paths", 2),
-        "text_evidence": routing_take_array(packet, "text_evidence", 2),
-        "source_navigation_evidence": routing_take_array(packet, "source_navigation_evidence", 3),
-        "fallback_snippets": routing_take_array(packet, "fallback_snippets", 2),
-        "micro_flow_handles": routing_take_array(packet, "micro_flow_handles", 1),
+        "critical_files": routing_take_array(packet, "critical_files", 8),
+        "critical_symbols": routing_take_array(packet, "critical_symbols", 12),
+        "verified_paths": routing_take_array(packet, "verified_paths", 3),
+        "text_evidence": routing_take_array(packet, "text_evidence", 5),
+        "source_navigation_evidence": routing_take_array(packet, "source_navigation_evidence", 6),
+        "fallback_snippets": routing_take_array(packet, "fallback_snippets", 3),
+        "micro_flow_handles": routing_take_array(packet, "micro_flow_handles", 4),
         "micro_flow_packet_summary": packet.get("micro_flow_packet_summary").cloned().unwrap_or(Value::Null),
+        "agent_investigation_layer": compact_routing_agent_investigation_layer(packet),
+        "language_capability_plan": compact_routing_language_capability_plan(packet),
         "micro_flow_handle_policy": packet.get("micro_flow_handle_policy").cloned().unwrap_or_else(|| json!({
             "packet_handles_do_not_create_proof": true,
             "compact_default_full_packet_body_inline": false,
@@ -8987,13 +9645,15 @@ pub(crate) fn compact_context_agent_routing_packet(response: &mut Value) -> bool
             "route_bridge_pull_forward_count": 0
         })),
         "unknowns": routing_take_array(packet, "unknowns", 3),
-        "risks": routing_take_array(packet, "risks", 3),
-        "validation_steps": routing_take_array(packet, "validation_steps", 2),
-        "follow_up_queries": routing_take_array(packet, "follow_up_queries", 3),
+        "risks": routing_take_array(packet, "risks", 8),
+        "validation_steps": routing_take_array(packet, "validation_steps", 6),
+        "language_validation_steps": routing_take_array(packet, "language_validation_steps", 6),
+        "validation_steps_language_aware": packet.get("validation_steps_language_aware").cloned().unwrap_or_else(|| json!(true)),
+        "follow_up_queries": routing_take_array(packet, "follow_up_queries", 6),
         "expansion_command_available": packet.get("expansion_command_available").cloned().unwrap_or_else(|| json!(false)),
-        "artifact_inspection_requirements": routing_take_array(packet, "artifact_inspection_requirements", 2),
-        "db_inspection_requirements": routing_take_array(packet, "db_inspection_requirements", 2),
-        "formulas_or_accounting_notes": routing_take_array(packet, "formulas_or_accounting_notes", 2),
+        "artifact_inspection_requirements": routing_take_array(packet, "artifact_inspection_requirements", 3),
+        "db_inspection_requirements": routing_take_array(packet, "db_inspection_requirements", 3),
+        "formulas_or_accounting_notes": routing_take_array(packet, "formulas_or_accounting_notes", 4),
         "omitted_count": packet.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
         "budget_status": {
             "status": "bounded_with_omissions",
@@ -9008,12 +9668,719 @@ pub(crate) fn compact_context_agent_routing_packet(response: &mut Value) -> bool
     true
 }
 
+fn minimize_context_agent_routing_packet(packet: &mut Value) -> bool {
+    if packet
+        .get("budget_status")
+        .and_then(|status| status.get("routing_packet_minimal"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let compact = json!({
+        "packet_kind": packet.get("packet_kind").cloned().unwrap_or_else(|| json!("agent_routing_packet")),
+        "schema_version": packet.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "task_intent": minimize_routing_task_intent(packet),
+        "claimability": packet.get("claimability").cloned().unwrap_or(Value::Null),
+        "critical_files": routing_minimal_evidence_array(packet, "critical_files", 4),
+        "critical_symbols": routing_minimal_symbol_array(packet, "critical_symbols", 12),
+        "verified_paths": routing_take_array(packet, "verified_paths", 3)
+            .as_array()
+            .map(|paths| json!(paths.iter().map(slim_routing_verified_path_row).collect::<Vec<_>>()))
+            .unwrap_or_else(|| json!([])),
+        "source_navigation_evidence": routing_minimal_evidence_array(packet, "source_navigation_evidence", 4),
+        "fallback_snippets": routing_minimal_fallback_snippets(packet, 1),
+        "agent_investigation_layer": minimize_routing_agent_investigation_layer(packet),
+        "language_capability_plan": minimize_routing_language_capability_plan(packet),
+        "unknowns": routing_take_array(packet, "unknowns", 3),
+        "risks": routing_minimal_risk_array(packet, "risks", 8),
+        "validation_steps": routing_take_array(packet, "validation_steps", 2),
+        "validation_steps_language_aware": packet.get("validation_steps_language_aware").cloned().unwrap_or_else(|| json!(true)),
+        "language_validation_steps": routing_take_array(packet, "language_validation_steps", 1),
+        "follow_up_queries": routing_take_array(packet, "follow_up_queries", 3)
+            .as_array()
+            .map(|queries| json!(queries.iter().map(slim_routing_follow_up_query_row).collect::<Vec<_>>()))
+            .unwrap_or_else(|| json!([])),
+        "follow_up_query_policy": routing_follow_up_query_policy_note(),
+        "deterministic_summary": minimize_routing_deterministic_summary(packet),
+        "artifact_inspection_requirements": routing_take_array(packet, "artifact_inspection_requirements", 3),
+        "db_inspection_requirements": routing_take_array(packet, "db_inspection_requirements", 3),
+        "formulas_or_accounting_notes": routing_take_array(packet, "formulas_or_accounting_notes", 4),
+        "omitted_count": packet.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
+        "micro_flow_handle_policy": {
+            "packet_handles_do_not_create_proof": true,
+            "compact_default_full_packet_body_inline": false,
+            "compact_default_ordered_steps_inline": false,
+            "context_entry_command_activated": false,
+            "route_bridge_pull_forward_count": 0
+        },
+        "budget_status": {
+            "status": "bounded_with_omissions",
+            "routing_packet_compacted": true,
+            "routing_packet_minimal": true,
+            "fallback_snippets_survive_compaction": true,
+            "source_navigation_evidence_survives_for_implementation_trace": true,
+            "explain_debug_budget_separate": true,
+        },
+    });
+    *packet = compact;
+    true
+}
+
+/// Last-resort routing reduction: replace the routing packet with a stub that
+/// keeps only its identity, task kind, omission accounting, and one minimal
+/// fallback snippet (evidence outlives routing boilerplate). Fires once, only
+/// after compact + minimize could not reach the budget, and always before
+/// remaining source/text evidence would be dropped.
+pub(crate) fn stub_context_agent_routing_packet(response: &mut Value) -> bool {
+    let Some(packet) = response.get_mut("routing_packet") else {
+        return false;
+    };
+    if packet
+        .get("budget_status")
+        .and_then(|status| status.get("routing_packet_stub"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let omitted_count = packet
+        .get("omitted_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default()
+        + 1;
+    let minimal_fallback_snippets = routing_minimal_fallback_snippets(packet, 1);
+    let minimal_critical_files = routing_minimal_evidence_array(packet, "critical_files", 4);
+    *packet = json!({
+        "packet_kind": packet.get("packet_kind").cloned().unwrap_or_else(|| json!("agent_routing_packet")),
+        "schema_version": packet.get("schema_version").cloned().unwrap_or_else(|| json!(1)),
+        "task_kind": packet.pointer("/task_intent/task_kind").cloned().unwrap_or(Value::Null),
+        "omitted_count": omitted_count,
+        "budget_status": {
+            "status": "bounded_with_omissions",
+            "routing_packet_compacted": true,
+            "routing_packet_minimal": true,
+            "routing_packet_stub": true,
+            "routing_packet_reduced_before_evidence_removal": true,
+        },
+    });
+    // Fallback snippets and critical-file pointers are evidence, not routing
+    // boilerplate: even the stub keeps minimal rows so evidence never vanishes
+    // with the routing metadata it happened to ride in.
+    if let Some(object) = packet.as_object_mut() {
+        if minimal_fallback_snippets
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+        {
+            object.insert("fallback_snippets".to_string(), minimal_fallback_snippets);
+            if let Some(status) = object
+                .get_mut("budget_status")
+                .and_then(Value::as_object_mut)
+            {
+                status.insert(
+                    "fallback_snippets_survive_compaction".to_string(),
+                    json!(true),
+                );
+            }
+        }
+        if minimal_critical_files
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+        {
+            object.insert("critical_files".to_string(), minimal_critical_files);
+        }
+    }
+    true
+}
+
+/// One budget-pressure pass over routing-packet rows: strip the per-row policy
+/// boilerplate (hoisted into one `follow_up_query_policy` note) and reduce
+/// duplicated full path bodies to endpoint/relation summaries. The slimmed rows
+/// keep their evidence identity; full row bodies remain in explain/audit modes
+/// and in packets that fit their budget without pressure.
+pub(crate) fn slim_context_agent_routing_row_boilerplate(response: &mut Value) -> bool {
+    let Some(packet) = response
+        .get_mut("routing_packet")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    if packet
+        .get("budget_status")
+        .and_then(|status| status.get("routing_rows_slimmed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let mut changed = false;
+    if let Some(queries) = packet
+        .get_mut("follow_up_queries")
+        .and_then(Value::as_array_mut)
+    {
+        for row in queries.iter_mut() {
+            let slim = slim_routing_follow_up_query_row(row);
+            if *row != slim {
+                *row = slim;
+                changed = true;
+            }
+        }
+    }
+    if let Some(paths) = packet
+        .get_mut("verified_paths")
+        .and_then(Value::as_array_mut)
+    {
+        for row in paths.iter_mut() {
+            let slim = slim_routing_verified_path_row(row);
+            if *row != slim {
+                *row = slim;
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return false;
+    }
+    packet.insert(
+        "follow_up_query_policy".to_string(),
+        routing_follow_up_query_policy_note(),
+    );
+    if let Some(status) = packet
+        .get_mut("budget_status")
+        .and_then(Value::as_object_mut)
+    {
+        status.insert("routing_rows_slimmed".to_string(), json!(true));
+    } else {
+        packet.insert(
+            "budget_status".to_string(),
+            json!({
+                "status": "bounded_with_omissions",
+                "routing_rows_slimmed": true,
+            }),
+        );
+    }
+    true
+}
+
+/// Shared policy statement for slimmed follow-up query rows: the safety
+/// boundary formerly repeated per row rides once at the packet level.
+fn routing_follow_up_query_policy_note() -> Value {
+    json!({
+        "applies_to_all_follow_up_queries": true,
+        "capability_boundary": "follow-up query results remain candidate/source evidence until graph/source/resolver verification proves the relation",
+        "unsupported_relations_are_not_blockers": true,
+        "shell_ready": false,
+    })
+}
+
+fn slim_routing_follow_up_query_row(row: &Value) -> Value {
+    if row
+        .get("compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return row.clone();
+    }
+    json!({
+        "query_text": row.get("query_text").cloned().unwrap_or(Value::Null),
+        "why": row.get("why").cloned().unwrap_or(Value::Null),
+        "risk": row.get("risk").cloned().unwrap_or(Value::Null),
+        "expected_signal": row.get("expected_signal").cloned().unwrap_or(Value::Null),
+        "language_scope": row.get("language_scope").cloned().unwrap_or_else(|| json!([])),
+        "shell_ready": false,
+        "compacted": true,
+    })
+}
+
+/// Reduce a routing-packet verified-path duplicate to an endpoint/relation
+/// summary. The canonical full path evidence lives in the top-level
+/// `paths`/`proof_paths` sections; this keeps the routing copy claim-accurate
+/// (endpoints, relation kinds, exactness, claimability) without the per-edge
+/// bodies.
+fn slim_routing_verified_path_row(row: &Value) -> Value {
+    if row
+        .get("compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return row.clone();
+    }
+    let edges = row.get("edges").and_then(Value::as_array);
+    let first = edges.and_then(|edges| edges.first());
+    let last = edges.and_then(|edges| edges.last());
+    let relations = edges
+        .map(|edges| {
+            edges
+                .iter()
+                .filter_map(|edge| edge.get("relation").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut files: Vec<String> = Vec::new();
+    if let Some(edges) = edges {
+        for edge in edges {
+            if let Some(spans) = edge.get("source_spans").and_then(Value::as_array) {
+                for span in spans {
+                    if let Some(file) = span.get("file").and_then(Value::as_str) {
+                        if !files.iter().any(|known| known == file) {
+                            files.push(file.to_string());
+                        }
+                    }
+                }
+            }
+            if files.len() >= 3 {
+                break;
+            }
+        }
+    }
+    json!({
+        "source": first
+            .and_then(|edge| edge.pointer("/source/name"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "target": last
+            .and_then(|edge| edge.pointer("/target/name"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "relations": relations,
+        "edge_count": edges.map(Vec::len).unwrap_or_default(),
+        "exactness": first
+            .and_then(|edge| edge.get("exactness"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "confidence": row.get("confidence").cloned().unwrap_or(Value::Null),
+        "claimability": row.get("claimability").cloned().unwrap_or(Value::Null),
+        "files": files,
+        "full_detail_in_top_level_paths": true,
+        "compacted": true,
+    })
+}
+
+/// Minimal task-intent form for the routing minimize pass: keeps the routing
+/// decision (kind/profile/confidence/why) and drops the seed/term working sets.
+fn minimize_routing_task_intent(packet: &Value) -> Value {
+    let intent = packet.get("task_intent").unwrap_or(&Value::Null);
+    if !intent.is_object() {
+        return intent.clone();
+    }
+    json!({
+        "task_intent_id": intent.get("task_intent_id").cloned().unwrap_or(Value::Null),
+        "task_kind": intent.get("task_kind").cloned().unwrap_or(Value::Null),
+        "domain": intent.get("domain").cloned().unwrap_or(Value::Null),
+        "selected_profile": intent.get("selected_profile").cloned().unwrap_or(Value::Null),
+        "confidence": intent.get("confidence").cloned().unwrap_or(Value::Null),
+        "why_this_intent": intent.get("why_this_intent").cloned().unwrap_or(Value::Null),
+        "compacted": true,
+    })
+}
+
+/// Minimal deterministic summary for the routing minimize pass: keeps the
+/// proof statement, the next inspection pointer, and the top proof-boundary
+/// risk lines; drops the null diagnostic slots and long text-evidence prose.
+fn minimize_routing_deterministic_summary(packet: &Value) -> Value {
+    let summary = packet.get("deterministic_summary").unwrap_or(&Value::Null);
+    if !summary.is_object() {
+        return summary.clone();
+    }
+    let risks = summary
+        .get("risk")
+        .and_then(Value::as_array)
+        .map(|risks| risks.iter().take(2).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    json!({
+        "proof": summary.get("proof").cloned().unwrap_or(Value::Null),
+        "next_inspection": summary.get("next_inspection").cloned().unwrap_or(Value::Null),
+        "risk": risks,
+        "compacted": true,
+    })
+}
+
+fn minimize_routing_language_capability_plan(packet: &Value) -> Value {
+    let plan = packet
+        .get("language_capability_plan")
+        .unwrap_or(&Value::Null);
+    let local_flow = plan
+        .get("local_flow_packet_boundary")
+        .unwrap_or(&Value::Null);
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
+    let active_non_typescript_packet_languages =
+        packet_language_registry["active_non_typescript_packet_languages"].clone();
+    let inactive_packet_languages = local_flow
+        .get("inactive_packet_languages_seen")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let inactive_packet_language_count = inactive_packet_languages
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "status": plan.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "languages": plan.get("languages").cloned().unwrap_or_else(|| json!([])),
+        "unknown_dynamic_risks": compact_routing_language_risks(plan, 8),
+        "unsupported_relations": compact_routing_unsupported_relations(plan, 2),
+        "local_flow_packet_boundary": {
+            "active_languages": local_flow.get("active_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_languages": local_flow.get("active_packet_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "active_non_typescript_packet_languages": active_non_typescript_packet_languages,
+            "active_non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_languages_seen": inactive_packet_languages,
+            "inactive_packet_language_count": inactive_packet_language_count,
+            "inactive_packet_support": MVP4_3_LOCAL_FLOW_PACKET_INACTIVE_SUPPORT,
+            "inactive_packet_overclaim_count": 0,
+            "active_non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "active_non_typescript_packet_overclaim_count": 0,
+            "non_typescript_packet_languages_seen": active_non_typescript_packet_languages,
+            "non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "non_typescript_packet_overclaim_count": 0,
+            "compatibility_aliases": {
+                "non_typescript_packet_languages_seen": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_languages"
+                }
+            },
+            "packet_handles_do_not_create_proof": true,
+            "flow_proof_not_emitted_for_unsupported_languages": true,
+            "context_entry_command_activated": false
+        },
+        "proof_boundary": {
+            "capability_metadata_does_not_create_graph_proof": true,
+            "unsupported_relations_are_not_blockers": true,
+            "candidate_or_text_evidence_not_graph_proof": true,
+            "route_bridge_context_entry_activated": false,
+            "mutation_proof_activated": false
+        },
+        "unsupported_relations_are_not_blockers": true,
+        "capability_metadata_does_not_create_graph_proof": true,
+        "non_typescript_packet_overclaim_count": 0,
+        "context_entry_command_activated": false,
+        "compacted": true,
+        "minimal": true,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn minimize_routing_language_capability_plan_for_test(packet: &Value) -> Value {
+    minimize_routing_language_capability_plan(packet)
+}
+
+fn minimize_routing_agent_investigation_layer(packet: &Value) -> Value {
+    let layer = packet
+        .get("agent_investigation_layer")
+        .unwrap_or(&Value::Null);
+    let plan = packet
+        .get("language_capability_plan")
+        .unwrap_or(&Value::Null);
+    json!({
+        "layer": layer.get("layer").cloned().unwrap_or_else(|| json!("agent_investigation")),
+        "language_capability_plan": {
+            "status": plan.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "unknown_dynamic_risks": compact_routing_language_risks(plan, 8),
+            "unsupported_relations_are_not_blockers": true,
+            "capability_metadata_does_not_create_graph_proof": true,
+            "compacted": true,
+            "minimal": true
+        },
+        "proof_boundary": {
+            "packet_handles_do_not_create_proof": true,
+            "candidate_evidence_not_raised_to_proof": true,
+            "capability_metadata_does_not_create_graph_proof": true,
+            "unsupported_relations_are_not_blockers": true,
+            "non_typescript_packet_handles_are_not_proof": true
+        },
+        "compacted": true,
+        "minimal": true,
+    })
+}
+
 pub(crate) fn routing_take_array(packet: &Value, key: &str, limit: usize) -> Value {
     packet
         .get(key)
         .and_then(Value::as_array)
         .map(|items| Value::Array(items.iter().take(limit).cloned().collect()))
         .unwrap_or_else(|| json!([]))
+}
+
+fn routing_minimal_evidence_array(packet: &Value, key: &str, limit: usize) -> Value {
+    packet
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .take(limit)
+                    .map(|item| {
+                        json!({
+                            "file": item.get("file").cloned().unwrap_or(Value::Null),
+                            "role": item.get("role").cloned().unwrap_or_else(|| json!("unknown")),
+                            "span": item.get("span").cloned().unwrap_or(Value::Null),
+                            "evidence_id": item.get("evidence_id").cloned().unwrap_or(Value::Null),
+                            "graph_proof": item.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+                            "proof_status": item.get("proof_status").cloned().unwrap_or_else(|| json!("not_graph_proof")),
+                            "proof_strength": item
+                                .pointer("/language_capability/proof_strength")
+                                .cloned()
+                                .unwrap_or_else(|| json!("non_graph_evidence")),
+                            "capability_status": item
+                                .pointer("/language_capability/capability_status")
+                                .cloned()
+                                .unwrap_or_else(|| json!("unknown")),
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| json!([]))
+}
+
+fn routing_minimal_symbol_array(packet: &Value, key: &str, limit: usize) -> Value {
+    packet
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .take(limit)
+                    .map(|item| {
+                        json!({
+                            "symbol": item.get("symbol").cloned().unwrap_or(Value::Null),
+                            "evidence_ids": item.get("evidence_ids").cloned().unwrap_or_else(|| json!([])),
+                            "proof_status": item.get("proof_status").cloned().unwrap_or_else(|| json!("candidate_or_source_navigation")),
+                            "graph_proof": item.get("graph_proof").cloned().unwrap_or_else(|| json!(false)),
+                            "capability_status": item
+                                .pointer("/language_capability/capability_status")
+                                .cloned()
+                                .unwrap_or_else(|| json!("unknown")),
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| json!([]))
+}
+
+fn routing_minimal_risk_array(packet: &Value, key: &str, limit: usize) -> Value {
+    packet
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .take(limit)
+                    .map(|item| {
+                        json!({
+                            "risk_id": item.get("risk_id").cloned().unwrap_or(Value::Null),
+                            "forbidden_claim": item.get("forbidden_claim").cloned().unwrap_or(Value::Null),
+                            "evidence_type": item.get("evidence_type").cloned().unwrap_or(Value::Null),
+                            "sentence": item.get("sentence").cloned().unwrap_or_else(|| json!("risk remains non-proof until verified")),
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| json!([]))
+}
+
+fn routing_minimal_fallback_snippets(packet: &Value, limit: usize) -> Value {
+    packet
+        .get("fallback_snippets")
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .take(limit)
+                    .map(|item| {
+                        json!({
+                            "file": item.get("file").cloned().unwrap_or(Value::Null),
+                            "span": item.get("span").cloned().unwrap_or(Value::Null),
+                            "evidence_id": item.get("evidence_id").cloned().unwrap_or(Value::Null),
+                            "fallback_source": item.get("fallback_source").cloned().unwrap_or_else(|| json!("text_evidence_compact_fallback")),
+                            "proof_status": item.get("proof_status").cloned().unwrap_or_else(|| json!("no_proof_path_found")),
+                            "graph_proof": false,
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| json!([]))
+}
+
+fn compact_routing_language_capability_plan(packet: &Value) -> Value {
+    let plan = packet
+        .get("language_capability_plan")
+        .unwrap_or(&Value::Null);
+    let local_flow = plan
+        .get("local_flow_packet_boundary")
+        .unwrap_or(&Value::Null);
+    let resolver = plan
+        .get("resolver_compiler_availability")
+        .unwrap_or(&Value::Null);
+    let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
+    let active_non_typescript_packet_languages = local_flow
+        .get("active_non_typescript_packet_languages")
+        .cloned()
+        .unwrap_or_else(|| {
+            packet_language_registry["active_non_typescript_packet_languages"].clone()
+        });
+    let inactive_packet_languages = local_flow
+        .get("inactive_packet_languages_seen")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let inactive_packet_language_count = inactive_packet_languages
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "status": plan.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+        "languages": plan.get("languages").cloned().unwrap_or_else(|| json!([])),
+        "capability_status_values": plan.get("capability_status_values").cloned().unwrap_or_else(|| json!([])),
+        "resolver_compiler_availability": {
+            "resolver_claim_rows": resolver.get("resolver_claim_rows").cloned().unwrap_or_else(|| json!(0)),
+            "resolver_claims_missing_provenance": resolver.get("resolver_claims_missing_provenance").cloned().unwrap_or_else(|| json!(0)),
+            "semantic_exactness_requires_recorded_provenance": true
+        },
+        "unknown_dynamic_risks": compact_routing_language_risks(plan, 8),
+        "unsupported_relations": compact_routing_unsupported_relations(plan, 2),
+        "local_flow_packet_boundary": {
+            "active_languages": local_flow.get("active_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_languages": local_flow.get("active_packet_languages").cloned().unwrap_or_else(|| packet_language_registry["active_packet_languages"].clone()),
+            "active_packet_language_count": packet_language_registry["active_packet_language_count"],
+            "active_non_typescript_packet_languages": active_non_typescript_packet_languages,
+            "active_non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
+            "inactive_packet_languages_seen": inactive_packet_languages,
+            "inactive_packet_language_count": inactive_packet_language_count,
+            "inactive_packet_overclaim_count": 0,
+            "active_non_typescript_packet_support": MVP4_3_LOCAL_FLOW_PACKET_REGISTRY_SCOPED_SUPPORT,
+            "active_non_typescript_packet_overclaim_count": 0,
+            "non_typescript_packet_languages_seen": active_non_typescript_packet_languages,
+            "non_typescript_packet_language_count": packet_language_registry["active_non_typescript_packet_language_count"],
+            "non_typescript_packet_overclaim_count": 0,
+            "compatibility_aliases": {
+                "non_typescript_packet_languages_seen": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_languages"
+                },
+                "non_typescript_packet_language_count": {
+                    "deprecated": true,
+                    "alias_of": "active_non_typescript_packet_language_count"
+                }
+            },
+            "packet_handles_do_not_create_proof": true,
+            "flow_proof_not_emitted_for_unsupported_languages": true,
+            "context_entry_command_activated": false
+        },
+        "proof_boundary": {
+            "capability_metadata_does_not_create_graph_proof": true,
+            "unsupported_relations_are_not_blockers": true,
+            "candidate_or_text_evidence_not_graph_proof": true
+        },
+        "compacted": true,
+    })
+}
+
+fn compact_routing_language_risks(plan: &Value, limit: usize) -> Value {
+    plan.get("unknown_dynamic_risks")
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .take(limit)
+                    .map(|item| {
+                        json!({
+                            "risk_id": item.get("risk_id").cloned().unwrap_or(Value::Null),
+                            "language": item.get("language").cloned().unwrap_or(Value::Null),
+                            "boundary": item.get("boundary").cloned().unwrap_or_else(|| json!("unknown")),
+                            "blocking": false,
+                            "not_graph_proof": true
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| json!([]))
+}
+
+fn compact_routing_unsupported_relations(plan: &Value, limit: usize) -> Value {
+    plan.get("unsupported_relations")
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .take(limit)
+                    .map(|item| {
+                        json!({
+                            "relation": item.get("relation").cloned().unwrap_or_else(|| json!("unknown")),
+                            "status": item.get("status").cloned().unwrap_or_else(|| json!("unsupported")),
+                            "blocking": false
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| json!([]))
+}
+
+fn compact_routing_agent_investigation_layer(packet: &Value) -> Value {
+    let layer = packet
+        .get("agent_investigation_layer")
+        .unwrap_or(&Value::Null);
+    let plan = packet
+        .get("language_capability_plan")
+        .unwrap_or(&Value::Null);
+    let unknown_dynamic_risk_count = plan
+        .get("unknown_dynamic_risks")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let unsupported_relation_count = plan
+        .get("unsupported_relations")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "layer": layer.get("layer").cloned().unwrap_or_else(|| json!("agent_investigation")),
+        "task_kind": layer.get("task_kind").cloned().unwrap_or(Value::Null),
+        "micro_flow_handle_count": layer.get("micro_flow_handle_count").cloned().unwrap_or_else(|| json!(0)),
+        "micro_flow_handles": routing_take_array(layer, "micro_flow_handles", 1),
+        "language_capability_plan": {
+            "status": plan.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "languages": plan.get("languages").cloned().unwrap_or_else(|| json!([])),
+            "unknown_dynamic_risk_count": unknown_dynamic_risk_count,
+            "unknown_dynamic_risks": compact_routing_language_risks(plan, 8),
+            "unsupported_relation_count": unsupported_relation_count,
+            "unsupported_relations_are_not_blockers": true,
+            "capability_metadata_does_not_create_graph_proof": true,
+            "compacted": true
+        },
+        "usable_for": layer.get("usable_for").cloned().unwrap_or_else(|| json!([
+            "trace_boundary",
+            "explain_behavior",
+            "verify_claim",
+            "plan_change",
+            "validate_change"
+        ])),
+        "proof_boundary": layer.get("proof_boundary").cloned().unwrap_or_else(|| json!({
+            "packet_handles_do_not_create_proof": true,
+            "capability_metadata_does_not_create_graph_proof": true,
+            "unsupported_relations_are_not_blockers": true,
+            "non_typescript_packet_handles_are_not_proof": true
+        })),
+        "expansion_required_for_dict_v1_body": true,
+        "ordered_steps_audit_only": true,
+        "compacted": true,
+    })
 }
 
 pub(crate) fn update_context_agent_truncation(
@@ -9129,6 +10496,21 @@ pub(crate) fn update_context_agent_truncation(
                     "severity": "warning"
                 }]),
             );
+        } else {
+            // A transient over-budget pass may have stamped `status: "warning"`
+            // before later compaction (e.g. the agent-use wrapper shrink) got the
+            // envelope under budget. The budget stamp is the only writer of
+            // "warning" on this builder, so once the final size fits, restore
+            // "ok" along with removing the stamp's warning row — advisory
+            // sidecar notes in `warnings` must not degrade top-level status.
+            if object.get("status").and_then(Value::as_str) == Some("warning") {
+                object.insert("status".to_string(), json!("ok"));
+            }
+            if let Some(warnings) = object.get_mut("warnings").and_then(Value::as_array_mut) {
+                warnings.retain(|warning| {
+                    warning.get("code").and_then(Value::as_str) != Some("max_output_bytes_exceeded")
+                });
+            }
         }
     }
 }
@@ -9242,6 +10624,26 @@ pub(crate) fn agent_context_path_json(path: &PathEvidence) -> Value {
     object.insert("source_spans".to_string(), json!(source_spans));
     object.insert("exactness".to_string(), json!(path.exactness.to_string()));
     object.insert("confidence".to_string(), json!(path.confidence));
+    let primary_file = path
+        .source_spans
+        .first()
+        .map(|span| span.repo_relative_path.as_str());
+    let path_proof_status = path
+        .metadata
+        .get("proof_status")
+        .and_then(Value::as_str)
+        .unwrap_or("proof_path_found");
+    object.insert(
+        "language_capability".to_string(),
+        context_pack_source_language_capability_json(
+            primary_file,
+            "graph_path",
+            path_proof_status,
+            true,
+            &path.exactness.to_string(),
+            evidence_role,
+        ),
+    );
     Value::Object(object)
 }
 
@@ -9454,6 +10856,24 @@ pub(crate) fn agent_context_snippet_json(
         } else {
             format!("{planning_role}: snippet retained under snippet budget")
         }),
+    );
+    object.insert(
+        "language_capability".to_string(),
+        context_pack_source_language_capability_json(
+            Some(&snippet.file),
+            if label.role == "text_evidence" {
+                "text_evidence"
+            } else {
+                "source_navigation_evidence"
+            },
+            object
+                .get("proof_status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            label.proof_path_available,
+            "source_span",
+            label.role,
+        ),
     );
     Value::Object(object)
 }

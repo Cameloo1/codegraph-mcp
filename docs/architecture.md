@@ -89,17 +89,19 @@ Three practical layers, one funnel:
                  +------------------+------------------+
                  v                                     v
       +----------------------+              +----------------------+
-      | compact context      |              | MVP4.2 micro-edge    |
-      | micro-flow packets*  |              | MVP3 linter signal   |
-      | planning packet      |              | containment only     |
-      +----------------------+              | no value-flow proof  |
+      | compact context      |              | MVP4 local micro-edge|
+      | micro-flow packets*  |              | packet/linter state  |
+      | planning packet      |              | bounded local proof  |
+      +----------------------+              | lifecycle separated  |
                                             +----------------------+
 ```
 
-`*` Micro-flow packets are active only for the verified MVP4.3 TypeScript `.ts`
-production slice. MVP4.2 `LOCAL_RETURNS_TO` and related local micro-edge data
-remain separate from core graph claimability; `flow_proof` appears only through
-complete eligible TypeScript packet rows. Packet surfaces are handle-first;
+`*` Micro-flow packets are active for registry-admitted production sources
+across all 13 canonical frontends under the verified same-file intraprocedural
+contract. The local layer includes exact reads/writes and other direct local
+relations plus derived-with-provenance flow; its availability remains separate
+from core graph claimability. `flow_proof` appears only through complete,
+current, source-spanned, zero-gap packet rows. Packet surfaces are handle-first;
 opened packet bodies are compact `dict_v1` dictionary/path programs, with
 verbose ordered steps reserved for explain/audit expansion.
 
@@ -262,14 +264,16 @@ relations do not receive precision claims.
 Registered frontend support is not a blanket exactness claim. Current verified
 support is surface-specific:
 
-- TypeScript `.ts` production files have the active MVP4.3 local-flow packet
-  slice: source-spanned local micro-nodes, local micro-edges, compact
-  `local_flow_packets`, and `flow_proof` only for complete eligible local
-  chains.
-- JavaScript, JSX, TSX, Python, Go, Rust, C, C++, Java, C#, Ruby, and PHP keep
-  their verified parser/symbol/text/context/validate surfaces, but packet
-  support is `not_implemented` or `not_applicable` unless a later
-  fixture-backed gate changes that status.
+- All 13 canonical frontends report Tier 5 and expose exact local bindings,
+  exact reads/writes, derived-with-provenance local dataflow, and exact packet
+  support at `same_file_intraprocedural` scope. The release gate uses one
+  representative canonical source per frontend rather than every extension.
+- The representative TypeScript source is `.mts`; ordinary `.ts` remains on
+  the bounded legacy-v1 adapter, `.mts`/`.cts` use ParserFactsV1, and `.d.ts`
+  remains inactive.
+- Broad `language_frontend` capability rows may still require a compiler, LSP,
+  build database, macro/preprocessor expansion, or runtime evidence. Those
+  broad limitations do not contradict the narrower scoped readiness row.
 - Dynamic dispatch, reflection, macro/preprocessor expansion, runtime
   dependency injection, compiler/LSP-only resolution, framework conventions,
   and cross-language bridges remain unknown, heuristic, unsupported, or

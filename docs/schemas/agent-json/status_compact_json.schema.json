@@ -125,9 +125,15 @@
       "type": "integer",
       "minimum": 0
     },
+    "mvp4_local_flow_packets": {
+      "$ref": "#/$defs/mvp4_local_flow_packet_summary"
+    },
     "mvp4_local_flow_packet_status": {
-      "type": "string",
-      "const": "not_applicable"
+      "$ref": "#/$defs/mvp4_local_flow_packet_lifecycle_status"
+    },
+    "mvp4_local_flow_packet_rows": {
+      "type": "integer",
+      "minimum": 0
     },
     "core_graph_micro_edge_availability_separated": {
       "type": "boolean"
@@ -143,6 +149,78 @@
     },
     "telemetry": {
       "$ref": "common.schema.json#/$defs/telemetry_truth"
+    }
+  },
+  "$defs": {
+    "mvp4_local_flow_packet_lifecycle_status": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "truncated",
+        "unavailable",
+        "stale",
+        "incompatible",
+        "corrupt",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "mvp4_local_flow_packet_summary": {
+      "type": "object",
+      "description": "Bounded compact summary of persisted MVP4.3 local-flow packets. Packet availability remains separate from core graph claimability.",
+      "required": [
+        "status",
+        "ready",
+        "schema_version",
+        "total_rows",
+        "cap_hit_count",
+        "omitted_count",
+        "currentness_status",
+        "ordered_steps_inline",
+        "packet_body_inline",
+        "proof_boundary_ref",
+        "agent_json_compacted"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/mvp4_local_flow_packet_lifecycle_status"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "total_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cap_hit_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "currentness_status": {
+          "type": ["string", "null"]
+        },
+        "ordered_steps_inline": {
+          "const": false
+        },
+        "packet_body_inline": {
+          "const": false
+        },
+        "proof_boundary_ref": {
+          "const": "audit local-flow-packets"
+        },
+        "agent_json_compacted": {
+          "const": true
+        }
+      }
     }
   }
 }

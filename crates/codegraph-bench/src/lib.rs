@@ -40,8 +40,17 @@ use serde_json::{json, Value};
 
 pub mod competitors;
 pub mod graph_truth;
+pub mod mvp4_language_readiness;
 pub mod retrieval_ablation;
 pub mod two_layer;
+
+pub use mvp4_language_readiness::{
+    default_mvp4_language_readiness_runner_options, load_mvp4_language_readiness_manifest,
+    manifest_readiness_assessment, run_mvp4_language_readiness,
+    validate_mvp4_language_readiness_manifest, Mvp4CapabilityEvidence,
+    Mvp4LanguageReadinessManifest, Mvp4LanguageReadinessReport, Mvp4LanguageReadinessRunnerOptions,
+    Mvp4LanguageReadinessVerdict,
+};
 
 pub use graph_truth::{
     default_context_packet_gate_options, default_graph_truth_gate_options,
@@ -6666,9 +6675,7 @@ mod tests {
     #[test]
     fn two_layer_retrieval_quality_writes_manifest_jsonl_and_artifacts() {
         let run_id = format!("retrieval-quality-test-{}", std::process::id());
-        let run_root = PathBuf::from("target")
-            .join("codegraph-bench-runs")
-            .join(&run_id);
+        let run_root = unique_output_path(&run_id, "dir");
         if run_root.exists() {
             fs::remove_dir_all(&run_root).expect("remove stale run");
         }
@@ -6712,9 +6719,7 @@ mod tests {
     #[test]
     fn two_layer_agent_quality_dry_run_records_fake_agent_outputs() {
         let run_id = format!("agent-quality-test-{}", std::process::id());
-        let run_root = PathBuf::from("target")
-            .join("codegraph-bench-runs")
-            .join(&run_id);
+        let run_root = unique_output_path(&run_id, "dir");
         if run_root.exists() {
             fs::remove_dir_all(&run_root).expect("remove stale run");
         }
@@ -6749,9 +6754,7 @@ mod tests {
     #[test]
     fn two_layer_timeout_path_records_timeout() {
         let run_id = format!("retrieval-timeout-test-{}", std::process::id());
-        let run_root = PathBuf::from("target")
-            .join("codegraph-bench-runs")
-            .join(&run_id);
+        let run_root = unique_output_path(&run_id, "dir");
         if run_root.exists() {
             fs::remove_dir_all(&run_root).expect("remove stale run");
         }

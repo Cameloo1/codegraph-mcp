@@ -15,10 +15,11 @@ pub use sqlite::{
     classify_sqlite_access_problem, inspect_db_preflight, reset_sqlite_profile,
     take_sqlite_profile, AstMicroEdgeRow, AstMicroEdgeVisibilitySample,
     AstMicroEdgeVisibilitySummary, AstMicroNodeRow, AstMicroNodeVisibilitySample,
-    AstMicroNodeVisibilitySummary, DbPassport, DbPreflightReport, EntityFeatureRow,
-    ExpectedDbPassport, LocalFlowPacketQueryOptions, LocalFlowPacketRow,
-    LocalFlowPacketVisibilitySample, LocalFlowPacketVisibilitySummary, RoutingPacketHandleRow,
-    SqliteAccessProblem, SqliteGraphStore, SqliteProfileSpan, StorageAccountingRow,
-    UnresolvedReferenceRecord, DB_PASSPORT_VERSION, SCHEMA_VERSION,
+    AstMicroNodeVisibilitySummary, CapabilityMetadataQueryOptions, CapabilityMetadataSummary,
+    DbPassport, DbPreflightReport, EntityFeatureRow, ExpectedDbPassport,
+    LocalFlowPacketQueryOptions, LocalFlowPacketRow, LocalFlowPacketVisibilitySample,
+    LocalFlowPacketVisibilitySummary, RoutingPacketHandleRow, SqliteAccessProblem,
+    SqliteGraphStore, SqliteProfileSpan, StorageAccountingRow, UnresolvedReferenceRecord,
+    DB_PASSPORT_VERSION, SCHEMA_VERSION,
 };
 pub use traits::{GraphStore, RetrievalTraceRecord, TextSearchHit, TextSearchKind};

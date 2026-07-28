@@ -9,9 +9,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use codegraph_core::{
-    mvp4_3_default_local_micro_flow_packet_query_language, DictV1PacketBody,
-    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    mvp4_3_default_local_micro_flow_packet_query_language,
+    mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source, DictV1PacketBody,
+    MicroEdgeOwnershipPolicy, MicroNodeKind,
 };
+use codegraph_index::SourceSpanDeltaEntry;
 use codegraph_store::{LocalFlowPacketQueryOptions, LocalFlowPacketRow};
 use notify::{RecursiveMode, Watcher};
 use serde_json::{json, Value};
@@ -19,6 +21,79 @@ use serde_json::{json, Value};
 use crate::*;
 
 const AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT: usize = 3;
+
+fn agent_use_validation_classification_compact_priority(
+    classification: ValidationClassification,
+) -> u8 {
+    match classification {
+        ValidationClassification::Block => 0,
+        ValidationClassification::Warn => 1,
+        ValidationClassification::Unknown | ValidationClassification::Unsupported => 2,
+        ValidationClassification::Degraded => 3,
+        ValidationClassification::Diagnostic => 4,
+    }
+}
+
+fn agent_use_compact_validation_packet(packet: &ValidationPacket, max_items: usize) -> Value {
+    let mut prioritized = packet.clone();
+    prioritized.warnings.sort_by_key(|finding| {
+        agent_use_validation_classification_compact_priority(finding.classification)
+    });
+    prioritized.compact_agent_json(max_items)
+}
+
+fn agent_use_source_span_compact_priority(entry: &SourceSpanDeltaEntry) -> u8 {
+    match (
+        entry.associated_fact_claimable,
+        entry.associated_fact_kind.as_str(),
+    ) {
+        (true, "entity") => 0,
+        (true, "edge") => 1,
+        (true, _) => 2,
+        (false, _) => 3,
+    }
+}
+
+fn agent_use_prioritize_compact_source_spans(delta: &mut EntitySourceRoleDeltaReport) {
+    delta
+        .source_spans_added
+        .sort_by_key(agent_use_source_span_compact_priority);
+    delta
+        .source_spans_removed
+        .sort_by_key(agent_use_source_span_compact_priority);
+    delta
+        .source_spans_changed
+        .sort_by_key(agent_use_source_span_compact_priority);
+}
+
+fn agent_use_micro_node_kind_from_storage(value: &str) -> Option<MicroNodeKind> {
+    let normalized = value.trim().to_ascii_lowercase();
+    MicroNodeKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.as_str() == normalized)
+}
+
+fn agent_use_micro_edge_ownership_violations(
+    policy: MicroEdgeOwnershipPolicy,
+    edge_function_entity_id: Option<&str>,
+    head_function_entity_id: Option<&str>,
+    tail_function_entity_id: Option<&str>,
+) -> (bool, bool) {
+    let edge_head_mismatch = !matches!(
+        (edge_function_entity_id, head_function_entity_id),
+        (Some(edge), Some(head)) if edge == head
+    );
+    let cross_function = match policy {
+        MicroEdgeOwnershipPolicy::SameFunction => !matches!(
+            (head_function_entity_id, tail_function_entity_id),
+            (Some(head), Some(tail)) if head == tail
+        ),
+        MicroEdgeOwnershipPolicy::CallerToSameFileFunction => tail_function_entity_id.is_none(),
+    };
+    (cross_function, edge_head_mismatch)
+}
+
 // MVP3.9.5.3: the validation delta is bounded; overflow in a blocking-relevant
 // category caps the packet at unknown (`graph_delta_bounded`) instead of
 // retaining an unbounded number of hydrated delta entries in memory.
@@ -911,7 +986,7 @@ pub(crate) fn run_agent_use_query_command(args: &[String]) -> Result<Value, Stri
     let options = parse_agent_use_forward_args(args, "query")?;
     let Some(query_kind) = options.forwarded_args.first().cloned() else {
         return Err(
-            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain|local-flow> <args> --repo <repo> --limit <n> --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed] [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [--file <path>|--function <id>|--packet-id <id>] [--proof-strength <value>] --repo <repo> --agent-json"
+            "Usage: codegraph-mcp agent-use query <symbols|text|files|references|definitions|callers|callees|path|chain|local-flow> <args> --repo <repo> --limit <n> --agent-json\n  codegraph-mcp agent-use query unresolved-calls --repo <repo> [--path <repo-relative-or-absolute-path>] [--class repo_local_candidate|external_dependency|builtin_or_std|macro_or_codegen|dynamic_or_computed|compiler_required|lsp_required|runtime_required|unsupported_language_or_relation|unknown] [--language <language>] [--limit <n>] --agent-json\n  codegraph-mcp agent-use query local-flow [<function-or-file>] [--file <path>] [--function <id>] [--packet-id <id>] [--proof-status <status>] [--proof-strength <strength>] [--language <language>] [--source-role <role>] [--include-packet-body] --repo <repo> [--limit <n>] --agent-json"
                 .to_string(),
         );
     };
@@ -1087,6 +1162,7 @@ fn run_agent_use_local_flow_query(
         "diagnostic_only": !preflight.safe,
         "packet_layer_status": packet_layer.get("status").cloned().unwrap_or_else(|| json!("unknown")),
         "packet_layer": packet_layer,
+        "capability_metadata": query_capability_metadata_summary_json(&store),
         "query": query.query_json,
         "result_count": returned_count,
         "limit": query.store_options.limit.max(1).min(100),
@@ -1207,7 +1283,7 @@ fn parse_agent_use_local_flow_query_args(
                     .to_string(),
             );
         }
-        if value.contains('/') || value.contains('\\') || value.ends_with(".ts") {
+        if agent_use_local_flow_positional_is_file_query(value) {
             options.file_id = Some(value.clone());
         } else {
             options.function_query = Some(value.clone());
@@ -1229,6 +1305,12 @@ fn parse_agent_use_local_flow_query_args(
         query_json,
         include_packet_body,
     })
+}
+
+pub(crate) fn agent_use_local_flow_positional_is_file_query(value: &str) -> bool {
+    value.contains('/')
+        || value.contains('\\')
+        || context_pack_frontend_from_repo_relative_path(value).is_some()
 }
 
 fn agent_use_local_flow_packet_result_json(
@@ -3827,19 +3909,17 @@ fn agent_use_validate_edit_finalize_budget(
         // `proof_ladder_changes_summary`, and `editor_policy` are compact-mode
         // safety fields that the compact contract
         // (`assert_compact_validate_edit_safety_fields`) requires to survive
-        // truncation, so they must NOT be shed, and shedding them is futile
+        // truncation, so they must NOT be shed — and shedding them is futile
         // once the evidence floor already exceeds the budget (evidence-first
-        // budgeting, MVP_3.md section 14: never shed evidence/safety fields to keep
+        // budgeting, MVP_3.md §14: never shed evidence/safety fields to keep
         // metadata, or when it cannot reach budget).
         for key in [
-            "db",
             "db_path",
             "repo_identity_hash",
             "repo_identity_short_hash",
             "repo_identity_label",
             "journal_replay",
             "compact_contract",
-            "validation_state",
             "candidate_recall_action",
         ] {
             if serialized_json_len(packet) <= max_output_bytes {
@@ -3847,6 +3927,31 @@ fn agent_use_validate_edit_finalize_budget(
             }
             if agent_use_remove_field(packet, key) {
                 final_metadata_omitted = final_metadata_omitted.saturating_add(1);
+            }
+        }
+        // validation_state is the 9.5.2 sticky-blocker safety surface, not infra
+        // metadata: `open_blocker_count` must survive compaction so agents can
+        // distinguish "no open blockers" from "unknown". Reduce it to the
+        // minimal scalar form instead of shedding it.
+        if serialized_json_len(packet) > max_output_bytes {
+            if let Some(object) = packet.as_object_mut() {
+                if let Some(state) = object.get("validation_state") {
+                    if state.get("agent_json_compacted").and_then(Value::as_bool) != Some(true) {
+                        let minimal = json!({
+                            "open_blocker_count": state
+                                .get("open_blocker_count")
+                                .cloned()
+                                .unwrap_or_else(|| json!(0)),
+                            "sticky_blockers_reverified_each_run": state
+                                .get("sticky_blockers_reverified_each_run")
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                            "agent_json_compacted": true,
+                        });
+                        object.insert("validation_state".to_string(), minimal);
+                        final_metadata_omitted = final_metadata_omitted.saturating_add(1);
+                    }
+                }
             }
         }
     }
@@ -4220,10 +4325,21 @@ fn agent_use_validate_edit_compact_validation_packet(packet: &mut Value) {
                         .map(|ids| ids.len() as u64)
                 })
                 .unwrap_or_default();
+            let capability_summary =
+                evaluated
+                    .get("capability_summary")
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        json!({
+                            "exact_blocking_requires_capability_metadata": true,
+                            "old_tier_label_authorizes_blocking": false,
+                        })
+                    });
             object.insert(
                 "validation_rules_evaluated".to_string(),
                 json!({
                     "count": count,
+                    "capability_summary": capability_summary,
                     "full_detail_handle": "validation_packet.validation_rules_evaluated",
                     "agent_json_compacted": true,
                 }),
@@ -4235,10 +4351,21 @@ fn agent_use_validate_edit_compact_validation_packet(packet: &mut Value) {
                 .map(|rules| rules.len() as u64)
                 .or_else(|| skipped.get("count").and_then(Value::as_u64))
                 .unwrap_or_default();
+            let capability_summary =
+                skipped
+                    .get("capability_summary")
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        json!({
+                            "exact_blocking_requires_capability_metadata": true,
+                            "old_tier_label_authorizes_blocking": false,
+                        })
+                    });
             object.insert(
                 "validation_rules_skipped".to_string(),
                 json!({
                     "count": count,
+                    "capability_summary": capability_summary,
                     "full_detail_handle": "validation_packet.validation_rules_skipped",
                     "agent_json_compacted": true,
                 }),
@@ -4453,6 +4580,59 @@ fn agent_use_validate_edit_compact_unresolved_references(value: &mut Value, pres
     let Some(object) = value.as_object_mut() else {
         return;
     };
+    if let Some(policy) = object.get("block_on_unresolved_local_policy").cloned() {
+        let eligible_extension_count = policy
+            .get("eligible_extensions")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        let non_eligible_class_count = policy
+            .get("non_eligible_classes_non_blocking")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        object.insert(
+            "block_on_unresolved_local_policy".to_string(),
+            json!({
+                "warning_by_default": policy.get("warning_by_default").cloned().unwrap_or_else(|| json!(true)),
+                "eligible_reference_class": policy.get("eligible_reference_class").cloned().unwrap_or_else(|| json!("repo_local_candidate")),
+                "eligible_extensions": policy
+                    .get("eligible_extensions")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                "eligible_extension_count": eligible_extension_count,
+                "deferred_until_exact_resolver_extensions": policy
+                    .get("deferred_until_exact_resolver_extensions")
+                    .cloned()
+                    .unwrap_or_else(|| json!(["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php"])),
+                "non_eligible_class_count": non_eligible_class_count,
+                "exact_resolver_provenance_required_for_new_languages": policy
+                    .get("exact_resolver_provenance_required_for_new_languages")
+                    .cloned()
+                    .unwrap_or_else(|| json!(true)),
+                "js_ts_family_unresolved_delta_policy": policy
+                    .get("js_ts_family_unresolved_delta_policy")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "ruby_php_unresolved_delta_policy": policy
+                    .get("ruby_php_unresolved_delta_policy")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "non_eligible_classes_non_blocking": policy
+                    .get("non_eligible_classes_non_blocking")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                "full_detail_handle": "validation_packet:unresolved_references:block_on_unresolved_local_policy",
+                "agent_json_compacted": true,
+            }),
+        );
+    }
+    if object.remove("count_semantics").is_some() {
+        object.insert(
+            "count_semantics_ref".to_string(),
+            json!("validation_packet:unresolved_references:count_semantics"),
+        );
+    }
     let mut escalated_omitted = 0u64;
     if let Some(items) = object.get_mut("escalated").and_then(Value::as_array_mut) {
         let total = items.len();
@@ -4514,6 +4694,14 @@ fn agent_use_validate_edit_shrink_unresolved_references(
     serialized_json_len(unresolved) < before
 }
 
+fn agent_use_validate_edit_short_string_json(text: &str, max_chars: usize) -> Value {
+    let mut shortened = text.chars().take(max_chars).collect::<String>();
+    if text.chars().count() > max_chars {
+        shortened.push_str("...");
+    }
+    json!(shortened)
+}
+
 fn agent_use_validate_edit_compact_finding(finding: &mut Value) {
     let Some(object) = finding.as_object() else {
         return;
@@ -4524,14 +4712,10 @@ fn agent_use_validate_edit_compact_finding(finding: &mut Value) {
         "severity",
         "classification",
         "message",
-        "reason",
         "file",
         "source_span",
         "top_blocking_source_span",
         "blocking_level",
-        "recommended_fix",
-        "suggested_next_steps",
-        "next_steps",
         "proof_level",
         "proof_strength",
         "graph_proof",
@@ -4544,6 +4728,36 @@ fn agent_use_validate_edit_compact_finding(finding: &mut Value) {
     ] {
         if let Some(value) = object.get(key) {
             compact.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(reason) = object.get("reason").and_then(Value::as_str) {
+        compact.insert(
+            "reason".to_string(),
+            agent_use_validate_edit_short_string_json(reason, 64),
+        );
+    }
+    if let Some(recommended_fix) = object.get("recommended_fix").and_then(Value::as_str) {
+        compact.insert(
+            "recommended_fix".to_string(),
+            agent_use_validate_edit_short_string_json(recommended_fix, 144),
+        );
+    }
+    for key in ["suggested_next_steps", "next_steps"] {
+        if let Some(items) = object.get(key).and_then(Value::as_array) {
+            compact.insert(
+                key.to_string(),
+                Value::Array(
+                    items
+                        .iter()
+                        .take(1)
+                        .map(|item| {
+                            item.as_str()
+                                .map(|text| agent_use_validate_edit_short_string_json(text, 64))
+                                .unwrap_or_else(|| item.clone())
+                        })
+                        .collect(),
+                ),
+            );
         }
     }
     if let Some(diagnostics) = object.get("diagnostics").and_then(Value::as_array) {
@@ -4982,8 +5196,9 @@ pub(crate) fn run_agent_use_watch_once_delta(
             } else {
                 // The compact view is derived from the full report instead of
                 // recomputing the whole delta at a lower cap.
-                validation_entity_source_role_delta
-                    .truncated_to_max_items(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
+                let mut compact_delta = validation_entity_source_role_delta.clone();
+                agent_use_prioritize_compact_source_spans(&mut compact_delta);
+                compact_delta.truncated_to_max_items(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
             };
             let delta_compute_ms = delta_compute_start.elapsed().as_millis();
             entity_source_role_delta.timings.diff_closure_ms = pre_update_dependency_closure_ms;
@@ -5033,7 +5248,10 @@ pub(crate) fn run_agent_use_watch_once_delta(
                 let mut validation_packet_json = if detail_mode.preserves_full_details() {
                     serde_json::to_value(&validation_packet).map_err(|error| error.to_string())?
                 } else {
-                    validation_packet.compact_agent_json(AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT)
+                    agent_use_compact_validation_packet(
+                        &validation_packet,
+                        AGENT_USE_COMPACT_GRAPH_DELTA_TOP_LIMIT,
+                    )
                 };
                 let validation_hard_interrupt = validation_packet_json
                     .get("hard_interrupt")
@@ -6205,8 +6423,10 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
     // the journal, so the next run replays the pending delta instead of
     // absorbing the unvalidated baseline (adversarial probe finding,
     // MVP3.9.5.3 gate).
+    let lane_truncated_files = agent_use_unresolved_lane_truncated_files(store, &changed_files);
     let validation_bounded = !wall_skipped_substages.is_empty()
         || edge_reverifications_skipped > 0
+        || !lane_truncated_files.is_empty()
         || delta.omission.entities_removed_omitted
             + delta.omission.edges_removed_omitted
             + delta.omission.edges_added_omitted
@@ -6257,6 +6477,24 @@ pub(crate) fn agent_use_exact_calls_validation_packet(
             &format!(
                 "graph_delta_bounded: {blocking_relevant_omitted} blocking-relevant delta entries were omitted by the per-category cap ({}); run `agent-use index` and re-validate",
                 delta.omission.max_items_per_category
+            ),
+        ));
+    }
+    // MVP3 stress test Q8(1b): a per-file unresolved-reference lane truncated at
+    // the cap means a NEW hallucinated reference may have been shed at index
+    // time, so the forward check on that file is incomplete — label the run
+    // bounded (unknown ceiling) instead of letting it pass as ok.
+    if !lane_truncated_files.is_empty() {
+        let lane_truncated_count = lane_truncated_files.len();
+        findings.push(agent_use_graph_delta_bounded_unknown(
+            rule_by_id[CG_MVP3_GRAPH_DELTA_BOUNDED],
+            lifecycle.clone(),
+            json!({
+                "unresolved_reference_lane_truncated": true,
+                "lane_truncated_files": lane_truncated_files,
+            }),
+            &format!(
+                "unresolved_reference_lane_truncated: {lane_truncated_count} changed file(s) had more unresolved references than the per-file lane cap, so a NEW hallucinated reference may be silently dropped and forward checks are incomplete; run `agent-use index` and re-validate"
             ),
         ));
     }
@@ -6379,8 +6617,8 @@ fn agent_use_unresolved_reference_validation_rules() -> Vec<ValidationRule> {
         ),
         ValidationRule::diagnostic(
             CG_MVP3_REF_EXTERNAL_OR_BUILTIN,
-            "unresolved references classified external_dependency/builtin_or_std/macro_or_codegen are counted as diagnostics only and never produce a warning",
-            "No action required; these references resolve outside the repo graph by design.",
+            "unresolved references classified external_dependency/builtin_or_std/macro_or_codegen/compiler_required/lsp_required/runtime_required/unsupported_language_or_relation/unknown are counted as diagnostics only and never produce a warning",
+            "No action required by default; these references either resolve outside the repo graph or require compiler/LSP/runtime/framework evidence that is not present.",
         ),
         ValidationRule::diagnostic(
             CG_MVP3_REF_DYNAMIC,
@@ -6431,6 +6669,7 @@ fn agent_use_unresolved_reference_warning(
     entry: &UnresolvedReferenceDeltaEntry,
     lookup: &UnresolvedReferenceRepoGraphLookup,
     block_on_unresolved_local: bool,
+    block_on_unresolved_local_eligible: bool,
 ) -> ValidationFinding {
     let escalated = lookup.definition_count == 0;
     let relation_label = entry.relation.to_ascii_lowercase();
@@ -6457,7 +6696,7 @@ fn agent_use_unresolved_reference_warning(
     // case cites the same fresh contradiction pair the sticky blockers do:
     // the current source references the name at an exact span AND a fresh
     // whole-graph lookup found no defining entity.
-    let promoted = escalated && block_on_unresolved_local;
+    let promoted = escalated && block_on_unresolved_local && block_on_unresolved_local_eligible;
     let mut input =
         ValidationReverificationInput::exact_graph_source(lifecycle, evidence_id.clone(), &reason);
     input.relation_exact = false;
@@ -6514,6 +6753,12 @@ fn agent_use_unresolved_reference_warning(
                 format!("{}_definition_candidates_exist", lookup.definition_count)
             },
             "claimability": "claimable_as_source_text_reference_only",
+            "block_on_unresolved_local_eligible": block_on_unresolved_local_eligible,
+            "capability_required": "resolver_or_compiler_verified_reference_absence",
+            "capability_present": false,
+            "capability_missing_reason": "unresolved_reference_delta_is_parser_source_text_without_resolver_provenance",
+            "resolver_status": "not_recorded_for_unresolved_reference_delta",
+            "unsupported_behavior": "warning_only",
         }
     });
     finding.affected_file = Some(normalize_repo_relative_path(&entry.repo_relative_path));
@@ -6535,6 +6780,41 @@ fn agent_use_unresolved_reference_warning(
     finding.diagnostics = vec!["unresolved_reference_not_graph_proof".to_string()];
     finding.expansion_handle = Some("validation_packet:unresolved_references".to_string());
     finding
+}
+
+fn agent_use_unresolved_reference_block_eligible(entry: &UnresolvedReferenceDeltaEntry) -> bool {
+    if entry.reference_class != REFERENCE_CLASS_REPO_LOCAL_CANDIDATE {
+        return false;
+    }
+    // Unresolved-reference delta rows are parser/source-text diagnostics.
+    // They do not currently carry compiler/resolver provenance, so the
+    // language linter must keep them warning-only. Exact CALLS/IMPORTS graph
+    // rules still block separately when their proof contract is met.
+    false
+}
+
+/// Changed files whose unresolved-reference lane was truncated at the per-file
+/// cap during indexing. A truncated lane is INCOMPLETE: a NEW hallucinated
+/// reference can be shed by the cap (forward miss), and pre-cap baseline rows
+/// look "resolved" when they were merely dropped (phantom resolved_count).
+/// Reads the extraction-warning sidecar written by
+/// `persist_unresolved_reference_lane` (2026-06-18 stress test, Q8 1b/1c).
+fn agent_use_unresolved_lane_truncated_files(
+    store: &SqliteGraphStore,
+    changed_files: &[String],
+) -> Vec<String> {
+    let mut truncated = Vec::new();
+    for path in changed_files {
+        let Ok(warnings) = store.list_extraction_warnings_by_file(path) else {
+            continue;
+        };
+        if warnings.iter().any(|(warning, _)| {
+            warning.starts_with(codegraph_index::UNRESOLVED_REFERENCE_LANE_TRUNCATED_WARNING)
+        }) {
+            truncated.push(normalize_repo_relative_path(path));
+        }
+    }
+    truncated
 }
 
 /// Evaluates the §1.3.4 CG_MVP3_REF_* family over the delta's new unresolved
@@ -6561,8 +6841,19 @@ fn agent_use_collect_unresolved_reference_findings(
     let mut escalated_total = 0usize;
     let mut external_or_builtin_count = 0usize;
     let mut dynamic_or_computed_count = 0usize;
+    let mut external_dependency_count = 0usize;
+    let mut builtin_or_std_count = 0usize;
+    let mut macro_or_codegen_count = 0usize;
+    let mut compiler_required_count = 0usize;
+    let mut lsp_required_count = 0usize;
+    let mut runtime_required_count = 0usize;
+    let mut unsupported_language_or_relation_count = 0usize;
+    let mut unknown_count = 0usize;
+    let mut diagnostic_non_blocking_count = 0usize;
     let mut repo_local_definition_candidate_count = 0usize;
     let mut repo_local_no_definition_count = 0usize;
+    let mut block_eligible_repo_local_no_definition_count = 0usize;
+    let mut block_ineligible_repo_local_no_definition_count = 0usize;
 
     for entry in &delta.unresolved_references_added {
         if !changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path)) {
@@ -6607,6 +6898,12 @@ fn agent_use_collect_unresolved_reference_findings(
                 continue;
             }
             repo_local_no_definition_count += 1;
+            let block_eligible = agent_use_unresolved_reference_block_eligible(entry);
+            if block_eligible {
+                block_eligible_repo_local_no_definition_count += 1;
+            } else {
+                block_ineligible_repo_local_no_definition_count += 1;
+            }
             escalated_total += 1;
             let finding = agent_use_unresolved_reference_warning(
                 rule,
@@ -6614,6 +6911,7 @@ fn agent_use_collect_unresolved_reference_findings(
                 entry,
                 &lookup,
                 block_on_unresolved_local,
+                block_eligible,
             );
             if escalated_inline.len() < ESCALATED_INLINE_LIMIT {
                 escalated_inline.push(json!({
@@ -6630,11 +6928,12 @@ fn agent_use_collect_unresolved_reference_findings(
                     } else {
                         format!("{}_definition_candidates_exist", lookup.definition_count)
                     },
-                    "severity": if lookup.definition_count == 0 && block_on_unresolved_local {
-                        "blocking"
-                    } else {
-                        "warning"
-                    },
+                    "severity": "warning",
+                    "block_on_unresolved_local_eligible": block_eligible,
+                    "capability_required": "resolver_or_compiler_verified_reference_absence",
+                    "capability_present": false,
+                    "capability_missing_reason": "unresolved_reference_delta_is_parser_source_text_without_resolver_provenance",
+                    "resolver_status": "not_recorded_for_unresolved_reference_delta",
                     "proof_strength": "text_evidence",
                     "claimability": "claimable_as_source_text_reference_only",
                     "recommended_fix": format!(
@@ -6644,19 +6943,63 @@ fn agent_use_collect_unresolved_reference_findings(
                 }));
             }
             findings.push(finding);
-        } else if entry.reference_class == REFERENCE_CLASS_DYNAMIC_OR_COMPUTED {
-            dynamic_or_computed_count += 1;
         } else {
-            external_or_builtin_count += 1;
+            diagnostic_non_blocking_count += 1;
+            match entry.reference_class.as_str() {
+                REFERENCE_CLASS_EXTERNAL_DEPENDENCY => {
+                    external_dependency_count += 1;
+                    external_or_builtin_count += 1;
+                }
+                REFERENCE_CLASS_BUILTIN_OR_STD => {
+                    builtin_or_std_count += 1;
+                    external_or_builtin_count += 1;
+                }
+                REFERENCE_CLASS_MACRO_OR_CODEGEN => {
+                    macro_or_codegen_count += 1;
+                    external_or_builtin_count += 1;
+                }
+                REFERENCE_CLASS_DYNAMIC_OR_COMPUTED => {
+                    dynamic_or_computed_count += 1;
+                }
+                REFERENCE_CLASS_COMPILER_REQUIRED => {
+                    compiler_required_count += 1;
+                }
+                REFERENCE_CLASS_LSP_REQUIRED => {
+                    lsp_required_count += 1;
+                }
+                REFERENCE_CLASS_RUNTIME_REQUIRED => {
+                    runtime_required_count += 1;
+                }
+                REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION => {
+                    unsupported_language_or_relation_count += 1;
+                }
+                REFERENCE_CLASS_UNKNOWN => {
+                    unknown_count += 1;
+                }
+                _ => {
+                    unknown_count += 1;
+                }
+            }
         }
     }
 
+    let lane_truncated_files = agent_use_unresolved_lane_truncated_files(store, changed_files);
+    let lane_truncated = !lane_truncated_files.is_empty();
+    let lane_truncated_set = lane_truncated_files
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    // A capped lane makes before-vs-after removals unreliable: baseline rows
+    // shed by the cap masquerade as "resolved". Only count removals on files
+    // whose lane is complete; surface the bound so the count isn't trusted blind.
     let resolved_count = delta
         .unresolved_references_removed
         .iter()
         .filter(|entry| {
+            let path = normalize_repo_relative_path(&entry.repo_relative_path);
             entry.relation != "CALLEE"
-                && changed_set.contains(&normalize_repo_relative_path(&entry.repo_relative_path))
+                && changed_set.contains(&path)
+                && !lane_truncated_set.contains(&path)
         })
         .count();
 
@@ -6664,6 +7007,8 @@ fn agent_use_collect_unresolved_reference_findings(
         "schema_version": 1,
         "new_count": new_count,
         "resolved_count": resolved_count,
+        "resolved_count_bounded": lane_truncated,
+        "lane_truncated_files": lane_truncated_files,
         "by_class": by_class,
         "escalated": escalated_inline,
         "escalated_total": escalated_total,
@@ -6673,14 +7018,56 @@ fn agent_use_collect_unresolved_reference_findings(
         ),
         "repo_local_definition_candidate_count": repo_local_definition_candidate_count,
         "repo_local_no_definition_count": repo_local_no_definition_count,
+        "block_eligible_repo_local_no_definition_count": block_eligible_repo_local_no_definition_count,
+        "block_ineligible_repo_local_no_definition_count": block_ineligible_repo_local_no_definition_count,
         "external_or_builtin_count": external_or_builtin_count,
         "dynamic_or_computed_count": dynamic_or_computed_count,
+        "external_dependency_count": external_dependency_count,
+        "builtin_or_std_count": builtin_or_std_count,
+        "macro_or_codegen_count": macro_or_codegen_count,
+        "compiler_required_count": compiler_required_count,
+        "lsp_required_count": lsp_required_count,
+        "runtime_required_count": runtime_required_count,
+        "unsupported_language_or_relation_count": unsupported_language_or_relation_count,
+        "unknown_count": unknown_count,
+        "diagnostic_non_blocking_count": diagnostic_non_blocking_count,
         "count_semantics": {
             "new_count": "parser unresolved references after changed-file and CALLEE de-dup filters",
             "escalated_total": "repo-local references with no defining entity in the current graph",
-            "repo_local_definition_candidate_count": "repo-local parser-unresolved references suppressed because a definition candidate exists elsewhere in the graph"
+            "repo_local_definition_candidate_count": "repo-local parser-unresolved references suppressed because a definition candidate exists elsewhere in the graph",
+            "block_eligible_repo_local_no_definition_count": "repo-local no-definition diagnostics eligible for optional --block-on-unresolved-local promotion",
+            "block_ineligible_repo_local_no_definition_count": "repo-local no-definition diagnostics kept warning-only because the language/surface lacks an exact blocking policy",
+            "diagnostic_non_blocking_count": "external/builtin/std/macro/dynamic/compiler/lsp/runtime/unsupported/unknown unresolved references are non-graph diagnostics"
         },
         "block_on_unresolved_local": block_on_unresolved_local,
+        "block_on_unresolved_local_policy": {
+            "warning_by_default": true,
+            "eligible_reference_class": REFERENCE_CLASS_REPO_LOCAL_CANDIDATE,
+            "eligible_extensions": [],
+            "deferred_until_exact_resolver_extensions": ["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php"],
+            "exact_resolver_provenance_required_for_new_languages": true,
+            "js_ts_family_unresolved_delta_policy": {
+                "typescript_exact_graph_blockers": "CG_MVP3_CALLS and CG_MVP3_IMPORTS rules may block when exact source-spanned graph proof exists",
+                "unresolved_reference_delta_rows": "warning_only_until_resolver_or_compiler_provenance_is_recorded",
+                "javascript_tsx_jsx": "warning_only; parser facts and diagnostic project metadata do not authorize hard interrupts"
+            },
+            "ruby_php_unresolved_delta_policy": {
+                "ruby": "warning_only; parser facts, require/load text, method_missing, send/public_send, autoload, open classes, monkeypatching, and framework conventions do not authorize hard interrupts without exact resolver or runtime provenance",
+                "php": "warning_only; parser facts, include/use text, Composer/autoload gaps, magic methods, variable functions, dynamic includes, and framework containers do not authorize hard interrupts without exact resolver or runtime provenance",
+                "unresolved_reference_delta_rows": "warning_only_until_resolver_or_runtime_provenance_is_recorded"
+            },
+            "non_eligible_classes_non_blocking": [
+                REFERENCE_CLASS_EXTERNAL_DEPENDENCY,
+                REFERENCE_CLASS_BUILTIN_OR_STD,
+                REFERENCE_CLASS_MACRO_OR_CODEGEN,
+                REFERENCE_CLASS_DYNAMIC_OR_COMPUTED,
+                REFERENCE_CLASS_COMPILER_REQUIRED,
+                REFERENCE_CLASS_LSP_REQUIRED,
+                REFERENCE_CLASS_RUNTIME_REQUIRED,
+                REFERENCE_CLASS_UNSUPPORTED_LANGUAGE_OR_RELATION,
+                REFERENCE_CLASS_UNKNOWN
+            ]
+        },
         "expansion_handle": "validation_packet:unresolved_references",
         "not_graph_proof": true,
     }))
@@ -7836,7 +8223,16 @@ fn agent_use_validate_current_micro_edge_integrity(
         return;
     };
 
-    if relation_kind != MicroEdgeKind::LocalReturnsTo {
+    // The active-relation gate tracks the capability matrix instead of a
+    // hard-coded LocalReturnsTo comparison: every relation the index persists
+    // for the row's language (returns_to + reads/writes/flows_to for
+    // TypeScript since mvp4_2b) is validated in full, and only kinds with no
+    // implemented adapter for that language stay flagged as inactive.
+    let capability = mvp4_micro_edge_language_capability(&micro_edge.language, relation_kind);
+    if !matches!(
+        capability.activation_status,
+        MicroEdgeSupportStatus::ExactCapable | MicroEdgeSupportStatus::DerivedWithProvenanceCapable
+    ) {
         agent_use_push_micro_edge_integrity_finding(
             findings,
             seen_edge_rule,
@@ -7850,9 +8246,24 @@ fn agent_use_validate_current_micro_edge_integrity(
         return;
     }
 
+    let relation_label = micro_edge.relation_kind.trim().to_ascii_uppercase();
     let relation_span = agent_use_micro_edge_source_span(store, micro_edge);
     let head = nodes_by_id.get(&micro_edge.source_micro_node_id);
     let tail = nodes_by_id.get(&micro_edge.target_micro_node_id);
+    let head_kind = head.and_then(|node| agent_use_micro_node_kind_from_storage(&node.micro_kind));
+    let tail_kind = tail.and_then(|node| agent_use_micro_node_kind_from_storage(&node.micro_kind));
+    let head_kind_authorized = head_kind.is_some_and(|kind| {
+        capability
+            .endpoint_pairs
+            .iter()
+            .any(|pair| pair.head == kind)
+    });
+    let tail_kind_authorized = tail_kind.is_some_and(|kind| {
+        capability
+            .endpoint_pairs
+            .iter()
+            .any(|pair| pair.tail == kind)
+    });
 
     if head.is_none() {
         agent_use_push_micro_edge_integrity_finding(
@@ -7863,7 +8274,7 @@ fn agent_use_validate_current_micro_edge_integrity(
             Some(micro_edge),
             affected_delta.clone(),
             relation_span.clone(),
-            "persisted LOCAL_RETURNS_TO head endpoint does not exist in the current retained micro-node set",
+            &format!("persisted {relation_label} head endpoint does not exist in the current retained micro-node set"),
         );
     }
     if tail.is_none() {
@@ -7875,12 +8286,12 @@ fn agent_use_validate_current_micro_edge_integrity(
             Some(micro_edge),
             affected_delta.clone(),
             relation_span.clone(),
-            "persisted LOCAL_RETURNS_TO tail endpoint does not exist in the current retained micro-node set",
+            &format!("persisted {relation_label} tail endpoint does not exist in the current retained micro-node set"),
         );
     }
 
     if let Some(head) = head {
-        if head.micro_kind != "return_site" {
+        if !head_kind_authorized {
             agent_use_push_micro_edge_integrity_finding(
                 findings,
                 seen_edge_rule,
@@ -7889,7 +8300,10 @@ fn agent_use_validate_current_micro_edge_integrity(
                 Some(micro_edge),
                 affected_delta.clone(),
                 relation_span.clone(),
-                "LOCAL_RETURNS_TO head endpoint is not a ReturnSite micro-node",
+                &format!(
+                    "{relation_label} head endpoint kind `{}` is not an authorized head micro-node kind for this relation",
+                    head.micro_kind
+                ),
             );
         }
         if head.file_id != micro_edge.file_id {
@@ -7901,13 +8315,15 @@ fn agent_use_validate_current_micro_edge_integrity(
                 Some(micro_edge),
                 affected_delta.clone(),
                 relation_span.clone(),
-                "LOCAL_RETURNS_TO head endpoint belongs to a different file than the edge row",
+                &format!(
+                    "{relation_label} head endpoint belongs to a different file than the edge row"
+                ),
             );
         }
     }
 
     if let Some(tail) = tail {
-        if tail.micro_kind != "function_frame" {
+        if !tail_kind_authorized {
             agent_use_push_micro_edge_integrity_finding(
                 findings,
                 seen_edge_rule,
@@ -7916,7 +8332,10 @@ fn agent_use_validate_current_micro_edge_integrity(
                 Some(micro_edge),
                 affected_delta.clone(),
                 relation_span.clone(),
-                "LOCAL_RETURNS_TO tail endpoint is not a FunctionFrame micro-node",
+                &format!(
+                    "{relation_label} tail endpoint kind `{}` is not an authorized tail micro-node kind for this relation",
+                    tail.micro_kind
+                ),
             );
         }
         if tail.file_id != micro_edge.file_id {
@@ -7928,13 +8347,41 @@ fn agent_use_validate_current_micro_edge_integrity(
                 Some(micro_edge),
                 affected_delta.clone(),
                 relation_span.clone(),
-                "LOCAL_RETURNS_TO tail endpoint belongs to a different file than the edge row",
+                &format!(
+                    "{relation_label} tail endpoint belongs to a different file than the edge row"
+                ),
             );
         }
     }
 
     if let (Some(head), Some(tail)) = (head, tail) {
-        if head.function_entity_id != tail.function_entity_id {
+        if let (Some(head_kind), Some(tail_kind)) = (head_kind, tail_kind) {
+            if head_kind_authorized
+                && tail_kind_authorized
+                && !capability.supports_endpoint_pair(head_kind, tail_kind)
+            {
+                agent_use_push_micro_edge_integrity_finding(
+                    findings,
+                    seen_edge_rule,
+                    rule_by_id[CG_MVP4_2_MICRO_EDGE_INVALID_TAIL_KIND],
+                    lifecycle.clone(),
+                    Some(micro_edge),
+                    affected_delta.clone(),
+                    relation_span.clone(),
+                    &format!(
+                        "{relation_label} endpoint pair `{} -> {}` is not directionally authorized for this relation",
+                        head.micro_kind, tail.micro_kind
+                    ),
+                );
+            }
+        }
+        let (cross_function, edge_head_mismatch) = agent_use_micro_edge_ownership_violations(
+            capability.ownership_policy,
+            micro_edge.function_entity_id.as_deref(),
+            head.function_entity_id.as_deref(),
+            tail.function_entity_id.as_deref(),
+        );
+        if cross_function {
             agent_use_push_micro_edge_integrity_finding(
                 findings,
                 seen_edge_rule,
@@ -7943,10 +8390,13 @@ fn agent_use_validate_current_micro_edge_integrity(
                 Some(micro_edge),
                 affected_delta.clone(),
                 relation_span.clone(),
-                "LOCAL_RETURNS_TO endpoints belong to different function ownership domains",
+                &format!(
+                    "{relation_label} endpoints violate the `{}` function ownership policy",
+                    capability.ownership_policy.as_str()
+                ),
             );
         }
-        if micro_edge.function_entity_id != head.function_entity_id {
+        if edge_head_mismatch {
             agent_use_push_micro_edge_integrity_finding(
                 findings,
                 seen_edge_rule,
@@ -7955,7 +8405,7 @@ fn agent_use_validate_current_micro_edge_integrity(
                 Some(micro_edge),
                 affected_delta.clone(),
                 relation_span.clone(),
-                "LOCAL_RETURNS_TO edge does not target the nearest enclosing FunctionFrame domain recorded by the retained endpoints",
+                &format!("{relation_label} edge ownership domain does not match its head/caller endpoint ownership domain"),
             );
         }
     }
@@ -7969,7 +8419,7 @@ fn agent_use_validate_current_micro_edge_integrity(
             Some(micro_edge),
             affected_delta.clone(),
             None,
-            "exact LOCAL_RETURNS_TO edge has no current relation source span",
+            &format!("claimable {relation_label} edge has no current relation source span"),
         );
     }
     if micro_edge.provenance_id.is_none() {
@@ -7981,15 +8431,14 @@ fn agent_use_validate_current_micro_edge_integrity(
             Some(micro_edge),
             affected_delta.clone(),
             relation_span.clone(),
-            "exact LOCAL_RETURNS_TO edge has no direct AST provenance",
+            &format!("claimable {relation_label} edge has no persisted provenance"),
         );
     }
-    let capability = mvp4_micro_edge_language_capability(&micro_edge.language, relation_kind);
     let source_role = MicroSourceRole::from_storage_str(&micro_edge.source_role)
         .unwrap_or(MicroSourceRole::Unknown);
     let exactness =
         MicroExactness::from_storage_str(&micro_edge.exactness).unwrap_or(MicroExactness::Unknown);
-    if !capability.supports_claimable_exact(
+    if !capability.supports_claimable_proof_row(
         &micro_edge.frontend,
         source_role,
         exactness,
@@ -8004,7 +8453,10 @@ fn agent_use_validate_current_micro_edge_integrity(
             Some(micro_edge),
             affected_delta.clone(),
             relation_span.clone(),
-            "LOCAL_RETURNS_TO proof row is not exact and claimable under the active micro-edge language capability",
+            &format!(
+                "{relation_label} proof row is not claimable under the active micro-edge language capability (expected `{}` exactness)",
+                capability.exactness_capability.as_str()
+            ),
         );
     }
     if Some(micro_edge.extraction_version.as_str()) != capability.extraction_version {
@@ -8016,7 +8468,9 @@ fn agent_use_validate_current_micro_edge_integrity(
             Some(micro_edge),
             affected_delta,
             relation_span,
-            "LOCAL_RETURNS_TO extraction version does not match the current MVP4.2 contract",
+            &format!(
+                "{relation_label} extraction version does not match the current MVP4.2 contract"
+            ),
         );
     }
 
@@ -8571,7 +9025,12 @@ fn agent_use_validate_current_local_flow_packet_integrity(
             "claimable local micro-flow packet has no packet provenance",
         );
     }
-    if packet.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION {
+    if packet.extraction_version
+        != mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+            &packet.language,
+            &packet.file_id,
+        )
+    {
         agent_use_push_local_flow_packet_integrity_finding(
             findings,
             seen_packet_rule,
@@ -10561,34 +11020,58 @@ fn agent_use_validate_removed_calls_delta_edge(
         return Ok(());
     }
 
-    let edge = agent_use_calls_edge_from_delta_entry(entry);
-    let span_text = match agent_use_reverify_edge_source_span_text(&profile.repo_root, &edge) {
-        Ok(span_text) => span_text,
-        Err(error) => {
-            findings.push(agent_use_calls_boundary_diagnostic(
-                rule,
-                lifecycle,
-                json!({
-                    "removed_calls_delta": entry,
-                    "source_span_recheck_error": error,
-                }),
-                "removed exact CALLS delta source span is no longer reverified in current source; without a current source-spanned reference this is diagnostic, not an actionable unknown",
-            ));
-            return Ok(());
-        }
+    let mut edge = agent_use_calls_edge_from_delta_entry(entry);
+    let span_check = agent_use_reverify_edge_source_span_text(&profile.repo_root, &edge);
+    let span_is_current = match &span_check {
+        Ok(span_text) => agent_use_removed_calls_delta_span_still_names_target(span_text, entry),
+        Err(_) => false,
     };
-
-    if !agent_use_removed_calls_delta_span_still_names_target(&span_text, entry) {
-        findings.push(agent_use_calls_boundary_diagnostic(
-            rule,
-            lifecycle,
-            json!({
-                "removed_calls_delta": entry,
-                "source_span_text": span_text,
-            }),
-            "removed exact CALLS delta source span no longer names the old callee, so it is not blocking proof",
-        ));
-        return Ok(());
+    let mut affected_delta = json!(entry);
+    if !span_is_current {
+        // The recorded span is stale: on ordinary same-file edits, deleting the
+        // callee shifts every following line, so the drifted span no longer
+        // reverifies even though the blocking contradiction (callee removed +
+        // still referenced in CURRENT source) is intact. Re-anchor to the
+        // current call site before demoting; only a file with no remaining
+        // call-shaped reference stays diagnostic.
+        match agent_use_reanchor_removed_calls_span(&profile.repo_root, entry) {
+            Some(reanchored_span) => {
+                affected_delta = json!({
+                    "removed_calls_delta": entry,
+                    "source_span_reanchored_same_file": true,
+                    "recorded_span": &entry.source_span,
+                    "reanchored_span": &reanchored_span,
+                });
+                edge.source_span = reanchored_span;
+            }
+            None => {
+                match span_check {
+                    Err(error) => {
+                        findings.push(agent_use_calls_boundary_diagnostic(
+                            rule,
+                            lifecycle,
+                            json!({
+                                "removed_calls_delta": entry,
+                                "source_span_recheck_error": error,
+                            }),
+                            "removed exact CALLS delta source span is no longer reverified in current source and the callee is not referenced anywhere in the current file; this is diagnostic, not an actionable unknown",
+                        ));
+                    }
+                    Ok(span_text) => {
+                        findings.push(agent_use_calls_boundary_diagnostic(
+                            rule,
+                            lifecycle,
+                            json!({
+                                "removed_calls_delta": entry,
+                                "source_span_text": span_text,
+                            }),
+                            "removed exact CALLS delta source span no longer names the old callee and no call-shaped reference remains in the current file, so it is not blocking proof",
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+        }
     }
 
     agent_use_validate_current_calls_edge(
@@ -10597,7 +11080,7 @@ fn agent_use_validate_removed_calls_delta_edge(
         rule_by_id,
         lifecycle,
         &edge,
-        Some(json!(entry)),
+        Some(affected_delta),
         Some(rule_id),
         findings,
         seen_edge_rule,
@@ -10666,6 +11149,84 @@ fn agent_use_removed_calls_delta_span_still_names_target(
     target_tokens
         .iter()
         .any(|token| token.len() >= 2 && span_text.contains(token))
+}
+
+/// Same-file re-anchoring for a removed exact CALLS delta whose recorded span
+/// no longer reverifies. Deleting a callee body ABOVE its callsite shifts
+/// every following line, so the recorded span points at drifted text and the
+/// blocking contradiction (callee removed + still referenced in CURRENT
+/// source) used to demote to diagnostic on ordinary same-file edits. Scan the
+/// changed file's current text for a call-shaped occurrence of the removed
+/// callee name and re-anchor the span to the occurrence nearest the recorded
+/// line. Returns None when the name is genuinely gone from the file (the edit
+/// also removed the reference; nothing to block).
+fn agent_use_reanchor_removed_calls_span(
+    repo_root: &Path,
+    entry: &codegraph_index::EdgeDeltaEntry,
+) -> Option<SourceSpan> {
+    let span = &entry.source_span;
+    let repo_relative_path = normalize_repo_relative_path(&span.repo_relative_path);
+    if repo_relative_path.trim().is_empty()
+        || repo_relative_path.contains(':')
+        || Path::new(&repo_relative_path)
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let target_name = entry.target_endpoint.name.as_deref()?.trim();
+    if target_name.len() < 2 {
+        return None;
+    }
+    let source_path =
+        repo_root.join(repo_relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let source = std::fs::read_to_string(&source_path).ok()?;
+    let recorded_line = i64::from(span.start_line.max(1));
+    let mut best: Option<(i64, u32, u32, u32)> = None;
+    for (line_index, line) in source.lines().enumerate() {
+        let Some(column_index) = agent_use_call_shaped_occurrence(line, target_name) else {
+            continue;
+        };
+        let line_number = line_index as i64 + 1;
+        let distance = (line_number - recorded_line).abs();
+        let start_column = column_index as u32 + 1;
+        let end_column = start_column + target_name.len() as u32;
+        if best.is_none_or(|(best_distance, ..)| distance < best_distance) {
+            best = Some((distance, line_number as u32, start_column, end_column));
+        }
+    }
+    let (_, line, start_column, end_column) = best?;
+    Some(SourceSpan::with_columns(
+        &repo_relative_path,
+        line,
+        start_column,
+        line,
+        end_column,
+    ))
+}
+
+/// Byte offset of a call-shaped occurrence of `name` in `line`: `name` at a
+/// leading token boundary, followed (after optional whitespace) by `(`. Path
+/// qualifiers (`auth::foo(`, `obj.foo(`) satisfy the boundary rule because
+/// `:`/`.` are not identifier bytes.
+fn agent_use_call_shaped_occurrence(line: &str, name: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(relative) = line.get(search_from..)?.find(name) {
+        let start = search_from + relative;
+        let end = start + name.len();
+        let boundary_before =
+            start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let mut after = end;
+        while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
+            after += 1;
+        }
+        if boundary_before && after < bytes.len() && bytes[after] == b'(' {
+            return Some(start);
+        }
+        search_from = end;
+    }
+    None
 }
 
 fn agent_use_validate_removed_import_delta_edge(
@@ -11389,6 +11950,9 @@ fn agent_use_graph_integrity_input(
     let reason = reason.into();
     ValidationReverificationInput {
         lifecycle,
+        capability_metadata_present: true,
+        required_capability_present: true,
+        old_tier_label_only: false,
         relation_supported: true,
         relation_exact: true,
         graph_source_relation_reverified: false,
@@ -11418,6 +11982,9 @@ fn agent_use_lifecycle_integrity_input(
     let reason = reason.into();
     ValidationReverificationInput {
         lifecycle,
+        capability_metadata_present: true,
+        required_capability_present: true,
+        old_tier_label_only: false,
         relation_supported: true,
         relation_exact: true,
         graph_source_relation_reverified: false,
@@ -11460,6 +12027,9 @@ fn agent_use_entity_optional_span_diagnostic_input(
     let reason = reason.into();
     ValidationReverificationInput {
         lifecycle,
+        capability_metadata_present: true,
+        required_capability_present: true,
+        old_tier_label_only: false,
         relation_supported: true,
         relation_exact: false,
         graph_source_relation_reverified: false,
@@ -12033,7 +12603,10 @@ fn agent_use_validation_stable_u64(input: &str) -> u64 {
 #[cfg(test)]
 mod exact_calls_validation_tests {
     use super::*;
-    use codegraph_core::{NormalizedClaimabilityMetadata, ValidationClassification};
+    use codegraph_core::{
+        NormalizedClaimabilityMetadata, ValidationClassification,
+        MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15136,6 +15709,52 @@ mod exact_calls_validation_tests {
     }
 
     #[test]
+    fn current_micro_edge_capability_is_directional_and_ownership_aware() {
+        let capability =
+            mvp4_micro_edge_language_capability("javascript", MicroEdgeKind::LocalCalls);
+        assert_eq!(
+            agent_use_micro_node_kind_from_storage("call_site"),
+            Some(MicroNodeKind::CallSite)
+        );
+        assert_eq!(
+            agent_use_micro_node_kind_from_storage("function_frame"),
+            Some(MicroNodeKind::FunctionFrame)
+        );
+        assert!(capability
+            .supports_endpoint_pair(MicroNodeKind::CallSite, MicroNodeKind::FunctionFrame));
+        assert!(!capability
+            .supports_endpoint_pair(MicroNodeKind::FunctionFrame, MicroNodeKind::CallSite));
+        assert_eq!(
+            capability.ownership_policy,
+            MicroEdgeOwnershipPolicy::CallerToSameFileFunction
+        );
+
+        let (cross_function, edge_head_mismatch) = agent_use_micro_edge_ownership_violations(
+            capability.ownership_policy,
+            Some("function://caller"),
+            Some("function://caller"),
+            Some("function://callee"),
+        );
+        assert!(!cross_function);
+        assert!(!edge_head_mismatch);
+
+        let (cross_function, edge_head_mismatch) = agent_use_micro_edge_ownership_violations(
+            MicroEdgeOwnershipPolicy::SameFunction,
+            Some("function://caller"),
+            Some("function://caller"),
+            Some("function://callee"),
+        );
+        assert!(cross_function);
+        assert!(!edge_head_mismatch);
+        assert!(
+            agent_use_validation_classification_compact_priority(ValidationClassification::Warn)
+                < agent_use_validation_classification_compact_priority(
+                    ValidationClassification::Degraded
+                )
+        );
+    }
+
+    #[test]
     fn validate_edit_micro_edge_delta_sections_are_not_errors() {
         let repo = test_repo();
         let profile = test_profile(&repo);
@@ -16444,6 +17063,172 @@ mod exact_calls_validation_tests {
             finding.validation_rule_id == CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED
                 && finding.classification == ValidationClassification::Block
         }));
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    fn removed_calls_delta_entry(
+        caller: &Entity,
+        target_name: &str,
+        recorded_span: SourceSpan,
+    ) -> codegraph_index::EdgeDeltaEntry {
+        let repo_relative_path = recorded_span.repo_relative_path.clone();
+        let target_entity_id = format!("entity://src/lib.rs/{target_name}");
+        let edge = calls_edge(caller, &target_entity_id, recorded_span.clone());
+        let claimability =
+            NormalizedClaimabilityMetadata::graph_source_proof("test exact removed calls edge");
+        codegraph_index::EdgeDeltaEntry {
+            stable_identity_key: edge.id.clone(),
+            old_stable_identity_key: Some(edge.id.clone()),
+            new_stable_identity_key: None,
+            old: None,
+            new: None,
+            edge_id: edge.id.clone(),
+            source_entity_id: caller.id.clone(),
+            target_entity_id: target_entity_id.clone(),
+            source_endpoint: codegraph_index::EdgeDeltaEndpointSummary {
+                entity_id: caller.id.clone(),
+                name: Some(caller.name.clone()),
+                qualified_name: Some(caller.qualified_name.clone()),
+                entity_kind: Some(caller.kind),
+                repo_relative_path: Some(caller.repo_relative_path.clone()),
+                source_span: caller.source_span.clone(),
+                hydrated: true,
+            },
+            target_endpoint: codegraph_index::EdgeDeltaEndpointSummary {
+                entity_id: target_entity_id,
+                name: Some(target_name.to_string()),
+                qualified_name: Some(target_name.to_string()),
+                entity_kind: Some(EntityKind::Function),
+                repo_relative_path: Some("src/lib.rs".to_string()),
+                source_span: None,
+                hydrated: true,
+            },
+            relation: RelationKind::Calls,
+            relation_kind: RelationKind::Calls.to_string(),
+            repo_relative_path,
+            source_span: recorded_span,
+            exactness: Exactness::ParserVerified,
+            exactness_label: Exactness::ParserVerified.to_string(),
+            derived: false,
+            provenance_edges: Vec::new(),
+            provenance_status: "base_fact".to_string(),
+            source_role: EvidenceRole::Production,
+            edge_class: EdgeClass::BaseExact.to_string(),
+            edge_context: EdgeContext::Production.to_string(),
+            normalized_claimability: claimability.clone(),
+            claimability,
+            proof_strength: "graph_source".to_string(),
+            lifecycle_status: "current".to_string(),
+            relation_support: "supported".to_string(),
+            change_kind: "removed".to_string(),
+            reason: "target_removed".to_string(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn removed_calls_delta_reanchors_drifted_span_and_still_blocks() {
+        // 2026-07-05 shakeout FYI69(a): deleting a callee ABOVE its callsite
+        // shifts every following line, so the removed edge's recorded span no
+        // longer reverifies and the June-verified same-file blocking interrupt
+        // demoted to diagnostic. The validator must re-anchor to the current
+        // call site and keep blocking while the contradiction (callee removed
+        // + still referenced) is real.
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/caller.rs",
+            "fn caller() {\n    removed_target(1);\n}\n",
+        );
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.rs", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+
+        // Variant 1: recorded span drifted past the end of the shrunken file.
+        // Variant 2: recorded span still in range but covering different text.
+        let drifted_spans = [
+            SourceSpan::with_columns("src/caller.rs", 5, 5, 5, 19),
+            SourceSpan::with_columns("src/caller.rs", 1, 1, 1, 12),
+        ];
+        for recorded_span in drifted_spans {
+            let entry = removed_calls_delta_entry(&caller, "removed_target", recorded_span);
+            let mut findings = Vec::new();
+            let mut seen = BTreeSet::new();
+            agent_use_validate_removed_calls_delta_edge(
+                &test_profile(&repo),
+                &store,
+                &rule_by_id,
+                ValidationLifecycleState::claimable_current(),
+                &entry,
+                CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED,
+                &mut findings,
+                &mut seen,
+            )
+            .expect("removed calls delta validation");
+            let blocking = findings
+                .iter()
+                .find(|finding| {
+                    finding.validation_rule_id == CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED
+                        && finding.classification == ValidationClassification::Block
+                })
+                .unwrap_or_else(|| {
+                    panic!("drifted removed-callee span must re-anchor and block: {findings:?}")
+                });
+            let span = blocking.source_span.as_ref().expect("re-anchored span");
+            assert_eq!(span.start_line, 2, "span must re-anchor to the call site");
+        }
+        drop(store);
+        cleanup_repo(repo);
+    }
+
+    #[test]
+    fn removed_calls_delta_with_no_remaining_reference_stays_diagnostic() {
+        // The clean-edit case: the callee AND its call site were both removed.
+        // Re-anchoring must find nothing and the entry stays diagnostic — a
+        // stale recorded span alone is not blocking proof.
+        let repo = test_repo();
+        write_source(
+            &repo,
+            "src/caller.rs",
+            "fn caller() {\n    other_call(1);\n}\n",
+        );
+        let store = test_store(&repo);
+        let caller = function_entity("src/caller.rs", "caller", 1);
+        store.upsert_entity(&caller).expect("caller");
+        let rules = rules();
+        let rule_by_id = rule_map(&rules);
+
+        let entry = removed_calls_delta_entry(
+            &caller,
+            "removed_target",
+            SourceSpan::with_columns("src/caller.rs", 5, 5, 5, 19),
+        );
+        let mut findings = Vec::new();
+        let mut seen = BTreeSet::new();
+        agent_use_validate_removed_calls_delta_edge(
+            &test_profile(&repo),
+            &store,
+            &rule_by_id,
+            ValidationLifecycleState::claimable_current(),
+            &entry,
+            CG_MVP3_CALLS_REMOVED_CALLEE_STILL_REFERENCED,
+            &mut findings,
+            &mut seen,
+        )
+        .expect("removed calls delta validation");
+        assert!(
+            !findings.is_empty(),
+            "the stale span must still surface a diagnostic"
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.classification != ValidationClassification::Block),
+            "a file with no remaining reference must not block: {findings:?}"
+        );
         drop(store);
         cleanup_repo(repo);
     }

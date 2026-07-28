@@ -54,6 +54,7 @@ codegraph-mcp agent-use query path handle_request save_record --repo <repo> `
 codegraph-mcp agent-use query unresolved-calls --repo <repo> `
   --path src\file.ts `
   --class repo_local_candidate `
+  --language typescript `
   --limit 20 --agent-json
 
 codegraph-mcp agent-use context-pack --repo <repo> `
@@ -120,6 +121,7 @@ Recommended task loop:
    - `agent-use query text "<phrase>" --agent-json`
    - `agent-use query callers|callees|path ... --agent-json`
    - `agent-use query unresolved-calls --path <file> --class <class>
+     --language <language>
      --agent-json`
 4. After each meaningful edit batch, run
    `agent-use validate-edit --changed <path> --agent-json`.
@@ -155,13 +157,16 @@ post-edit hallucination checks. Skip it for trivial text-only edits where normal
 file reads are enough.
 
 `agent-use query unresolved-calls` does not accept a positional symbol or text
-query. Filter it with `--path` and/or `--class`. Accepted classes are
+query. Filter it with `--path`, `--class`, and/or `--language`. Accepted
+classes are
 `repo_local_candidate`, `external_dependency`, `builtin_or_std`,
-`macro_or_codegen`, and `dynamic_or_computed`. The output reads the
-unresolved-reference lane, is queryable immediately after validate-edit/index
-updates, and remains explicitly `not_graph_proof`; unresolved-reference
-findings warn by default and can only block through an explicit policy mode
-where supported.
+`macro_or_codegen`, `dynamic_or_computed`, `compiler_required`,
+`lsp_required`, `runtime_required`, `unsupported_language_or_relation`, and
+`unknown`. The output reads the unresolved-reference lane, is queryable
+immediately after validate-edit/index updates, and remains explicitly
+`not_graph_proof`; unresolved-reference findings warn by default and can only
+block through an explicit policy mode where repo-local capability metadata is
+eligible.
 
 Real-Time Delta Sync has a release-tested production-profile primitive:
 `agent-use watch --once --changed <path>`. It updates the same external
@@ -280,16 +285,12 @@ The release binary and separate DB keep routine agent reads away from
 development, lab, and temporary self-test artifacts. These outputs are usable
 coding-agent context, not public metric verdicts by themselves.
 
-For local diagnostic measurement of the same edit-time guardrail loop, use the
-Agent Guard Playground guide in
-[agent-reliability-benchmark-lab.md](agent-reliability-benchmark-lab.md).
-It measures bad edits caught, clean edits passed, repairs cleared, proof/trust
-ledger discipline, stale-evidence safety, packet usability, and same-agent A/B
-scaffold invariants. The current verified local gate is
-`reports/final/agent_guard_release_e2e_three_run_gate.json`; dashboard evidence
-comes from that gate's per-run `dashboard.html` artifacts. It does not create a
-public benchmark claim, a CodeGraph-over-`rg` claim, a real-agent patch-quality
-claim, or an MVP4 readiness claim.
+For local diagnostic evaluation of edit-time guardrails, see the
+[Agent Reliability Benchmark Lab](agent-reliability-benchmark-lab.md). It covers
+proof-discipline scoring, hallucination traps, and patch-outcome tests. Its
+results remain local diagnostic evidence; they do not create a public benchmark
+claim, a CodeGraph-over-`rg` claim, a real-agent patch-quality claim, or an
+MVP4 readiness claim.
 
 Optional candidate recall for harder tasks:
 
@@ -327,16 +328,18 @@ runtime proof sources.
 The public agent JSON schemas live under `docs/schemas/agent-json/`, with the
 versioning policy in [agent-json.md](agent-json.md).
 
-MVP4.3 local micro-flow packets are active only for verified TypeScript `.ts`
-production source. Context, routing, validate-edit, watch, and MCP surfaces are
-handle-first: compact output carries packet handles and summary fields, while
-opened packets use `local_micro_flow_packet_agent_json` with
+MVP4.3 local micro-flow packets are active for production sources admitted by
+the 13 canonical, registry-aware adapters under the scoped same-file
+intraprocedural contract. Context, routing, validate-edit, watch, and MCP
+surfaces are handle-first: compact output carries packet handles and summary
+fields, while opened packets use `local_micro_flow_packet_agent_json` with
 `encoding: "dict_v1"` and a dictionary/path `packet_body`. Verbose
 `ordered_steps` are explain/audit expansion output, not the default agent-loop
-payload and not a stronger proof source. JavaScript, JSX, TSX, Python, Go,
-Rust, C, C++, Java, C#, Ruby, PHP, and unsupported/text-only files do not emit
-local-flow packet rows or `flow_proof` unless a later fixture-backed
-implementation explicitly changes that status.
+payload and not a stronger proof source. A packet may carry `flow_proof` only
+when its exact or derived-with-provenance path is current, source-spanned,
+production-role, complete, and free of gaps or omissions. Unsupported paths,
+non-production roles, and broad project/runtime behavior do not gain packet
+proof from the registry entry alone.
 
 Telemetry fields distinguish measured, unknown, and aggregated values. Memory
 is reported as `memory: "unknown"` with `memory_measured: false` unless it is
@@ -345,22 +348,25 @@ unknown or aggregated rather than presented as precise measurements.
 
 ## Language Support Boundary
 
-The Pre-MVP4.4 language hardening lane verified the current registered
+The scoped MVP4 language readiness gate verified the current registered
 frontends: JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++,
-Ruby, and PHP. Exact support is fixture-backed and surface-specific; registered
-does not mean every relation is exact.
+Ruby, and PHP. All 13 report Tier 5, but exact support remains fixture-backed,
+scope-specific, and capability-specific; Tier 5 alone does not make every
+relation exact.
 
 Current agent-use behavior:
 
-- TypeScript `.ts` production files have the active MVP4.3 local-flow packet
-  slice: local micro-nodes, local micro-edges, compact `dict_v1`
-  `local_flow_packets`, and `flow_proof` only for complete eligible local
-  chains.
-- TypeScript `.mts`/`.cts`, TSX, JavaScript, JSX, Python, Go, Rust, C, C++,
-  Java, C#, Ruby, and PHP remain useful through their verified parser, symbol,
-  text, source-role, unresolved-reference, context-pack, validate-edit, watch,
-  and MCP surfaces, but packet support is `not_implemented` unless the final
-  language matrix says otherwise.
+- Every canonical frontend has scoped `same_file_intraprocedural` readiness for
+  exact local binding resolution, exact read/write extraction,
+  derived-with-provenance local dataflow, and exact local-flow packet support.
+  The release gate executes one representative canonical source per frontend;
+  it does not certify every registered extension.
+- The representative TypeScript gate source is `.mts`. Ordinary `.ts` remains
+  active through the bounded legacy-v1 adapter, `.mts` and `.cts` use
+  ParserFactsV1, and `.d.ts` remains inactive.
+- Broad module/project resolution, cross-file flow, dynamic dispatch,
+  compiler/LSP semantics, framework behavior, macro/preprocessor expansion,
+  alias analysis, and runtime values remain outside this scoped packet proof.
 - Rust, Python, Go, TypeScript, and JavaScript have fixture-backed unresolved
   reference warning behavior where eligible. External, builtin/std,
   macro/codegen, dynamic, computed, runtime, compiler/LSP-required, and
@@ -491,8 +497,11 @@ output excludes them by default.
   source-navigation evidence cannot hard-interrupt by themselves.
 - Unknown, unsupported, degraded, and diagnostic-only findings do not interrupt
   by default. Unsafe DB state is a lifecycle blocker, not source-code proof.
-- MVP4 micro-flow extraction is future-only and is not part of the MVP3
-  validate-edit contract.
+- MVP4.3 local micro-flow packets are active for registry-admitted production
+  sources across all 13 canonical frontends, limited to the verified same-file
+  intraprocedural contract. They do not create proof for text-only files,
+  unsupported extensions, non-production roles, cross-file flow, or broader
+  compiler/runtime/framework behavior.
 - Local diagnostic metrics do not become public product claims unless they are
   intentionally promoted and claim-reviewed.
 

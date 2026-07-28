@@ -604,6 +604,7 @@
         "lifecycle_requirement",
         "supported_relation_status",
         "default_classification_when_unsupported",
+        "capability_contract",
         "docs_summary"
       ],
       "additionalProperties": true,
@@ -652,6 +653,60 @@
         "default_classification_when_unsupported": {
           "$ref": "#/$defs/validation_classification"
         },
+        "capability_contract": {
+          "type": "object",
+          "required": [
+            "required_capability",
+            "required_exactness",
+            "required_source_span",
+            "required_provenance",
+            "source_role_policy",
+            "lifecycle_requirement",
+            "escalation_policy",
+            "unsupported_behavior",
+            "recovery_action_kind",
+            "old_tier_label_authorizes_blocking"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "required_capability": {
+              "type": ["string", "null"]
+            },
+            "required_exactness": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required_source_span": {
+              "type": "boolean"
+            },
+            "required_provenance": {
+              "type": "boolean"
+            },
+            "source_role_policy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "lifecycle_requirement": {
+              "type": "string",
+              "minLength": 1
+            },
+            "escalation_policy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "unsupported_behavior": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recovery_action_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "old_tier_label_authorizes_blocking": {
+              "type": "boolean"
+            }
+          }
+        },
         "docs_summary": {
           "type": "string",
           "minLength": 1
@@ -681,6 +736,8 @@
         "relation_kind",
         "exactness",
         "provenance",
+        "rule_capability_contract",
+        "capability_evaluation",
         "old_fact_claim_state",
         "new_fact_claim_state",
         "lifecycle",
@@ -764,6 +821,57 @@
         },
         "provenance": {
           "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "rule_capability_contract": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "capability_evaluation": {
+          "type": "object",
+          "required": [
+            "language",
+            "frontend",
+            "capability_required",
+            "capability_present",
+            "capability_missing_reason",
+            "exactness",
+            "resolver_status",
+            "proof_strength",
+            "recommended_action"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "language": {
+              "type": ["string", "null"]
+            },
+            "frontend": {
+              "type": ["string", "null"]
+            },
+            "capability_required": {
+              "type": ["string", "null"]
+            },
+            "capability_present": {
+              "type": "boolean"
+            },
+            "capability_missing_reason": {
+              "type": ["string", "null"]
+            },
+            "exactness": {
+              "type": ["string", "null"]
+            },
+            "resolver_status": {
+              "type": "string",
+              "minLength": 1
+            },
+            "proof_strength": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recommended_action": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         },
         "old_fact_claim_state": {
           "type": "string"

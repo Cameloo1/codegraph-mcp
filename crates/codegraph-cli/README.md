@@ -5,12 +5,18 @@ CLI crate for `codegraph-mcp`.
 `MVP.md` is the source of truth for this crate's phase boundary and acceptance
 criteria.
 
-Phase 21 hardens `codegraph-mcp index <repo>` for TypeScript/JavaScript
-declaration facts, conservative core static relations, and heuristic
-auth/security/event/db/test relations into
-`.codegraph/codegraph.sqlite`. Indexing also populates the Stage 0 SQLite FTS
-index for files, entities, and snippets. `codegraph-mcp serve-mcp` starts the
-local read-mostly MCP server.
+The current CLI indexes the 13 registered language frontends into a configured
+SQLite graph, including bounded source-spanned local micro-flow facts. The
+default CLI may use repo-local `.codegraph` state; routine production agent use
+goes through `agent-use` with an external profile DB and explicit lifecycle
+preflight.
+
+The CLI exposes index, status/doctor, query, impact, context-pack, validate-edit,
+watch, audit, UI, and MCP-serving workflows. Local-flow packet queries support
+exact bounded file/function/language/source-role/proof filters and compact
+handle-first output; full `dict_v1` packet bodies are opened explicitly.
+Indexing also populates the Stage 0 SQLite FTS index for files, entities, and
+snippets.
 
 Phase 16 also implements init dry-run/setup, status, `query symbols`,
 `query path`, `context-pack`, `impact`, and `.cgc-bundle` export/import with

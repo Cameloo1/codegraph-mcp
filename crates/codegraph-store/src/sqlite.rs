@@ -8,17 +8,20 @@ use std::{
 };
 
 use codegraph_core::{
-    build_local_micro_flow_packet_candidates_from_persisted_facts,
-    mvp4_3_local_micro_flow_packet_source_supported, mvp4_micro_edge_language_capability,
-    normalize_edge_classification, normalize_repo_relative_path, stable_edge_id,
-    stable_entity_id_for_kind, validate_local_micro_flow_agent_json_contract, DerivedClosureEdge,
-    Edge, EdgeClass, EdgeContext, Entity, EntityKind, Exactness, FileRecord,
+    build_local_micro_flow_packet_candidates_from_persisted_facts, classify_edge_evidence_role,
+    classify_entity_source_role,
+    mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source,
+    mvp4_3_local_micro_flow_packet_source_supported_for_source,
+    mvp4_micro_edge_language_capability_for_source, normalize_edge_classification,
+    normalize_repo_relative_path, stable_edge_id, stable_entity_id_for_kind,
+    validate_local_micro_flow_agent_json_contract, DerivedClosureEdge, Edge, EdgeClass,
+    EdgeContext, Entity, EntityKind, EvidenceRole, Exactness, FileRecord,
     LocalMicroFlowPacketCandidate, LocalMicroFlowPacketCandidateSet, LocalMicroFlowPacketStatus,
     LocalMicroFlowPersistedEdgeFact, LocalMicroFlowPersistedFactInput,
-    LocalMicroFlowPersistedNodeFact, MicroEdgeKind, MicroEdgeSupportStatus, MicroExactness,
-    MicroNodeKind, MicroSourceRole, PathEvidence, ProofLadderLevel, RelationKind, RepoIndexState,
-    SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_ENCODING,
-    MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+    LocalMicroFlowPersistedNodeFact, MicroEdgeKind, MicroEdgeOwnershipPolicy,
+    MicroEdgeSupportStatus, MicroExactness, MicroNodeKind, MicroSourceRole,
+    NormalizedCapabilityMetadataFact, PathEvidence, ProofLadderLevel, RelationKind, RepoIndexState,
+    SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_ENCODING, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
     MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
 };
 use rusqlite::{
@@ -201,6 +204,39 @@ pub struct UnresolvedReferenceRecord {
     pub exactness: Exactness,
     pub extractor: String,
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityMetadataQueryOptions {
+    pub repo_relative_path: Option<String>,
+    pub capability_flag: Option<String>,
+    pub fact_kind: Option<String>,
+    pub limit: usize,
+}
+
+impl Default for CapabilityMetadataQueryOptions {
+    fn default() -> Self {
+        Self {
+            repo_relative_path: None,
+            capability_flag: None,
+            fact_kind: None,
+            limit: 256,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CapabilityMetadataSummary {
+    pub total_rows: u64,
+    pub rows_by_fact_kind: BTreeMap<String, u64>,
+    pub rows_by_capability_flag: BTreeMap<String, u64>,
+    pub rows_by_capability_status: BTreeMap<String, u64>,
+    pub rows_by_language: BTreeMap<String, u64>,
+    pub unknown_boundary_rows: u64,
+    pub resolver_metadata_rows: u64,
+    pub exact_or_derived_rows_missing_provenance: u64,
+    pub metadata_payload_bytes: u64,
+    pub full_source_body_storage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1657,6 +1693,27 @@ impl SqliteGraphStore {
             "DELETE FROM edge_debug_metadata WHERE edge_id = ?1",
             [edge_id],
         )?;
+        if !edge.metadata.is_empty() {
+            // The edges_compat view materializes flag-derived markers (e.g.
+            // `heuristic: true`) only when NO debug metadata row exists; a
+            // persisted row wins the COALESCE, so it must carry the same
+            // markers itself or readers lose the downgrade signal.
+            let mut metadata_for_storage = edge.metadata.clone();
+            if flags_bitset & EDGE_FLAG_HEURISTIC != 0 {
+                metadata_for_storage
+                    .entry("heuristic".to_string())
+                    .or_insert(serde_json::Value::Bool(true));
+            }
+            self.connection.execute(
+                "
+                INSERT INTO edge_debug_metadata (edge_id, metadata_json)
+                VALUES (?1, ?2)
+                ON CONFLICT(edge_id) DO UPDATE SET
+                    metadata_json = excluded.metadata_json
+                ",
+                params![edge_id, to_json(&metadata_for_storage)?],
+            )?;
+        }
         if storage == EdgeIdStorage::Compact {
             insert_edge_file_map_after_file_delete(
                 &self.connection,
@@ -2001,6 +2058,279 @@ impl SqliteGraphStore {
                 ))
             })?;
         collect_rows(rows)
+    }
+
+    pub fn query_capability_metadata(
+        &self,
+        options: &CapabilityMetadataQueryOptions,
+    ) -> StoreResult<Vec<NormalizedCapabilityMetadataFact>> {
+        let limit = options.limit;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let path_filter = options
+            .repo_relative_path
+            .as_deref()
+            .map(normalize_repo_relative_path);
+        let fact_kind_filter = options
+            .fact_kind
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase());
+        let capability_filter = options
+            .capability_flag
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase());
+        let scan_limit = limit.saturating_mul(4).max(limit);
+        let mut rows = Vec::new();
+        let mut language_by_path = BTreeMap::<String, Option<String>>::new();
+
+        if self.table_exists("files")? {
+            if matches_fact_kind(&fact_kind_filter, "file") {
+                let files = if let Some(path) = path_filter.as_deref() {
+                    self.get_file(path)?.into_iter().collect::<Vec<_>>()
+                } else {
+                    self.list_files(scan_limit)?
+                };
+                for file in &files {
+                    language_by_path.insert(
+                        normalize_repo_relative_path(&file.repo_relative_path),
+                        file.language.clone(),
+                    );
+                }
+                for file in files {
+                    push_capability_metadata_from_record(
+                        &mut rows,
+                        "file",
+                        &file.repo_relative_path,
+                        &file.repo_relative_path,
+                        file.language.clone(),
+                        metadata_string(&file.metadata, "parser_fact_bundle_frontend"),
+                        metadata_evidence_role(
+                            &file.metadata,
+                            "parser_fact_bundle_source_role",
+                            EvidenceRole::Unknown,
+                        ),
+                        &file.metadata,
+                    );
+                }
+            } else {
+                for file in self.list_files(scan_limit)? {
+                    language_by_path.insert(
+                        normalize_repo_relative_path(&file.repo_relative_path),
+                        file.language.clone(),
+                    );
+                }
+            }
+        }
+
+        if self.table_exists("entities")? && matches_fact_kind(&fact_kind_filter, "entity") {
+            let entities = if let Some(path) = path_filter.as_deref() {
+                self.list_entities_by_file(path)?
+            } else {
+                self.list_entities(scan_limit)?
+            };
+            for entity in entities {
+                let path = normalize_repo_relative_path(&entity.repo_relative_path);
+                let language = metadata_string(&entity.metadata, "parser_fact_language")
+                    .or_else(|| language_by_path.get(&path).cloned().flatten());
+                push_capability_metadata_from_record(
+                    &mut rows,
+                    "entity",
+                    &entity.id,
+                    &entity.repo_relative_path,
+                    language,
+                    metadata_string(&entity.metadata, "parser_fact_frontend"),
+                    classify_entity_source_role(&entity).role,
+                    &entity.metadata,
+                );
+            }
+        }
+
+        if self.table_exists("edges")? && matches_fact_kind(&fact_kind_filter, "edge") {
+            let edges = if let Some(path) = path_filter.as_deref() {
+                self.list_edges_by_file(path)?
+            } else {
+                self.list_edges(scan_limit)?
+            };
+            for edge in edges {
+                let path = normalize_repo_relative_path(&edge.source_span.repo_relative_path);
+                let language = metadata_string(&edge.metadata, "parser_fact_language")
+                    .or_else(|| language_by_path.get(&path).cloned().flatten());
+                push_capability_metadata_from_record(
+                    &mut rows,
+                    "edge",
+                    &edge.id,
+                    &edge.source_span.repo_relative_path,
+                    language,
+                    metadata_string(&edge.metadata, "parser_fact_frontend"),
+                    classify_edge_evidence_role(&edge).role,
+                    &edge.metadata,
+                );
+            }
+        }
+
+        if self.table_exists("unresolved_references")?
+            && matches_fact_kind(&fact_kind_filter, "unresolved_reference")
+        {
+            let paths = if let Some(path) = path_filter.as_deref() {
+                vec![path.to_string()]
+            } else {
+                language_by_path.keys().take(scan_limit).cloned().collect()
+            };
+            for path in paths {
+                let language = language_by_path.get(&path).cloned().flatten();
+                for record in self.list_unresolved_references_by_file(&path)? {
+                    let mut metadata = metadata_object_from_value(&record.metadata);
+                    metadata
+                        .entry("parser_fact_family".to_string())
+                        .or_insert_with(|| json!("unresolved_reference"));
+                    metadata
+                        .entry("parser_fact_exactness".to_string())
+                        .or_insert_with(|| json!(record.exactness.to_string()));
+                    let capability_flag = capability_flag_for_reference_class(&metadata);
+                    metadata
+                        .entry("parser_capability_flag".to_string())
+                        .or_insert_with(|| json!(capability_flag));
+                    metadata
+                        .entry("parser_capability_status".to_string())
+                        .or_insert_with(|| json!("unknown"));
+                    push_capability_metadata_from_record(
+                        &mut rows,
+                        "unresolved_reference",
+                        &record.reference_id,
+                        &record.source_span.repo_relative_path,
+                        language.clone(),
+                        metadata_string(&metadata, "parser_fact_frontend"),
+                        metadata_evidence_role(&metadata, "source_role", EvidenceRole::Unknown),
+                        &metadata,
+                    );
+                }
+            }
+        }
+
+        if self.table_exists("extraction_warnings")?
+            && matches_fact_kind(&fact_kind_filter, "extraction_warning")
+        {
+            let paths = if let Some(path) = path_filter.as_deref() {
+                vec![path.to_string()]
+            } else {
+                language_by_path.keys().take(scan_limit).cloned().collect()
+            };
+            for path in paths {
+                let language = language_by_path.get(&path).cloned().flatten();
+                for (warning, metadata_value) in self.list_extraction_warnings_by_file(&path)? {
+                    let mut metadata = metadata_object_from_value(&metadata_value);
+                    metadata
+                        .entry("parser_fact_family".to_string())
+                        .or_insert_with(|| json!("diagnostic_only"));
+                    metadata
+                        .entry("parser_capability_flag".to_string())
+                        .or_insert_with(|| json!("unsupported"));
+                    metadata
+                        .entry("parser_capability_status".to_string())
+                        .or_insert_with(|| json!("diagnostic_only"));
+                    metadata
+                        .entry("parser_unknown_boundary_reason".to_string())
+                        .or_insert_with(|| json!(warning));
+                    push_capability_metadata_from_record(
+                        &mut rows,
+                        "extraction_warning",
+                        &format!("{path}:{warning}"),
+                        &path,
+                        language.clone(),
+                        metadata_string(&metadata, "parser_fact_frontend"),
+                        metadata_evidence_role(&metadata, "source_role", EvidenceRole::Unknown),
+                        &metadata,
+                    );
+                }
+            }
+        }
+
+        rows.retain(|row| match capability_filter.as_deref() {
+            Some(filter) => row.capability_flag.eq_ignore_ascii_case(filter),
+            None => true,
+        });
+        rows.sort_by(|left, right| {
+            left.repo_relative_path
+                .cmp(&right.repo_relative_path)
+                .then_with(|| left.owner_fact_kind.cmp(&right.owner_fact_kind))
+                .then_with(|| left.owner_fact_id.cmp(&right.owner_fact_id))
+                .then_with(|| left.capability_flag.cmp(&right.capability_flag))
+        });
+        rows.truncate(limit);
+        Ok(rows)
+    }
+
+    pub fn query_unknown_boundary_metadata(
+        &self,
+        options: &CapabilityMetadataQueryOptions,
+    ) -> StoreResult<Vec<NormalizedCapabilityMetadataFact>> {
+        let mut expanded = options.clone();
+        expanded.capability_flag = None;
+        expanded.limit = options.limit.saturating_mul(4).max(options.limit);
+        let mut rows = self.query_capability_metadata(&expanded)?;
+        rows.retain(|row| capability_metadata_fact_is_unknown_boundary(row));
+        rows.truncate(options.limit);
+        Ok(rows)
+    }
+
+    pub fn capability_metadata_summary(
+        &self,
+        options: &CapabilityMetadataQueryOptions,
+    ) -> StoreResult<CapabilityMetadataSummary> {
+        let rows = self.query_capability_metadata(options)?;
+        let mut rows_by_fact_kind = BTreeMap::new();
+        let mut rows_by_capability_flag = BTreeMap::new();
+        let mut rows_by_capability_status = BTreeMap::new();
+        let mut rows_by_language = BTreeMap::new();
+        let mut unknown_boundary_rows = 0u64;
+        let mut resolver_metadata_rows = 0u64;
+        let mut exact_or_derived_rows_missing_provenance = 0u64;
+        let mut metadata_payload_bytes = 0u64;
+
+        for row in &rows {
+            increment_count(&mut rows_by_fact_kind, &row.owner_fact_kind);
+            increment_count(&mut rows_by_capability_flag, &row.capability_flag);
+            if let Some(status) = &row.capability_status {
+                increment_count(&mut rows_by_capability_status, status);
+            }
+            if let Some(language) = &row.language {
+                increment_count(&mut rows_by_language, language);
+            }
+            if capability_metadata_fact_is_unknown_boundary(row) {
+                unknown_boundary_rows += 1;
+            }
+            if row.resolver.is_some()
+                || row.resolver_version.is_some()
+                || row.resolver_status.is_some()
+                || row.resolver_provenance.is_some()
+            {
+                resolver_metadata_rows += 1;
+            }
+            if row
+                .fact_exactness
+                .as_deref()
+                .is_some_and(exactness_requires_provenance)
+                && row.resolver_provenance.is_none()
+                && row.project_config_source.is_none()
+            {
+                exact_or_derived_rows_missing_provenance += 1;
+            }
+            metadata_payload_bytes = metadata_payload_bytes.saturating_add(row.metadata_bytes);
+        }
+
+        Ok(CapabilityMetadataSummary {
+            total_rows: rows.len() as u64,
+            rows_by_fact_kind,
+            rows_by_capability_flag,
+            rows_by_capability_status,
+            rows_by_language,
+            unknown_boundary_rows,
+            resolver_metadata_rows,
+            exact_or_derived_rows_missing_provenance,
+            metadata_payload_bytes,
+            full_source_body_storage: false,
+        })
     }
 
     pub fn insert_source_span_after_file_delete(
@@ -2761,23 +3091,11 @@ impl SqliteGraphStore {
         let Some(relation_kind) = MicroEdgeKind::from_storage_str(&row.relation_kind) else {
             return Ok(());
         };
-        // Allowed (head, tail) endpoint micro-kinds per persisted micro-edge relation.
-        let endpoint_kinds: Option<(&[&str], &[&str])> = match relation_kind {
-            MicroEdgeKind::LocalReturnsTo => Some((&["return_site"], &["function_frame"])),
-            MicroEdgeKind::LocalReads => Some((&["value_use"], &["parameter", "local_binding"])),
-            MicroEdgeKind::LocalWrites => {
-                Some((&["assignment_site"], &["parameter", "local_binding"]))
-            }
-            MicroEdgeKind::LocalFlowsTo => Some((
-                &["parameter", "local_binding"],
-                &["parameter", "local_binding"],
-            )),
-            _ => None,
-        };
-        let Some((head_kinds, tail_kinds)) = endpoint_kinds else {
-            return Ok(());
-        };
-
+        let capability = mvp4_micro_edge_language_capability_for_source(
+            &row.language,
+            &row.file_id,
+            relation_kind,
+        );
         let head = self.required_ast_micro_node_endpoint(
             &row.micro_edge_id,
             "head",
@@ -2788,16 +3106,22 @@ impl SqliteGraphStore {
             "tail",
             &row.target_micro_node_id,
         )?;
-        if !head_kinds.contains(&head.micro_kind.as_str()) {
+        let Some(head_kind) = micro_node_kind_from_storage_str(&head.micro_kind) else {
             return Err(StoreError::Message(format!(
-                "ast_micro_edge {} head must be one of {:?}, got {}",
-                row.micro_edge_id, head_kinds, head.micro_kind
+                "ast_micro_edge {} has unknown head micro-node kind {}",
+                row.micro_edge_id, head.micro_kind
             )));
-        }
-        if !tail_kinds.contains(&tail.micro_kind.as_str()) {
+        };
+        let Some(tail_kind) = micro_node_kind_from_storage_str(&tail.micro_kind) else {
             return Err(StoreError::Message(format!(
-                "ast_micro_edge {} tail must be one of {:?}, got {}",
-                row.micro_edge_id, tail_kinds, tail.micro_kind
+                "ast_micro_edge {} has unknown tail micro-node kind {}",
+                row.micro_edge_id, tail.micro_kind
+            )));
+        };
+        if !capability.supports_endpoint_pair(head_kind, tail_kind) {
+            return Err(StoreError::Message(format!(
+                "ast_micro_edge {} relation {} rejects directional endpoint pair {} -> {}",
+                row.micro_edge_id, row.relation_kind, head.micro_kind, tail.micro_kind
             )));
         }
         if head.file_id != row.file_id || tail.file_id != row.file_id {
@@ -2806,15 +3130,22 @@ impl SqliteGraphStore {
                 row.micro_edge_id
             )));
         }
-        if head.function_entity_id != tail.function_entity_id
-            || row.function_entity_id != head.function_entity_id
-        {
+        let ownership_matches = match capability.ownership_policy {
+            MicroEdgeOwnershipPolicy::SameFunction => {
+                head.function_entity_id == tail.function_entity_id
+                    && row.function_entity_id == head.function_entity_id
+            }
+            MicroEdgeOwnershipPolicy::CallerToSameFileFunction => {
+                row.function_entity_id == head.function_entity_id
+                    && tail_kind == MicroNodeKind::FunctionFrame
+            }
+        };
+        if !ownership_matches {
             return Err(StoreError::Message(format!(
-                "local_returns_to ast_micro_edge {} endpoint function mismatch",
+                "ast_micro_edge {} endpoint function ownership mismatch",
                 row.micro_edge_id
             )));
         }
-        let capability = mvp4_micro_edge_language_capability(&row.language, relation_kind);
         let source_role =
             MicroSourceRole::from_storage_str(&row.source_role).unwrap_or(MicroSourceRole::Unknown);
         let exactness =
@@ -3308,8 +3639,26 @@ impl SqliteGraphStore {
         let Some(packet) = candidate.packet.as_ref() else {
             return Ok(None);
         };
-        if !mvp4_3_local_micro_flow_packet_source_supported(
+        if packet.file.language != candidate.language {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} candidate/packet language mismatch: candidate {}, packet {}",
+                candidate.packet_id, candidate.language, packet.file.language
+            )));
+        }
+        if packet.packet_id != candidate.packet_id {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} candidate/packet identity mismatch: packet {}",
+                candidate.packet_id, packet.packet_id
+            )));
+        }
+        let extraction_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                &candidate.language,
+                &candidate.file_id,
+            );
+        if !mvp4_3_local_micro_flow_packet_source_supported_for_source(
             &candidate.language,
+            &candidate.file_id,
             candidate.source_role,
         ) {
             return Ok(None);
@@ -3327,6 +3676,13 @@ impl SqliteGraphStore {
                 candidate.packet_id
             ))
         })?;
+        if agent_json.get("extraction_version").and_then(Value::as_str) != Some(extraction_version)
+        {
+            return Err(StoreError::Message(format!(
+                "local_flow_packet {} agent JSON extraction version does not match language {}",
+                candidate.packet_id, candidate.language
+            )));
+        }
         if agent_json.get("ordered_steps").is_some() {
             return Err(StoreError::Message(format!(
                 "local_flow_packet {} must not inline ordered_steps by default",
@@ -3407,7 +3763,7 @@ impl SqliteGraphStore {
             packet_status: candidate.packet_status.as_str().to_string(),
             schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
             row_schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
-            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+            extraction_version: extraction_version.to_string(),
             exactness: exactness.to_string(),
             provenance_id: Some(candidate.packet_id.clone()),
             source_role: candidate.source_role.as_str().to_string(),
@@ -3472,14 +3828,19 @@ impl SqliteGraphStore {
                 row.packet_id
             )));
         }
+        let expected_extraction_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                &row.language,
+                &row.file_id,
+            );
         if row.schema_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION
             || row.row_schema_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION
             || row.payload_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION
-            || row.extraction_version != MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+            || row.extraction_version != expected_extraction_version
         {
             return Err(StoreError::Message(format!(
-                "local_flow_packet {} version contract mismatch",
-                row.packet_id
+                "local_flow_packet {} version contract mismatch for language {}: expected {}, got {}",
+                row.packet_id, row.language, expected_extraction_version, row.extraction_version
             )));
         }
         let row_source_role =
@@ -3489,7 +3850,11 @@ impl SqliteGraphStore {
                     row.packet_id, row.source_role
                 ))
             })?;
-        if !mvp4_3_local_micro_flow_packet_source_supported(&row.language, row_source_role) {
+        if !mvp4_3_local_micro_flow_packet_source_supported_for_source(
+            &row.language,
+            &row.file_id,
+            row_source_role,
+        ) {
             return Err(StoreError::Message(format!(
                 "local_flow_packet {} is outside the authorized packet adapter production scope",
                 row.packet_id
@@ -5291,6 +5656,7 @@ fn micro_node_kind_from_storage_str(value: &str) -> Option<MicroNodeKind> {
         "assignment_site" => Some(MicroNodeKind::AssignmentSite),
         "mutation_site" => Some(MicroNodeKind::MutationSite),
         "condition_site" => Some(MicroNodeKind::ConditionSite),
+        "branch_arm" => Some(MicroNodeKind::BranchArm),
         "literal_key" => Some(MicroNodeKind::LiteralKey),
         "import_binding" => Some(MicroNodeKind::ImportBinding),
         "export_binding" => Some(MicroNodeKind::ExportBinding),
@@ -8106,7 +8472,10 @@ fn local_flow_packet_truncation_reason(cap_state: &Value) -> Option<String> {
     cap_state
         .get("truncation_reason")
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "none"
+        })
         .map(str::to_string)
 }
 
@@ -10723,6 +11092,250 @@ fn collect_rows<T>(
         values.push(row?);
     }
     Ok(values)
+}
+
+fn matches_fact_kind(filter: &Option<String>, fact_kind: &str) -> bool {
+    match filter.as_deref() {
+        Some(value) => value == "all" || value == fact_kind,
+        None => true,
+    }
+}
+
+fn metadata_object_from_value(value: &Value) -> BTreeMap<String, Value> {
+    value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn metadata_string(metadata: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn metadata_string_vec(metadata: &BTreeMap<String, Value>, key: &str) -> Vec<String> {
+    match metadata.get(key) {
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToString::to_string)
+            .collect(),
+        Some(Value::String(value)) if !value.trim().is_empty() => vec![value.clone()],
+        _ => Vec::new(),
+    }
+}
+
+fn metadata_evidence_role(
+    metadata: &BTreeMap<String, Value>,
+    key: &str,
+    fallback: EvidenceRole,
+) -> EvidenceRole {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .map(EvidenceRole::from_source_role_label)
+        .unwrap_or(fallback)
+}
+
+fn metadata_bytes(metadata: &BTreeMap<String, Value>) -> u64 {
+    serde_json::to_vec(metadata)
+        .map(|bytes| bytes.len() as u64)
+        .unwrap_or(0)
+}
+
+fn metadata_capability_flags(metadata: &BTreeMap<String, Value>) -> Vec<String> {
+    let mut flags = metadata_string(metadata, "parser_capability_flag")
+        .into_iter()
+        .chain(metadata_string_vec(
+            metadata,
+            "parser_fact_bundle_capability_flags",
+        ))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if flags.is_empty() && metadata.contains_key("parser_unknown_boundary_reason") {
+        flags.push("unknown_boundary".to_string());
+    }
+    if flags.is_empty()
+        && (metadata.contains_key("parser_resolver")
+            || metadata.contains_key("parser_resolver_version")
+            || metadata.contains_key("parser_resolver_status"))
+    {
+        flags.push("project_resolver_metadata".to_string());
+    }
+    if flags.is_empty() && metadata.contains_key("reference_class") {
+        flags.push(capability_flag_for_reference_class(metadata));
+    }
+    flags
+}
+
+fn capability_flag_for_reference_class(metadata: &BTreeMap<String, Value>) -> String {
+    match metadata_string(metadata, "reference_class").as_deref() {
+        Some("macro_or_codegen") => "macro_unknown".to_string(),
+        Some("dynamic_or_computed") => "dynamic_unknown".to_string(),
+        Some("compiler_required") => "compiler_required".to_string(),
+        Some("lsp_required") => "lsp_required".to_string(),
+        Some("runtime_required") => "runtime_required".to_string(),
+        Some("unsupported_language_or_relation") => "unsupported_relation".to_string(),
+        Some("unknown") => "unknown_boundary".to_string(),
+        Some("builtin_or_std") => "package_or_module_resolved".to_string(),
+        Some("external_dependency") => "package_or_module_resolved".to_string(),
+        Some("repo_local_candidate") => "call_extracted".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn metadata_unknown_boundary_kind(metadata: &BTreeMap<String, Value>) -> Option<String> {
+    let kinds = metadata_string_vec(metadata, "parser_fact_bundle_unknown_boundary_kinds");
+    if !kinds.is_empty() {
+        return Some(kinds.join(","));
+    }
+    metadata_string(metadata, "unknown_boundary_kind").or_else(|| {
+        metadata
+            .get("warning_kind")
+            .and_then(Value::as_str)
+            .filter(|value| value.contains("unknown") || value.contains("diagnostic"))
+            .map(ToString::to_string)
+    })
+}
+
+fn metadata_requirement(
+    capability_flag: &str,
+    capability_status: Option<&str>,
+    unknown_boundary_reason: Option<&str>,
+    reference_class: Option<&str>,
+) -> Option<String> {
+    let haystack = [
+        capability_flag,
+        capability_status.unwrap_or_default(),
+        unknown_boundary_reason.unwrap_or_default(),
+        reference_class.unwrap_or_default(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase();
+    for requirement in [
+        "compiler_required",
+        "lsp_required",
+        "runtime_required",
+        "macro_required",
+        "preprocessor_required",
+        "build_database_required",
+    ] {
+        if haystack.contains(requirement)
+            || (requirement == "macro_required" && haystack.contains("macro"))
+            || (requirement == "runtime_required" && haystack.contains("dynamic"))
+            || (requirement == "preprocessor_required" && haystack.contains("preprocessor"))
+        {
+            return Some(requirement.to_string());
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_capability_metadata_from_record(
+    rows: &mut Vec<NormalizedCapabilityMetadataFact>,
+    owner_fact_kind: &str,
+    owner_fact_id: &str,
+    repo_relative_path: &str,
+    language: Option<String>,
+    frontend: Option<String>,
+    source_role: EvidenceRole,
+    metadata: &BTreeMap<String, Value>,
+) {
+    for capability_flag in metadata_capability_flags(metadata) {
+        let capability_status = metadata_string(metadata, "parser_capability_status");
+        let fact_family = metadata_string(metadata, "parser_fact_family");
+        let fact_exactness = metadata_string(metadata, "parser_fact_exactness");
+        let evidence_role = metadata_string(metadata, "evidence_role");
+        let extractor_version = metadata_string(metadata, "parser_fact_bundle_extractor_version");
+        let resolver = metadata_string(metadata, "parser_resolver");
+        let resolver_version = metadata_string(metadata, "parser_resolver_version");
+        let resolver_status = metadata_string(metadata, "parser_resolver_status");
+        let resolver_provenance = metadata_string(metadata, "parser_resolver_provenance");
+        let project_config_source =
+            metadata_string(metadata, "parser_resolver_project_config_source");
+        let unknown_boundary_reason = metadata_string(metadata, "parser_unknown_boundary_reason");
+        let unknown_boundary_kind = metadata_unknown_boundary_kind(metadata);
+        let reference_class = metadata_string(metadata, "reference_class");
+        let requirement = metadata_requirement(
+            &capability_flag,
+            capability_status.as_deref(),
+            unknown_boundary_reason.as_deref(),
+            reference_class.as_deref(),
+        );
+        rows.push(NormalizedCapabilityMetadataFact::new(
+            repo_relative_path,
+            owner_fact_kind,
+            owner_fact_id,
+            language.clone(),
+            frontend.clone(),
+            capability_flag,
+            capability_status,
+            fact_family,
+            fact_exactness,
+            source_role,
+            evidence_role,
+            extractor_version,
+            resolver,
+            resolver_version,
+            resolver_status,
+            resolver_provenance,
+            project_config_source,
+            unknown_boundary_reason,
+            unknown_boundary_kind,
+            reference_class,
+            requirement,
+            metadata_bytes(metadata),
+            "normalized_capability_metadata_fact_v1",
+        ));
+    }
+}
+
+fn capability_metadata_fact_is_unknown_boundary(fact: &NormalizedCapabilityMetadataFact) -> bool {
+    fact.unknown_boundary_reason.is_some()
+        || fact.unknown_boundary_kind.is_some()
+        || fact
+            .requirement
+            .as_deref()
+            .is_some_and(|requirement| requirement != "build_database_required")
+        || fact.reference_class.as_deref().is_some_and(|class| {
+            matches!(
+                class,
+                "dynamic_or_computed"
+                    | "macro_or_codegen"
+                    | "compiler_required"
+                    | "lsp_required"
+                    | "runtime_required"
+                    | "unsupported_language_or_relation"
+                    | "unknown"
+            )
+        })
+        || fact.capability_flag.ends_with("_unknown")
+        || fact.capability_flag == "unknown_boundary"
+}
+
+fn exactness_requires_provenance(exactness: &str) -> bool {
+    matches!(
+        exactness,
+        "derived_from_verified_edges"
+            | "derived_with_provenance"
+            | "compiler_verified"
+            | "lsp_verified"
+    )
+}
+
+fn increment_count(map: &mut BTreeMap<String, u64>, key: &str) {
+    *map.entry(key.to_string()).or_default() += 1;
 }
 
 fn query_edges<P>(connection: &Connection, sql: &str, params: P) -> StoreResult<Vec<Edge>>
@@ -13915,12 +14528,15 @@ mod tests {
     };
 
     use codegraph_core::{
-        stable_edge_id, stable_entity_id, DerivedClosureEdge, Edge, EdgeClass, EdgeContext, Entity,
-        EntityKind, Exactness, FileRecord, LocalMicroFlowPacketStatus, PathEvidence,
-        ProofLadderLevel, RelationKind, RepoIndexState, SourceSpan,
+        mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source, stable_edge_id,
+        stable_entity_id, stable_micro_packet_id, DerivedClosureEdge, Edge, EdgeClass, EdgeContext,
+        Entity, EntityKind, Exactness, FileRecord, LocalMicroFlowPacketStatus, MicroNodeKind,
+        MicroPacketIdentityInput, PathEvidence, ProofLadderLevel, RelationKind, RepoIndexState,
+        SourceSpan, LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION,
         MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
         MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
-        MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+        MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION, MVP4_3_PARSER_FACTS_V1_CLAIMABILITY,
+        MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION,
     };
     use rusqlite::{params, Connection};
     use serde_json::json;
@@ -13930,12 +14546,12 @@ mod tests {
         inspect_db_preflight, intern_object_id, intern_qualified_name, local_flow_packet_body_hash,
         lookup_object_id, lookup_qualified_name, migrate_dictionary_compaction,
         register_sqlite_functions, stable_text_hash_key, stable_text_len, table_has_column,
-        AstMicroEdgeRow, AstMicroNodeRow, DbPassport, EdgeFeatureRow, EntityFeatureRow,
-        EvidenceFeatureRow, ExpectedDbPassport, GraphStore, LocalFlowPacketQueryOptions,
-        LocalFlowPacketRow, RetrievalTraceRecord, RoutingPacketHandleRow, SqliteGraphStore,
-        StoreError, TextSearchKind, ValidationFindingRow, DB_PASSPORT_VERSION,
-        MAX_QNAME_PREFIX_BYTES, MAX_QUALIFIED_NAME_BYTES, MAX_SPARSE_SIDECAR_PAYLOAD_BYTES,
-        SCHEMA_SQL, SCHEMA_VERSION, SPARSE_SIDECAR_TABLES,
+        AstMicroEdgeRow, AstMicroNodeRow, CapabilityMetadataQueryOptions, DbPassport,
+        EdgeFeatureRow, EntityFeatureRow, EvidenceFeatureRow, ExpectedDbPassport, GraphStore,
+        LocalFlowPacketQueryOptions, LocalFlowPacketRow, RetrievalTraceRecord,
+        RoutingPacketHandleRow, SqliteGraphStore, StoreError, TextSearchKind, ValidationFindingRow,
+        DB_PASSPORT_VERSION, MAX_QNAME_PREFIX_BYTES, MAX_QUALIFIED_NAME_BYTES,
+        MAX_SPARSE_SIDECAR_PAYLOAD_BYTES, SCHEMA_SQL, SCHEMA_VERSION, SPARSE_SIDECAR_TABLES,
     };
 
     fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
@@ -14280,7 +14896,7 @@ mod tests {
             source_micro_edge_extraction_versions_json:
                 "[\"mvp4.2b-typescript-local-flows-to-v1\"]".to_string(),
             cap_state_json:
-                "{\"omitted_count\":0,\"truncation_reason\":null,\"unknown_or_gap_count\":0}"
+                "{\"omitted_count\":0,\"truncation_reason\":\"none\",\"unknown_or_gap_count\":0}"
                     .to_string(),
             omitted_count: 0,
             compact_body_bytes: 128,
@@ -14291,11 +14907,14 @@ mod tests {
 
         let summary = ok(store.local_flow_packet_visibility_summary(10));
         assert_eq!(summary.total_rows, 1);
+        assert_eq!(summary.cap_hit_count, 0);
+        assert_eq!(summary.omitted_count, 0);
         assert_eq!(
             summary.rows_by_proof_strength.get("flow_proof").copied(),
             Some(1)
         );
         assert_eq!(summary.sample.len(), 1);
+        assert_eq!(summary.sample[0].truncation_reason, None);
         assert!(!summary.sample[0].packet_body_inlined);
         assert!(!summary.sample[0].ordered_steps_inlined);
         assert!(!summary.sample[0].full_source_body_output);
@@ -14321,6 +14940,32 @@ mod tests {
             }),
         );
         assert_eq!(by_function.len(), 1);
+    }
+
+    #[test]
+    fn local_flow_packet_cap_summary_counts_real_truncation_reason() {
+        let connection = ok(Connection::open_in_memory());
+        ok(connection.execute_batch(
+            "CREATE TABLE local_flow_packets (
+                omitted_count INTEGER NOT NULL,
+                packet_status TEXT NOT NULL,
+                cap_state_json TEXT NOT NULL
+            );",
+        ));
+        ok(connection.execute(
+            "INSERT INTO local_flow_packets (omitted_count, packet_status, cap_state_json)
+             VALUES (?1, ?2, ?3)",
+            params![
+                0i64,
+                "micro_flow_found",
+                "{\"omitted_count\":0,\"truncation_reason\":\"packet_step_cap_omission\"}"
+            ],
+        ));
+
+        assert_eq!(
+            ok(super::local_flow_packet_cap_summary(&connection)),
+            (1, 0)
+        );
     }
 
     #[test]
@@ -14406,6 +15051,39 @@ mod tests {
         assert_eq!(summary.cap_hit_details[0].omitted_count, 3);
         assert!(!summary.default_full_table_scan);
         assert!(!summary.full_source_body_output);
+    }
+
+    #[test]
+    fn branch_arm_micro_node_round_trips_and_hydrates_to_canonical_kind() {
+        let store = store();
+        let span = SourceSpan::new("src/branch.ts", 2, 3);
+        ok(store.insert_source_span_after_file_delete("branch-arm-1", &span));
+        ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+            micro_node_id: "branch-arm-1".to_string(),
+            file_id: "src/branch.ts".to_string(),
+            function_entity_id: Some("repo://e/branch.choose".to_string()),
+            scope_entity_id: Some("scope://branch.choose/if-1".to_string()),
+            micro_kind: "branch_arm".to_string(),
+            symbol: Some("then".to_string()),
+            source_span_id: "branch-arm-1".to_string(),
+            schema_version: 1,
+            extraction_version: "mvp4.1-typescript-micro-nodes-v1".to_string(),
+            exactness: "exact".to_string(),
+            provenance_id: Some("branch-arm-1".to_string()),
+            source_role: "production".to_string(),
+            language: "typescript".to_string(),
+            payload_version: 1,
+            claimability: "claimable_source_spanned_branch_arm".to_string(),
+            lifecycle_binding: "db_passport".to_string(),
+        }));
+
+        let rows = ok(store.ast_micro_nodes_for_file("src/branch.ts"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].micro_kind, "branch_arm");
+        assert_eq!(
+            super::micro_node_kind_from_storage_str(&rows[0].micro_kind),
+            Some(MicroNodeKind::BranchArm)
+        );
     }
 
     #[test]
@@ -14917,7 +15595,307 @@ mod tests {
     }
 
     #[test]
-    fn local_micro_flow_packet_candidates_read_persisted_facts_without_rows() {
+    fn parser_facts_v1_micro_edges_enforce_source_aware_directional_capability() {
+        let store = store();
+        let seed_condition_and_branch =
+            |prefix: &str, file_id: &str, language: &str| -> (String, String, String, String) {
+                let condition_id = format!("{prefix}-condition");
+                let branch_id = format!("{prefix}-branch");
+                let edge_span_id = format!("{prefix}-edge-span");
+                let function_id = format!("repo://e/{prefix}.run");
+                for (span_id, line) in [
+                    (format!("{prefix}-condition-span"), 1),
+                    (format!("{prefix}-branch-span"), 2),
+                    (edge_span_id.clone(), 2),
+                ] {
+                    ok(store.insert_source_span_after_file_delete(
+                        &span_id,
+                        &SourceSpan {
+                            repo_relative_path: file_id.to_string(),
+                            start_line: line,
+                            start_column: Some(1),
+                            end_line: line,
+                            end_column: Some(8),
+                        },
+                    ));
+                }
+                for (node_id, kind, span_id) in [
+                    (
+                        condition_id.clone(),
+                        "condition_site",
+                        format!("{prefix}-condition-span"),
+                    ),
+                    (
+                        branch_id.clone(),
+                        "branch_arm",
+                        format!("{prefix}-branch-span"),
+                    ),
+                ] {
+                    ok(store.insert_ast_micro_node(&AstMicroNodeRow {
+                        micro_node_id: node_id.clone(),
+                        file_id: file_id.to_string(),
+                        function_entity_id: Some(function_id.clone()),
+                        scope_entity_id: Some(format!("scope://{prefix}.run")),
+                        micro_kind: kind.to_string(),
+                        symbol: None,
+                        source_span_id: span_id,
+                        schema_version: 1,
+                        extraction_version: MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION
+                            .to_string(),
+                        exactness: "exact".to_string(),
+                        provenance_id: Some(format!("prov-{node_id}")),
+                        source_role: "production".to_string(),
+                        language: language.to_string(),
+                        payload_version: 1,
+                        claimability: MVP4_3_PARSER_FACTS_V1_CLAIMABILITY.to_string(),
+                        lifecycle_binding: "db_passport".to_string(),
+                    }));
+                }
+                (condition_id, branch_id, edge_span_id, function_id)
+            };
+
+        let mut valid_edges = Vec::new();
+        for (prefix, file_id, language, frontend) in [
+            (
+                "javascript",
+                "src/generic.js",
+                "javascript",
+                "tree-sitter-javascript",
+            ),
+            ("python", "src/generic.py", "python", "tree-sitter-python"),
+            ("go", "src/generic.go", "go", "tree-sitter-go"),
+            ("rust", "src/generic.rs", "rust", "tree-sitter-rust"),
+            ("java", "src/generic.java", "java", "tree-sitter-java"),
+            ("csharp", "src/generic.cs", "csharp", "tree-sitter-c-sharp"),
+            ("c", "src/generic.c", "c", "tree-sitter-c"),
+            ("c-header", "src/generic.h", "c", "tree-sitter-c"),
+            ("cpp-cc", "src/generic.cc", "cpp", "tree-sitter-cpp"),
+            ("cpp", "src/generic.cpp", "cpp", "tree-sitter-cpp"),
+            ("cpp-cxx", "src/generic.cxx", "cpp", "tree-sitter-cpp"),
+            ("cpp-hpp", "src/generic.hpp", "cpp", "tree-sitter-cpp"),
+            ("cpp-hh", "src/generic.hh", "cpp", "tree-sitter-cpp"),
+            ("cpp-hxx", "src/generic.hxx", "cpp", "tree-sitter-cpp"),
+            ("ruby", "src/generic.rb", "ruby", "tree-sitter-ruby"),
+            ("php", "src/generic.php", "php", "tree-sitter-php"),
+        ] {
+            let (condition_id, branch_id, edge_span_id, function_id) =
+                seed_condition_and_branch(prefix, file_id, language);
+            let valid_edge = AstMicroEdgeRow {
+                micro_edge_id: format!("{prefix}-branches-to"),
+                file_id: file_id.to_string(),
+                function_entity_id: Some(function_id),
+                scope_entity_id: Some(format!("scope://{prefix}.run")),
+                core_edge_id: None,
+                source_micro_node_id: condition_id,
+                target_micro_node_id: branch_id,
+                relation_kind: "local_branches_to".to_string(),
+                source_span_id: Some(edge_span_id),
+                exactness: "exact".to_string(),
+                provenance_id: Some(format!("prov-{prefix}-branches-to")),
+                schema_version: 1,
+                extraction_version: MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION
+                    .to_string(),
+                source_role: "production".to_string(),
+                language: language.to_string(),
+                frontend: frontend.to_string(),
+                payload_version: 1,
+                claimability: MVP4_3_PARSER_FACTS_V1_CLAIMABILITY.to_string(),
+                lifecycle_binding: "db_passport".to_string(),
+            };
+            ok(store.insert_ast_micro_edge(&valid_edge));
+
+            let mut reversed = valid_edge.clone();
+            reversed.micro_edge_id = format!("{prefix}-reversed-branches-to");
+            std::mem::swap(
+                &mut reversed.source_micro_node_id,
+                &mut reversed.target_micro_node_id,
+            );
+            let error = store
+                .insert_ast_micro_edge(&reversed)
+                .expect_err("reversed generic endpoint pair must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("rejects directional endpoint pair"),
+                "{prefix}: {error}"
+            );
+            valid_edges.push(valid_edge);
+        }
+        let c_header_edge = valid_edges
+            .iter()
+            .find(|edge| edge.file_id == "src/generic.h")
+            .cloned()
+            .expect("C header template edge");
+        let cpp_header_edge = valid_edges
+            .iter()
+            .find(|edge| edge.file_id == "src/generic.hpp")
+            .cloned()
+            .expect("C++ header template edge");
+        let valid_edge = valid_edges
+            .into_iter()
+            .next()
+            .expect("JavaScript template edge");
+
+        let mut cpp_claiming_c_header = c_header_edge;
+        cpp_claiming_c_header.micro_edge_id = "cpp-claiming-c-header".to_string();
+        cpp_claiming_c_header.language = "cpp".to_string();
+        cpp_claiming_c_header.frontend = "tree-sitter-cpp".to_string();
+        let error = store
+            .insert_ast_micro_edge(&cpp_claiming_c_header)
+            .expect_err("bare .h must remain owned by the C adapter only");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        let mut c_claiming_cpp_header = cpp_header_edge;
+        c_claiming_cpp_header.micro_edge_id = "c-claiming-cpp-header".to_string();
+        c_claiming_cpp_header.language = "c".to_string();
+        c_claiming_cpp_header.frontend = "tree-sitter-c".to_string();
+        let error = store
+            .insert_ast_micro_edge(&c_claiming_cpp_header)
+            .expect_err("C++-specific headers must not be claimed by the C adapter");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        for (prefix, path, node_language, edge_language, frontend) in [
+            (
+                "ruby-rake",
+                "src/generic.rake",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-gemspec",
+                "src/generic.gemspec",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-ru",
+                "src/generic.ru",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-shebang",
+                "bin/ruby-generic",
+                "ruby",
+                "ruby",
+                "tree-sitter-ruby",
+            ),
+            (
+                "ruby-language-alias",
+                "src/generic.php",
+                "ruby",
+                "rb",
+                "tree-sitter-ruby",
+            ),
+            (
+                "php-phtml",
+                "src/generic.phtml",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-inc",
+                "src/generic.inc",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-php3",
+                "src/generic.php3",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-shebang",
+                "bin/php-generic",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+            (
+                "php-cross-adapter",
+                "src/generic.rb",
+                "php",
+                "php",
+                "tree-sitter-php",
+            ),
+        ] {
+            let (condition_id, branch_id, edge_span_id, function_id) =
+                seed_condition_and_branch(prefix, path, node_language);
+            let mut inactive_language = valid_edge.clone();
+            inactive_language.micro_edge_id = format!("inactive-{prefix}-branches-to");
+            inactive_language.file_id = path.to_string();
+            inactive_language.function_entity_id = Some(function_id);
+            inactive_language.scope_entity_id = Some(format!("scope://{prefix}.run"));
+            inactive_language.source_micro_node_id = condition_id;
+            inactive_language.target_micro_node_id = branch_id;
+            inactive_language.source_span_id = Some(edge_span_id);
+            inactive_language.language = edge_language.to_string();
+            inactive_language.frontend = frontend.to_string();
+            let error = store
+                .insert_ast_micro_edge(&inactive_language)
+                .expect_err("noncanonical Ruby/PHP source or adapter alias must remain inactive");
+            assert!(
+                error
+                    .to_string()
+                    .contains("not enabled by the active micro-edge language capability"),
+                "{prefix}: {error}"
+            );
+        }
+
+        let (condition_id, branch_id, edge_span_id, function_id) =
+            seed_condition_and_branch("declaration", "src/generic.d.ts", "typescript");
+        let mut inactive_source = valid_edge.clone();
+        inactive_source.micro_edge_id = "declaration-branches-to".to_string();
+        inactive_source.file_id = "src/generic.d.ts".to_string();
+        inactive_source.function_entity_id = Some(function_id);
+        inactive_source.scope_entity_id = Some("scope://declaration.run".to_string());
+        inactive_source.source_micro_node_id = condition_id;
+        inactive_source.target_micro_node_id = branch_id;
+        inactive_source.source_span_id = Some(edge_span_id);
+        inactive_source.language = "typescript".to_string();
+        inactive_source.frontend = "tree-sitter-typescript".to_string();
+        let error = store
+            .insert_ast_micro_edge(&inactive_source)
+            .expect_err("declaration-file adapter must remain inactive");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        let (condition_id, branch_id, edge_span_id, function_id) =
+            seed_condition_and_branch("legacy", "src/legacy.ts", "typescript");
+        let mut unsupported_legacy_relation = valid_edge.clone();
+        unsupported_legacy_relation.micro_edge_id = "legacy-branches-to".to_string();
+        unsupported_legacy_relation.file_id = "src/legacy.ts".to_string();
+        unsupported_legacy_relation.function_entity_id = Some(function_id);
+        unsupported_legacy_relation.scope_entity_id = Some("scope://legacy.run".to_string());
+        unsupported_legacy_relation.source_micro_node_id = condition_id;
+        unsupported_legacy_relation.target_micro_node_id = branch_id;
+        unsupported_legacy_relation.source_span_id = Some(edge_span_id);
+        unsupported_legacy_relation.language = "typescript".to_string();
+        unsupported_legacy_relation.frontend = "tree-sitter-typescript".to_string();
+        let error = store
+            .insert_ast_micro_edge(&unsupported_legacy_relation)
+            .expect_err("legacy exact .ts must not acquire generic-only relations");
+        assert!(error
+            .to_string()
+            .contains("not enabled by the active micro-edge language capability"));
+
+        assert_eq!(ok(store.ast_micro_edge_count()), 16);
+    }
+
+    #[test]
+    fn legacy_four_edge_packet_shape_is_partial_and_preserves_current_ts_v1_identity() {
         let store = store();
         let span = |line: u32, start: u32| SourceSpan {
             repo_relative_path: "src/auth.ts".to_string(),
@@ -15068,22 +16046,73 @@ mod tests {
         let candidate = &candidates.candidates[0];
         assert_eq!(
             candidate.packet_status,
-            LocalMicroFlowPacketStatus::MicroFlowFound
+            LocalMicroFlowPacketStatus::PartialMicroFlowFound
         );
-        assert_eq!(candidate.proof_strength, ProofLadderLevel::FlowProof);
+        assert_eq!(
+            candidate.proof_strength,
+            ProofLadderLevel::GraphRelationProof
+        );
         assert_eq!(candidate.edge_ref_count, 4);
-        assert!(candidate.packet.is_some());
+        let packet = candidate.packet.as_ref().expect("canonical packet");
+        assert_eq!(packet.unknown_unsupported_gaps.len(), 1);
+        assert_eq!(
+            packet.unknown_unsupported_gaps[0].gap_kind,
+            "flow_not_connected_to_return"
+        );
+        assert!(packet.unknown_unsupported_gaps[0].reason.contains(
+            "do not reverse-reach a source-spanned value read owned by this return site"
+        ));
+        let current_ordered_step_ids = packet
+            .paths
+            .iter()
+            .flat_map(|path| path.steps.iter().map(|step| step.step_id.clone()))
+            .collect::<Vec<_>>();
+        let expected_current_ts_v1_packet_id = stable_micro_packet_id(&MicroPacketIdentityInput {
+            repo_relative_path: packet.file.repo_relative_path.clone(),
+            language: packet.file.language.clone(),
+            function_entity_id: packet.function_identity.function_id.clone(),
+            packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
+            packet_version: 1,
+            extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+            step_set_version: LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION.to_string(),
+            ordered_step_ids: current_ordered_step_ids,
+        });
+        assert_eq!(candidate.packet_id, expected_current_ts_v1_packet_id);
+        assert_eq!(packet.packet_id, expected_current_ts_v1_packet_id);
+        let agent_json = ok(packet.to_agent_json(false));
+        assert_eq!(
+            agent_json["extraction_version"],
+            json!(MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION)
+        );
+        let missing_requirements = agent_json["proof_classification"]["path_classifications"][0]
+            ["missing_requirements"]
+            .as_array()
+            .expect("path missing requirements");
+        for requirement in [
+            "flow_connected_to_return",
+            "includes_local_flows_to",
+            "includes_required_reads_and_writes",
+            "not_local_returns_to_only",
+        ] {
+            assert!(
+                missing_requirements
+                    .iter()
+                    .any(|value| value.as_str() == Some(requirement)),
+                "legacy four-edge shape must retain missing requirement {requirement}"
+            );
+        }
         let packet_rows = ok(store.local_flow_packet_rows_from_candidates(&candidates));
         assert_eq!(packet_rows.len(), 1);
         let packet_row = &packet_rows[0];
         assert_eq!(packet_row.encoding, "dict_v1");
         assert_eq!(packet_row.packet_kind, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND);
+        assert_eq!(packet_row.packet_id, expected_current_ts_v1_packet_id);
         assert_eq!(
             packet_row.extraction_version,
             MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
         );
-        assert_eq!(packet_row.proof_strength, "flow_proof");
-        assert_eq!(packet_row.packet_status, "micro_flow_found");
+        assert_eq!(packet_row.proof_strength, "graph_relation_proof");
+        assert_eq!(packet_row.packet_status, "partial_micro_flow_found");
         assert_eq!(
             packet_row.packet_body_hash,
             local_flow_packet_body_hash(&packet_row.packet_body)
@@ -15171,12 +16200,71 @@ mod tests {
         let mut unsupported_language = packet_rows[0].clone();
         unsupported_language.packet_id = "local-flow-auth-javascript".to_string();
         unsupported_language.language = "javascript".to_string();
+        let version_error = store
+            .insert_local_flow_packet(&unsupported_language)
+            .expect_err("TS packet version must not validate for JavaScript");
+        assert!(version_error
+            .to_string()
+            .contains("version contract mismatch"));
+        let mut inactive_declaration = packet_rows[0].clone();
+        inactive_declaration.packet_id = "local-flow-auth-declaration".to_string();
+        inactive_declaration.file_id = "src/auth.d.ts".to_string();
+        inactive_declaration.extraction_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                "typescript",
+                &inactive_declaration.file_id,
+            )
+            .to_string();
+        let inactive_error = store
+            .insert_local_flow_packet(&inactive_declaration)
+            .expect_err("inactive TypeScript declaration packet rows must not publish");
         assert!(
-            store
-                .insert_local_flow_packet(&unsupported_language)
-                .is_err(),
-            "languages without an exact packet adapter must not publish packet rows"
+            inactive_error
+                .to_string()
+                .contains("outside the authorized packet adapter production scope"),
+            "source-correct inactive versions must still be rejected even with a claimable row label"
         );
+
+        let mut mismatched_candidates = candidates.clone();
+        mismatched_candidates.candidates[0]
+            .packet
+            .as_mut()
+            .expect("packet")
+            .file
+            .language = "python".to_string();
+        let mismatch_error = store
+            .local_flow_packet_rows_from_candidates(&mismatched_candidates)
+            .expect_err("candidate and packet languages must agree");
+        assert!(mismatch_error
+            .to_string()
+            .contains("candidate/packet language mismatch"));
+
+        for (case_name, language, path) in [
+            ("ruby-rake", "ruby", "src/inactive.rake"),
+            ("ruby-gemspec", "ruby", "src/inactive.gemspec"),
+            ("ruby-ru", "ruby", "src/inactive.ru"),
+            ("ruby-shebang", "ruby", "bin/ruby-inactive"),
+            ("ruby-language-alias", "rb", "src/inactive.php"),
+            ("php-phtml", "php", "src/inactive.phtml"),
+            ("php-inc", "php", "src/inactive.inc"),
+            ("php-php3", "php", "src/inactive.php3"),
+            ("php-shebang", "php", "bin/php-inactive"),
+            ("php-cross-adapter", "php", "src/inactive.rb"),
+        ] {
+            let mut inactive_candidates = candidates.clone();
+            inactive_candidates.candidates[0].language = language.to_string();
+            inactive_candidates.candidates[0].file_id = path.to_string();
+            let inactive_packet = inactive_candidates.candidates[0]
+                .packet
+                .as_mut()
+                .expect("packet");
+            inactive_packet.file.language = language.to_string();
+            inactive_packet.file.repo_relative_path = path.to_string();
+            assert!(
+                ok(store.local_flow_packet_rows_from_candidates(&inactive_candidates)).is_empty(),
+                "{case_name}: inactive source or language alias candidates must remain source-gated before persistence"
+            );
+        }
 
         let mut missing_frame = packet_rows[0].clone();
         missing_frame.packet_id = "local-flow-auth-missing-frame".to_string();
@@ -15825,6 +16913,227 @@ mod tests {
         assert_eq!(
             before, after,
             "read-only inspection must not migrate or rewrite old DBs"
+        );
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn capability_metadata_query_reads_current_rows_without_source_bodies() {
+        let path = temp_db_path();
+        remove_temp_db_family(&path);
+        {
+            let store = ok(SqliteGraphStore::open(&path));
+            let file = FileRecord {
+                repo_relative_path: "src/auth.ts".to_string(),
+                file_hash: "sha256:file".to_string(),
+                language: Some("typescript".to_string()),
+                size_bytes: 1234,
+                indexed_at_unix_ms: Some(10),
+                metadata: BTreeMap::from([
+                    (
+                        "parser_fact_bundle_version".to_string(),
+                        json!("parser_fact_bundle_v1"),
+                    ),
+                    (
+                        "parser_fact_bundle_extractor_version".to_string(),
+                        json!("parser-fact-bundle-v1"),
+                    ),
+                    (
+                        "parser_fact_bundle_source_role".to_string(),
+                        json!("production"),
+                    ),
+                    (
+                        "parser_fact_bundle_language".to_string(),
+                        json!("typescript"),
+                    ),
+                    (
+                        "parser_fact_bundle_frontend".to_string(),
+                        json!("typescript"),
+                    ),
+                    (
+                        "parser_fact_bundle_capability_flags".to_string(),
+                        json!(["syntax_exact", "dynamic_unknown"]),
+                    ),
+                    (
+                        "parser_fact_bundle_unknown_boundary_kinds".to_string(),
+                        json!(["dynamic_import"]),
+                    ),
+                    (
+                        "parser_resolver".to_string(),
+                        json!("null_project_resolver"),
+                    ),
+                    (
+                        "parser_resolver_version".to_string(),
+                        json!("null_project_resolver_v1"),
+                    ),
+                    ("parser_resolver_status".to_string(), json!("unsupported")),
+                ]),
+            };
+            let mut entity = entity("login");
+            entity
+                .metadata
+                .insert("parser_capability_flag".to_string(), json!("syntax_exact"));
+            entity.metadata.insert(
+                "parser_capability_status".to_string(),
+                json!("supported_parser_only"),
+            );
+            entity.metadata.insert(
+                "parser_fact_family".to_string(),
+                json!("entity_declaration"),
+            );
+            entity.metadata.insert(
+                "parser_fact_exactness".to_string(),
+                json!("parser_verified"),
+            );
+            entity
+                .metadata
+                .insert("parser_fact_language".to_string(), json!("typescript"));
+            entity
+                .metadata
+                .insert("parser_fact_frontend".to_string(), json!("typescript"));
+            entity
+                .metadata
+                .insert("parser_fact_source_role".to_string(), json!("production"));
+            entity.metadata.insert(
+                "parser_resolver".to_string(),
+                json!("null_project_resolver"),
+            );
+            entity.metadata.insert(
+                "parser_resolver_version".to_string(),
+                json!("null_project_resolver_v1"),
+            );
+            entity
+                .metadata
+                .insert("parser_resolver_status".to_string(), json!("unsupported"));
+
+            let mut edge = sample_edge(
+                "edge-login-self",
+                &entity.id,
+                RelationKind::Calls,
+                &entity.id,
+            );
+            edge.metadata.insert(
+                "parser_capability_flag".to_string(),
+                json!("call_extracted"),
+            );
+            edge.metadata.insert(
+                "parser_capability_status".to_string(),
+                json!("supported_parser_only"),
+            );
+            edge.metadata.insert(
+                "parser_fact_family".to_string(),
+                json!("direct_call_syntax"),
+            );
+            edge.metadata.insert(
+                "parser_fact_exactness".to_string(),
+                json!("parser_verified"),
+            );
+            edge.metadata
+                .insert("parser_fact_language".to_string(), json!("typescript"));
+            edge.metadata
+                .insert("parser_fact_frontend".to_string(), json!("typescript"));
+            edge.metadata
+                .insert("parser_fact_source_role".to_string(), json!("production"));
+            edge.metadata.insert(
+                "parser_unknown_boundary_reason".to_string(),
+                json!("caller_callee_exactness_not_proven_by_parser_syntax"),
+            );
+            edge.metadata.insert(
+                "parser_resolver".to_string(),
+                json!("null_project_resolver"),
+            );
+            edge.metadata.insert(
+                "parser_resolver_version".to_string(),
+                json!("null_project_resolver_v1"),
+            );
+            edge.metadata
+                .insert("parser_resolver_status".to_string(), json!("unsupported"));
+
+            ok(store.upsert_file(&file));
+            ok(store.upsert_entity(&entity));
+            ok(store.upsert_edge(&edge));
+        }
+        {
+            let store = ok(SqliteGraphStore::open_read_only(&path));
+            let rows = ok(
+                store.query_capability_metadata(&CapabilityMetadataQueryOptions {
+                    repo_relative_path: Some("src/auth.ts".to_string()),
+                    limit: 32,
+                    ..CapabilityMetadataQueryOptions::default()
+                }),
+            );
+            assert!(rows.iter().any(|row| {
+                row.owner_fact_kind == "file"
+                    && row.capability_flag == "dynamic_unknown"
+                    && row.unknown_boundary_kind.as_deref() == Some("dynamic_import")
+            }));
+            assert!(rows.iter().any(|row| {
+                row.owner_fact_kind == "edge"
+                    && row.capability_flag == "call_extracted"
+                    && row.unknown_boundary_reason.as_deref()
+                        == Some("caller_callee_exactness_not_proven_by_parser_syntax")
+                    && row.not_graph_proof
+            }));
+            assert!(rows
+                .iter()
+                .all(|row| row.language.as_deref() == Some("typescript")));
+            let serialized = serde_json::to_string(&rows).expect("rows json");
+            assert!(!serialized.contains("return secret_runtime_body_marker"));
+
+            let unknowns = ok(store.query_unknown_boundary_metadata(
+                &CapabilityMetadataQueryOptions {
+                    repo_relative_path: Some("src/auth.ts".to_string()),
+                    limit: 32,
+                    ..CapabilityMetadataQueryOptions::default()
+                },
+            ));
+            assert!(unknowns.len() >= 2, "{unknowns:?}");
+
+            let summary = ok(
+                store.capability_metadata_summary(&CapabilityMetadataQueryOptions {
+                    repo_relative_path: Some("src/auth.ts".to_string()),
+                    limit: 32,
+                    ..CapabilityMetadataQueryOptions::default()
+                }),
+            );
+            assert_eq!(summary.full_source_body_storage, false);
+            assert!(summary.resolver_metadata_rows >= 3, "{summary:?}");
+            assert!(summary.unknown_boundary_rows >= 2, "{summary:?}");
+        }
+        remove_temp_db_family(&path);
+    }
+
+    #[test]
+    fn capability_metadata_query_is_read_only_safe_on_old_db() {
+        let path = temp_db_path();
+        {
+            let connection = Connection::open(&path).expect("legacy DB");
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA user_version = 1;
+                    CREATE TABLE legacy_marker(id INTEGER PRIMARY KEY);
+                    INSERT INTO legacy_marker(id) VALUES (1);
+                    ",
+                )
+                .expect("create old schema");
+        }
+        let before = file_fingerprint(&path);
+        {
+            let store = ok(SqliteGraphStore::open_read_only(&path));
+            assert_eq!(
+                ok(store.query_capability_metadata(&CapabilityMetadataQueryOptions::default())),
+                Vec::new()
+            );
+            let summary =
+                ok(store.capability_metadata_summary(&CapabilityMetadataQueryOptions::default()));
+            assert_eq!(summary.total_rows, 0);
+            assert_eq!(summary.full_source_body_storage, false);
+        }
+        let after = file_fingerprint(&path);
+        assert_eq!(
+            before, after,
+            "capability metadata read path must not migrate or rewrite old DBs"
         );
         remove_temp_db_family(&path);
     }

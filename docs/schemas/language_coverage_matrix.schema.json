@@ -1,175 +1,467 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegraph.local/schemas/language_coverage_matrix.schema.json",
+  "title": "CodeGraph Language Frontend Registry v3",
+  "description": "Schema for the live codegraph-mcp languages --json and codegraph://languages frontend registry. Tier 5 is compatibility metadata; proof and linter blocking are controlled by explicit capability and scoped-readiness rows plus the named representative gate.",
+  "$comment": "The 13 canonical production adapters are JavaScript, JSX, TypeScript, TSX, Python, Go, Rust, Java, C#, C, C++, Ruby, and PHP. Every adapter advertises Tier 5 compatibility metadata and has accepted source-aware same-file intraprocedural readiness rows, but this does not claim whole-language, cross-file, runtime, dynamic, framework, compiler, LSP, project-resolution, macro/preprocessor, or build-database completeness. Broad language_frontend capability rows remain authoritative and conservative alongside narrower scoped_readiness rows. The TypeScript representative gate executes .mts; .mts/.cts use ParserFactsV1, ordinary .ts remains on bounded legacy v1, and .d.ts is inactive. Context-entry activation, mutation proof, route/bridge proof, and MVP4.4 AST skeleton compression remain inactive.",
+  "type": "object",
+  "required": [
+    "status",
+    "phase",
+    "source_of_truth",
+    "readiness_contract",
+    "capability_model",
+    "capability_flags",
+    "capability_status_values",
+    "frontends"
+  ],
+  "additionalProperties": true,
   "$defs": {
-    "claim_state": {
+    "capability_flag": {
       "enum": [
-        "exact",
-        "partial",
-        "heuristic",
-        "unsupported",
-        "unknown",
-        "not_applicable"
+        "syntax_exact",
+        "span_exact",
+        "import_export_extracted",
+        "package_or_module_resolved",
+        "include_resolved",
+        "require_resolved",
+        "call_extracted",
+        "caller_callee_exact",
+        "compiler_verified",
+        "lsp_verified",
+        "project_config_resolved",
+        "local_binding_resolved",
+        "read_write_extracted",
+        "local_dataflow_derived",
+        "local_flow_packet_supported",
+        "test_impact_supported",
+        "test_assert_mock_extracted",
+        "framework_heuristic",
+        "route_exact",
+        "bridge_exact",
+        "security_pattern_supported",
+        "runtime_unknown",
+        "dynamic_unknown",
+        "macro_unknown",
+        "preprocessor_unknown",
+        "compiler_required",
+        "lsp_required",
+        "build_database_required",
+        "unsupported"
       ]
     },
-    "language": {
-      "additionalProperties": true,
+    "capability_status": {
+      "enum": [
+        "supported_exact",
+        "supported_derived_with_provenance",
+        "supported_parser_only",
+        "supported_heuristic",
+        "warning_only",
+        "diagnostic_only",
+        "unknown",
+        "unsupported",
+        "not_applicable",
+        "not_implemented",
+        "requires_compiler",
+        "requires_lsp",
+        "requires_runtime",
+        "requires_macro_expansion",
+        "requires_preprocessor",
+        "requires_build_database"
+      ]
+    },
+    "capability_scope": {
+      "enum": [
+        "language_frontend",
+        "type_script_production_ts_only",
+        "same_file_intraprocedural",
+        "same_file_direct_calls",
+        "java_script_family_static_imports",
+        "python_repo_local_indexed_imports",
+        "go_same_package_indexed_files",
+        "rust_crate_local_indexed_modules"
+      ]
+    },
+    "capability_row": {
+      "type": "object",
+      "required": ["flag", "status", "scope"],
+      "additionalProperties": false,
       "properties": {
-        "claim_boundary": {
+        "flag": {
+          "$ref": "#/$defs/capability_flag"
+        },
+        "status": {
+          "$ref": "#/$defs/capability_status"
+        },
+        "scope": {
+          "$ref": "#/$defs/capability_scope"
+        }
+      }
+    },
+    "scoped_readiness_row": {
+      "type": "object",
+      "required": ["flag", "status", "scope", "proof_boundary"],
+      "additionalProperties": false,
+      "properties": {
+        "flag": {
+          "$ref": "#/$defs/capability_flag"
+        },
+        "status": {
+          "$ref": "#/$defs/capability_status"
+        },
+        "scope": {
+          "$ref": "#/$defs/capability_scope"
+        },
+        "proof_boundary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "extractor": {
+      "type": "object",
+      "required": ["name", "exactness", "supported_relations", "known_limitations"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
           "type": "string"
         },
-        "exact_patterns": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "extensions": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "extractor_kind": {
+        "exactness": {
           "type": "string"
         },
-        "fixtures": {
+        "supported_relations": {
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
         },
-        "heuristic_patterns": {
+        "known_limitations": {
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
+        }
+      }
+    },
+    "frontend": {
+      "type": "object",
+      "required": [
+        "language_id",
+        "display_name",
+        "file_extensions",
+        "support_tier",
+        "tree_sitter_grammar_available",
+        "compiler_resolver_available",
+        "lsp_resolver_available",
+        "project_resolver_interface_version",
+        "project_resolver",
+        "project_resolver_status",
+        "supported_entity_kinds",
+        "supported_relation_kinds",
+        "extractors",
+        "capabilities",
+        "scoped_readiness",
+        "known_limitations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "language_id": {
+          "enum": [
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "ruby",
+            "php"
+          ]
         },
-        "implementation_attempted": {
+        "display_name": {
+          "type": "string"
+        },
+        "file_extensions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "support_tier": {
+          "const": "tier5_dataflow_security_test_impact",
+          "description": "Backward-compatible Tier 5 metadata. This value alone does not create proof or enable linter blocking."
+        },
+        "tree_sitter_grammar_available": {
+          "const": true
+        },
+        "compiler_resolver_available": {
           "type": "boolean"
         },
-        "implementation_blockers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+        "lsp_resolver_available": {
+          "type": "boolean"
         },
-        "language": {
+        "project_resolver_interface_version": {
           "type": "string"
         },
-        "next_required_fixture": {
+        "project_resolver": {
           "type": "string"
         },
-        "parser_frontend": {
-          "type": "string"
-        },
-        "partial_patterns": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "source_span_quality": {
+        "project_resolver_status": {
           "type": "string"
         },
         "supported_entity_kinds": {
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
         },
         "supported_relation_kinds": {
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
         },
-        "tests_present": {
+        "extractors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extractor"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Broad frontend capability rows. These remain conservative and must not be overwritten by narrower accepted readiness.",
+          "items": {
+            "$ref": "#/$defs/capability_row"
+          }
+        },
+        "scoped_readiness": {
+          "type": "array",
+          "description": "Narrow proof boundaries that supplement, rather than replace, broad capability rows.",
+          "minItems": 4,
+          "items": {
+            "$ref": "#/$defs/scoped_readiness_row"
+          },
+          "allOf": [
+            {
+              "contains": {
+                "type": "object",
+                "required": ["flag", "status", "scope"],
+                "properties": {
+                  "flag": {
+                    "const": "local_binding_resolved"
+                  },
+                  "status": {
+                    "const": "supported_exact"
+                  },
+                  "scope": {
+                    "const": "same_file_intraprocedural"
+                  }
+                }
+              }
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": ["flag", "status", "scope"],
+                "properties": {
+                  "flag": {
+                    "const": "read_write_extracted"
+                  },
+                  "status": {
+                    "const": "supported_exact"
+                  },
+                  "scope": {
+                    "const": "same_file_intraprocedural"
+                  }
+                }
+              }
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": ["flag", "status", "scope"],
+                "properties": {
+                  "flag": {
+                    "const": "local_dataflow_derived"
+                  },
+                  "status": {
+                    "const": "supported_derived_with_provenance"
+                  },
+                  "scope": {
+                    "const": "same_file_intraprocedural"
+                  }
+                }
+              }
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": ["flag", "status", "scope"],
+                "properties": {
+                  "flag": {
+                    "const": "local_flow_packet_supported"
+                  },
+                  "status": {
+                    "const": "supported_exact"
+                  },
+                  "scope": {
+                    "const": "same_file_intraprocedural"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "known_limitations": {
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
-        },
-        "tier_0_status": {
-          "$ref": "#/$defs/claim_state"
-        },
-        "tier_1_status": {
-          "$ref": "#/$defs/claim_state"
-        },
-        "tier_2_status": {
-          "$ref": "#/$defs/claim_state"
-        },
-        "tier_3_status": {
-          "$ref": "#/$defs/claim_state"
-        },
-        "tier_4_status": {
-          "$ref": "#/$defs/claim_state"
-        },
-        "tier_5_status": {
-          "$ref": "#/$defs/claim_state"
-        },
-        "unknown_patterns": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "unsupported_patterns": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          }
         }
-      },
+      }
+    },
+    "readiness_contract": {
+      "type": "object",
       "required": [
-        "language",
-        "extensions",
-        "parser_frontend",
-        "extractor_kind",
-        "tier_0_status",
-        "tier_1_status",
-        "tier_2_status",
-        "tier_3_status",
-        "tier_4_status",
-        "tier_5_status",
-        "supported_entity_kinds",
-        "supported_relation_kinds",
-        "source_span_quality",
-        "exact_patterns",
-        "partial_patterns",
-        "heuristic_patterns",
-        "unsupported_patterns",
-        "unknown_patterns",
-        "fixtures",
-        "tests_present",
-        "implementation_attempted",
-        "implementation_blockers",
-        "claim_boundary",
-        "next_required_fixture"
+        "gate_id",
+        "contract_id",
+        "runner",
+        "manifest",
+        "public_contract",
+        "capabilities",
+        "scoped_readiness"
       ],
-      "type": "object"
+      "additionalProperties": false,
+      "properties": {
+        "gate_id": {
+          "const": "mvp4_3l_all_language_static_flow_readiness"
+        },
+        "contract_id": {
+          "const": "mvp4_3l_all_language_static_flow_readiness_v3"
+        },
+        "runner": {
+          "const": "mvp4_language_readiness"
+        },
+        "manifest": {
+          "const": "fixtures/mvp4_micro_flow_oracles/manifest.json"
+        },
+        "public_contract": {
+          "const": "docs/language-frontends.md#scoped-tier-5-mvp4-readiness"
+        },
+        "capabilities": {
+          "const": "frontends[].capabilities"
+        },
+        "scoped_readiness": {
+          "const": "frontends[].scoped_readiness"
+        }
+      }
     }
   },
-  "$id": "https://codegraph.local/schemas/language_coverage_matrix.schema.json",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "generated_at": {
+    "status": {
+      "const": "ok"
+    },
+    "phase": {
       "type": "string"
     },
-    "languages": {
-      "items": {
-        "$ref": "#/$defs/language"
-      },
-      "type": "array"
+    "source_of_truth": {
+      "const": "parser_frontend_registry"
     },
-    "schema_version": {
-      "minimum": 1,
-      "type": "integer"
+    "readiness_contract": {
+      "$ref": "#/$defs/readiness_contract"
+    },
+    "capability_model": {
+      "type": "object",
+      "required": [
+        "source_of_truth",
+        "authoritative_fields",
+        "old_tiers_backward_compatible",
+        "old_tier_alone_drives_proof",
+        "old_tier_alone_drives_linter_blocking",
+        "promotion_gate",
+        "promotion_gate_contract"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_of_truth": {
+          "const": "language_frontends.capabilities_and_scoped_readiness"
+        },
+        "authoritative_fields": {
+          "type": "object",
+          "required": ["capabilities", "scoped_readiness"],
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "const": "frontends[].capabilities"
+            },
+            "scoped_readiness": {
+              "const": "frontends[].scoped_readiness"
+            }
+          }
+        },
+        "old_tiers_backward_compatible": {
+          "const": true
+        },
+        "old_tier_alone_drives_proof": {
+          "const": false
+        },
+        "old_tier_alone_drives_linter_blocking": {
+          "const": false
+        },
+        "promotion_gate": {
+          "const": "mvp4_3l_all_language_static_flow_readiness"
+        },
+        "promotion_gate_contract": {
+          "$ref": "#/$defs/readiness_contract"
+        }
+      }
+    },
+    "capability_flags": {
+      "type": "array",
+      "minItems": 29,
+      "maxItems": 29,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/capability_flag"
+      }
+    },
+    "capability_status_values": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/capability_status"
+      }
+    },
+    "frontends": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "items": {
+        "$ref": "#/$defs/frontend"
+      },
+      "allOf": [
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "javascript" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "jsx" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "typescript" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "tsx" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "python" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "go" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "rust" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "java" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "csharp" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "c" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "cpp" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "ruby" } } } },
+        { "contains": { "type": "object", "required": ["language_id"], "properties": { "language_id": { "const": "php" } } } }
+      ]
     }
-  },
-  "required": [
-    "schema_version",
-    "generated_at",
-    "languages"
-  ],
-  "title": "CodeGraph Language Coverage Matrix",
-  "type": "object"
+  }
 }

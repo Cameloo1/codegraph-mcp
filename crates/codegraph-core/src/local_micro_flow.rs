@@ -4,15 +4,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    decide_local_micro_flow_proof_eligibility, normalize_repo_relative_path,
+    decide_local_micro_flow_proof_eligibility, mvp4_language_frontend_contract,
+    mvp4_micro_edge_endpoint_pairs, mvp4_micro_edge_language_capability_for_source,
+    mvp4_micro_edge_ownership_policy, mvp4_micro_flow_source_adapter, normalize_repo_relative_path,
     stable_micro_packet_id, LocalMicroFlowPacketLinterClass,
     LocalMicroFlowProofEligibilityDecision, LocalMicroFlowProofEligibilityInput, MicroEdgeKind,
-    MicroExactness, MicroNodeKind, MicroPacketIdentityInput, MicroSourceRole, ProofLadderLevel,
-    SourceSpan, MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION, MVP4_2B_LOCAL_READS_EXTRACTION_VERSION,
+    MicroEdgeOwnershipPolicy, MicroExactness, MicroNodeKind, MicroPacketIdentityInput,
+    MicroSourceRole, Mvp4MicroFlowSourceAdapterKind, ProofLadderLevel, SourceSpan,
+    MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION, MVP4_2B_LOCAL_READS_EXTRACTION_VERSION,
     MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION, MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
     MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
-    MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION, MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
-    MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS, MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+    MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+    MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+    MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION,
 };
 
 pub const LOCAL_MICRO_FLOW_AGENT_JSON_SCHEMA_NAME: &str = "local_micro_flow_packet_agent_json";
@@ -25,6 +30,8 @@ pub const LOCAL_MICRO_FLOW_MAX_LABEL_BYTES: usize = 240;
 pub const LOCAL_MICRO_FLOW_MAX_SKELETON_TEXT_BYTES: usize = 512;
 pub const LOCAL_MICRO_FLOW_MAX_PACKET_STEPS: usize = 64;
 pub const LOCAL_MICRO_FLOW_MAX_PACKET_BODY_BYTES: u32 = 160 * 1024;
+pub const MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION: &str =
+    "mvp4.3-inactive-local-micro-flow-packet-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,10 +61,17 @@ impl LocalMicroFlowPacketSupportStatus {
 pub struct LocalMicroFlowPacketLanguageCapability {
     pub language: &'static str,
     pub frontend: Option<&'static str>,
+    pub declared_static_scope: &'static str,
+    pub adapter_id: &'static str,
+    pub activation_gate: &'static str,
     pub packet_kind: &'static str,
     pub activation_status: LocalMicroFlowPacketSupportStatus,
     pub supported_node_kinds: &'static [MicroNodeKind],
     pub supported_edge_kinds: &'static [MicroEdgeKind],
+    pub exact_edge_kinds: &'static [MicroEdgeKind],
+    pub derived_with_provenance_edge_kinds: &'static [MicroEdgeKind],
+    pub canonical_node_kinds: &'static [MicroNodeKind],
+    pub canonical_edge_kinds: &'static [MicroEdgeKind],
     pub supported_path_patterns: &'static [&'static str],
     pub branch_model_capability: &'static str,
     pub return_path_model_capability: &'static str,
@@ -79,10 +93,17 @@ impl LocalMicroFlowPacketLanguageCapability {
         Self {
             language,
             frontend: None,
+            declared_static_scope: "unregistered language; no declared MVP4 static scope",
+            adapter_id: "none",
+            activation_gate: "canonical_frontend_registration_required",
             packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
             activation_status: LocalMicroFlowPacketSupportStatus::NotImplemented,
             supported_node_kinds: &[],
             supported_edge_kinds: &[],
+            exact_edge_kinds: &[],
+            derived_with_provenance_edge_kinds: &[],
+            canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            canonical_edge_kinds: MicroEdgeKind::ALL,
             supported_path_patterns: &[],
             branch_model_capability: "not_implemented",
             return_path_model_capability: "not_implemented",
@@ -100,6 +121,81 @@ impl LocalMicroFlowPacketLanguageCapability {
         }
     }
 
+    pub const fn declared_not_implemented(
+        language: &'static str,
+        frontend: &'static str,
+        declared_static_scope: &'static str,
+    ) -> Self {
+        Self {
+            language,
+            frontend: Some(frontend),
+            declared_static_scope,
+            adapter_id: "parser_facts_v1_inactive",
+            activation_gate: "per_language_node_edge_packet_fixtures_plus_release_smoke_required",
+            packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+            activation_status: LocalMicroFlowPacketSupportStatus::NotImplemented,
+            supported_node_kinds: &[],
+            supported_edge_kinds: &[],
+            exact_edge_kinds: &[],
+            derived_with_provenance_edge_kinds: &[],
+            canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            canonical_edge_kinds: MicroEdgeKind::ALL,
+            supported_path_patterns: &[],
+            branch_model_capability: "declared_not_implemented",
+            return_path_model_capability: "declared_not_implemented",
+            binding_resolver_capability: "declared_not_implemented",
+            source_role_policy: "production_only_after_activation_gate",
+            gap_classifier: "inactive_adapter_explicit_not_implemented_gap",
+            proof_eligibility_classifier: "inactive_adapter_no_flow_proof",
+            unsupported_reasons: MVP4_3_PACKET_LANGUAGE_NOT_IMPLEMENTED_REASONS,
+            fixture_ids: &[],
+            extraction_version: None,
+            schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            payload_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+            cap_policy: "inactive_until_activation_gate",
+            explain_audit_rendering: "declared_inactive_adapter_status",
+        }
+    }
+
+    pub const fn parser_facts_v1(
+        language: &'static str,
+        frontend: &'static str,
+        declared_static_scope: &'static str,
+    ) -> Self {
+        Self {
+            language,
+            frontend: Some(frontend),
+            declared_static_scope,
+            adapter_id: "parser_facts_v1",
+            activation_gate: "active_same_file_intraprocedural_parser_facts_v1_production_gate",
+            packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
+            activation_status: LocalMicroFlowPacketSupportStatus::ExactCapable,
+            supported_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            supported_edge_kinds: MVP4_3_TYPESCRIPT_PACKET_EDGE_KINDS,
+            exact_edge_kinds: MVP4_3_TYPESCRIPT_PACKET_EXACT_EDGE_KINDS,
+            derived_with_provenance_edge_kinds: MVP4_3_TYPESCRIPT_PACKET_DERIVED_EDGE_KINDS,
+            canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+            canonical_edge_kinds: MicroEdgeKind::ALL,
+            supported_path_patterns: MVP4_3_TYPESCRIPT_PACKET_PATH_PATTERNS,
+            branch_model_capability: "source_spanned_same_file_branch_identity",
+            return_path_model_capability: "source_spanned_same_file_return_path_identity",
+            binding_resolver_capability: "parser_facts_v1_resolver_proven_lexical_bindings",
+            source_role_policy: "production_only",
+            gap_classifier: "parser_facts_v1_same_file_intraprocedural_gap_classifier",
+            proof_eligibility_classifier:
+                "dict_v1_lossless_same_file_intraprocedural_flow_proof_classifier",
+            unsupported_reasons: &[],
+            fixture_ids: MVP4_3_PARSER_FACTS_V1_PACKET_FIXTURE_IDS,
+            extraction_version: Some(
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            schema_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_SCHEMA_VERSION,
+            payload_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_PAYLOAD_VERSION,
+            cap_policy: "mvp4_3_local_micro_flow_packet_caps",
+            explain_audit_rendering: "dict_v1_with_ordered_steps_audit_expansion",
+        }
+    }
+
     pub fn supports_claimable_packets(self, source_role: MicroSourceRole) -> bool {
         self.activation_status == LocalMicroFlowPacketSupportStatus::ExactCapable
             && source_role == MicroSourceRole::Production
@@ -107,28 +203,39 @@ impl LocalMicroFlowPacketLanguageCapability {
     }
 }
 
-const MVP4_3_TYPESCRIPT_PACKET_NODE_KINDS: &[MicroNodeKind] = &[
-    MicroNodeKind::FunctionFrame,
-    MicroNodeKind::Parameter,
-    MicroNodeKind::LocalBinding,
-    MicroNodeKind::AssignmentSite,
-    MicroNodeKind::ReturnSite,
-    MicroNodeKind::CallSite,
-    MicroNodeKind::PropertyAccess,
-    MicroNodeKind::ValueUse,
+const MVP4_3_TYPESCRIPT_PACKET_EDGE_KINDS: &[MicroEdgeKind] = MicroEdgeKind::ALL;
+const MVP4_3_TYPESCRIPT_PACKET_EXACT_EDGE_KINDS: &[MicroEdgeKind] = &[
+    MicroEdgeKind::LocalReads,
+    MicroEdgeKind::LocalWrites,
+    MicroEdgeKind::LocalCalls,
+    MicroEdgeKind::LocalReturnsTo,
+    MicroEdgeKind::LocalChecks,
+    MicroEdgeKind::LocalBranchesTo,
 ];
-const MVP4_3_TYPESCRIPT_PACKET_EDGE_KINDS: &[MicroEdgeKind] =
-    MVP4_3_TYPESCRIPT_FIRST_SLICE_RELATIONS;
+const MVP4_3_TYPESCRIPT_PACKET_DERIVED_EDGE_KINDS: &[MicroEdgeKind] = &[
+    MicroEdgeKind::LocalFlowsTo,
+    MicroEdgeKind::LocalMutates,
+    MicroEdgeKind::LocalSanitizes,
+    MicroEdgeKind::LocalGuards,
+    MicroEdgeKind::LocalAsserts,
+];
 const MVP4_3_TYPESCRIPT_PACKET_PATH_PATTERNS: &[&str] = &[
     "function_local_assignment_chain_to_return",
     "function_local_return_containment_summary",
     "function_local_partial_flow_with_explicit_gaps",
+    "function_local_call_mutation_check_sanitize_assert",
+    "source_spanned_branch_arm_to_return",
 ];
 const MVP4_3_TYPESCRIPT_PACKET_FIXTURE_IDS: &[&str] = &[
     "ts_packet_param_assignment_return",
     "ts_packet_alias_assignment_chain",
     "ts_packet_branch_return_paths",
     "ts_packet_shadowed_binding_identity",
+];
+const MVP4_3_PARSER_FACTS_V1_PACKET_FIXTURE_IDS: &[&str] = &[
+    "parser_facts_v1_node_edge_relation_matrix",
+    "parser_facts_v1_extension_activation_matrix",
+    "parser_facts_v1_incremental_lifecycle_matrix",
 ];
 const MVP4_3_PACKET_LANGUAGE_NOT_IMPLEMENTED_REASONS: &[&str] = &[
     "packet_adapter_not_implemented_for_language",
@@ -140,10 +247,17 @@ pub const MVP4_3_TYPESCRIPT_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
     LocalMicroFlowPacketLanguageCapability = LocalMicroFlowPacketLanguageCapability {
     language: "typescript",
     frontend: Some("tree-sitter-typescript"),
+    declared_static_scope: "production exact function-local .ts legacy v1 and .mts/.cts ParserFactsV1 subsets; .d.ts inactive",
+    adapter_id: "legacy_typescript_v1",
+    activation_gate: "active_exact_dot_ts_production_fixture_gate",
     packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND,
     activation_status: LocalMicroFlowPacketSupportStatus::ExactCapable,
-    supported_node_kinds: MVP4_3_TYPESCRIPT_PACKET_NODE_KINDS,
+    supported_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
     supported_edge_kinds: MVP4_3_TYPESCRIPT_PACKET_EDGE_KINDS,
+    exact_edge_kinds: MVP4_3_TYPESCRIPT_PACKET_EXACT_EDGE_KINDS,
+    derived_with_provenance_edge_kinds: MVP4_3_TYPESCRIPT_PACKET_DERIVED_EDGE_KINDS,
+    canonical_node_kinds: MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS,
+    canonical_edge_kinds: MicroEdgeKind::ALL,
     supported_path_patterns: MVP4_3_TYPESCRIPT_PACKET_PATH_PATTERNS,
     branch_model_capability: "source_spanned_branch_identity_when_micro_facts_preserve_it",
     return_path_model_capability: "source_spanned_return_path_identity_from_ReturnSite_edges",
@@ -160,33 +274,192 @@ pub const MVP4_3_TYPESCRIPT_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
     explain_audit_rendering: "dict_v1_with_ordered_steps_audit_expansion",
 };
 
+pub const MVP4_3_JAVASCRIPT_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "javascript",
+        "tree-sitter-javascript",
+        "declared function-local static ECMAScript subset for .js/.mjs/.cjs",
+    );
+pub const MVP4_3_JSX_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "jsx",
+        "tree-sitter-javascript",
+        "declared function-local static JSX/ECMAScript subset for .jsx",
+    );
+pub const MVP4_3_TYPESCRIPT_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "typescript",
+        "tree-sitter-typescript",
+        "declared function-local static TypeScript subset for .mts/.cts",
+    );
+pub const MVP4_3_TSX_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "tsx",
+        "tree-sitter-typescript",
+        "declared function-local static TypeScript/JSX subset for .tsx",
+    );
+pub const MVP4_3_PYTHON_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "python",
+        "tree-sitter-python",
+        "declared function-local static Python subset for .py",
+    );
+pub const MVP4_3_GO_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "go",
+        "tree-sitter-go",
+        "declared function-local static Go subset for .go",
+    );
+pub const MVP4_3_RUST_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "rust",
+        "tree-sitter-rust",
+        "declared function-local static Rust subset for .rs",
+    );
+pub const MVP4_3_JAVA_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "java",
+        "tree-sitter-java",
+        "declared method-local static Java subset for .java",
+    );
+pub const MVP4_3_CSHARP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "csharp",
+        "tree-sitter-c-sharp",
+        "declared method-local static C# subset for .cs",
+    );
+pub const MVP4_3_C_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "c",
+        "tree-sitter-c",
+        "declared function-local static C subset for .c/.h selected as C",
+    );
+pub const MVP4_3_CPP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "cpp",
+        "tree-sitter-cpp",
+        "declared function-local static C++ subset for registered C++ extensions",
+    );
+pub const MVP4_3_RUBY_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "ruby",
+        "tree-sitter-ruby",
+        "declared method-local static Ruby subset for .rb",
+    );
+pub const MVP4_3_PHP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY:
+    LocalMicroFlowPacketLanguageCapability =
+    LocalMicroFlowPacketLanguageCapability::parser_facts_v1(
+        "php",
+        "tree-sitter-php",
+        "declared function-local static PHP subset for .php",
+    );
+
 pub const MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES:
     &[LocalMicroFlowPacketLanguageCapability] = &[
+    MVP4_3_JAVASCRIPT_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_JSX_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
     MVP4_3_TYPESCRIPT_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
-    LocalMicroFlowPacketLanguageCapability::not_implemented("javascript"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("jsx"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("tsx"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("rust"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("python"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("go"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("c"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("cpp"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("c_cpp"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("java"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("csharp"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("ruby"),
-    LocalMicroFlowPacketLanguageCapability::not_implemented("php"),
+    MVP4_3_TSX_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_PYTHON_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_GO_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_RUST_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_JAVA_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_CSHARP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_C_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_CPP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_RUBY_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+    MVP4_3_PHP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
 ];
 
 pub fn mvp4_3_local_micro_flow_packet_language_capability(
     language: &str,
 ) -> LocalMicroFlowPacketLanguageCapability {
-    let normalized = language.trim().to_ascii_lowercase();
+    let canonical_language = mvp4_language_frontend_contract(language)
+        .map(|contract| contract.language)
+        .unwrap_or("unknown");
     MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES
         .iter()
         .copied()
-        .find(|capability| capability.language == normalized)
+        .find(|capability| capability.language == canonical_language)
         .unwrap_or_else(|| LocalMicroFlowPacketLanguageCapability::not_implemented("unknown"))
+}
+
+pub fn mvp4_3_local_micro_flow_packet_language_capability_for_source(
+    language: &str,
+    source_path: &str,
+) -> LocalMicroFlowPacketLanguageCapability {
+    let Some(contract) = mvp4_language_frontend_contract(language) else {
+        return LocalMicroFlowPacketLanguageCapability::not_implemented("unknown");
+    };
+    match mvp4_micro_flow_source_adapter(language, source_path) {
+        Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1 => {
+            MVP4_3_TYPESCRIPT_LOCAL_MICRO_FLOW_PACKET_CAPABILITY
+        }
+        Mvp4MicroFlowSourceAdapterKind::ParserFactsV1 => match contract.language {
+            "javascript" => MVP4_3_JAVASCRIPT_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "jsx" => MVP4_3_JSX_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "typescript" => MVP4_3_TYPESCRIPT_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "tsx" => MVP4_3_TSX_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "python" => MVP4_3_PYTHON_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "go" => MVP4_3_GO_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "rust" => MVP4_3_RUST_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "java" => MVP4_3_JAVA_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "csharp" => MVP4_3_CSHARP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "c" => MVP4_3_C_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "cpp" => MVP4_3_CPP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "ruby" => MVP4_3_RUBY_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            "php" => MVP4_3_PHP_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_CAPABILITY,
+            _ => LocalMicroFlowPacketLanguageCapability::declared_not_implemented(
+                contract.language,
+                contract.frontend,
+                contract.declared_static_scope,
+            ),
+        },
+        Mvp4MicroFlowSourceAdapterKind::Inactive => {
+            LocalMicroFlowPacketLanguageCapability::declared_not_implemented(
+                contract.language,
+                contract.frontend,
+                contract.declared_static_scope,
+            )
+        }
+    }
+}
+
+pub fn mvp4_3_local_micro_flow_packet_source_supported_for_source(
+    language: &str,
+    source_path: &str,
+    source_role: MicroSourceRole,
+) -> bool {
+    mvp4_3_local_micro_flow_packet_language_capability_for_source(language, source_path)
+        .supports_claimable_packets(source_role)
+}
+
+pub fn mvp4_3_local_micro_flow_packet_supported_node_kinds_for_source(
+    language: &str,
+    source_path: &str,
+) -> &'static [MicroNodeKind] {
+    mvp4_3_local_micro_flow_packet_language_capability_for_source(language, source_path)
+        .supported_node_kinds
+}
+
+pub fn mvp4_3_local_micro_flow_packet_supported_edge_kinds_for_source(
+    language: &str,
+    source_path: &str,
+) -> &'static [MicroEdgeKind] {
+    mvp4_3_local_micro_flow_packet_language_capability_for_source(language, source_path)
+        .supported_edge_kinds
 }
 
 pub fn mvp4_3_local_micro_flow_packet_source_supported(
@@ -220,9 +493,37 @@ pub fn mvp4_3_local_micro_flow_packet_active_languages() -> Vec<&'static str> {
 }
 
 pub fn mvp4_3_default_local_micro_flow_packet_query_language() -> Option<&'static str> {
-    mvp4_3_local_micro_flow_packet_active_languages()
-        .into_iter()
-        .next()
+    exactly_one_active_packet_language(&mvp4_3_local_micro_flow_packet_active_languages())
+}
+
+fn exactly_one_active_packet_language<'a>(languages: &[&'a str]) -> Option<&'a str> {
+    match languages {
+        [language] => Some(*language),
+        _ => None,
+    }
+}
+
+pub fn mvp4_3_local_micro_flow_packet_identity_extraction_version(language: &str) -> &'static str {
+    mvp4_3_local_micro_flow_packet_language_capability(language)
+        .extraction_version
+        .unwrap_or(MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION)
+}
+
+pub fn mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+    language: &str,
+    source_path: &str,
+) -> &'static str {
+    match mvp4_micro_flow_source_adapter(language, source_path) {
+        Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1 => {
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        }
+        Mvp4MicroFlowSourceAdapterKind::ParserFactsV1 => {
+            MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        }
+        Mvp4MicroFlowSourceAdapterKind::Inactive => {
+            MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +557,11 @@ impl LocalMicroFlowCanonicalPacket {
     ) -> Result<Value, LocalMicroFlowCodecError> {
         let packet_body = self.encode_dict_v1()?;
         let proof_classification = self.proof_classification();
+        let extraction_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                &self.file.language,
+                &self.file.repo_relative_path,
+            );
         let ordered_steps = if include_ordered_steps {
             Some(packet_body.to_ordered_steps()?)
         } else {
@@ -268,7 +574,7 @@ impl LocalMicroFlowCanonicalPacket {
             "packet_kind": LOCAL_MICRO_FLOW_AGENT_JSON_PACKET_KIND,
             "packet_id": self.packet_id,
             "packet_version": 1,
-            "extraction_version": MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            "extraction_version": extraction_version,
             "step_set_version": LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION,
             "file": self.file,
             "function_identity": self.function_identity,
@@ -287,7 +593,10 @@ impl LocalMicroFlowCanonicalPacket {
             "expansion_handles": self.expansion_handles,
             "budget": self.budget,
             "budget_contract": LocalMicroFlowBudgetContract::compact_default(),
-            "generation_state": LocalMicroFlowGenerationState::inactive()
+            "generation_state": LocalMicroFlowGenerationState::for_source(
+                &self.file.language,
+                &self.file.repo_relative_path,
+            )
         });
 
         if let Some(ordered_steps) = ordered_steps {
@@ -692,7 +1001,7 @@ fn build_function_packet_candidate<'a>(
                 "proof-bearing micro-node is missing a source span",
             ));
         }
-        if !is_allowed_packet_node(&node.language, node.micro_kind) {
+        if !is_allowed_packet_node(&node.language, &node.file_id, node.micro_kind) {
             candidate_diagnostics.push(LocalMicroFlowPacketCandidateDiagnostic::unsupported(
                 "unsupported_node_kind",
                 Some(node.micro_node_id.clone()),
@@ -709,9 +1018,12 @@ fn build_function_packet_candidate<'a>(
         if normalize_repo_relative_path(&edge.file_id) != repo_relative_path {
             continue;
         }
-        let endpoint_in_function = function_node_ids.contains(edge.source_micro_node_id.as_str())
-            || function_node_ids.contains(edge.target_micro_node_id.as_str())
-            || same_function_domain(edge.function_domain(), &function_domain);
+        let endpoint_in_function = edge_belongs_to_packet_function(
+            edge,
+            nodes_by_id,
+            &function_node_ids,
+            &function_domain,
+        );
         if !endpoint_in_function {
             continue;
         }
@@ -731,6 +1043,7 @@ fn build_function_packet_candidate<'a>(
             .cmp(&edge_order_key(right))
             .then_with(|| left.micro_edge_id.cmp(&right.micro_edge_id))
     });
+    let packet_nodes = packet_nodes_for_edges(&function_nodes, &eligible_edges, nodes_by_id);
 
     let has_integrity_failure = candidate_diagnostics
         .iter()
@@ -780,7 +1093,7 @@ fn build_function_packet_candidate<'a>(
         Some(build_canonical_packet(
             repo_relative_path,
             function_frame,
-            &function_nodes,
+            &packet_nodes,
             &eligible_edges,
             initial_packet_status,
             initial_proof_strength,
@@ -810,11 +1123,28 @@ fn build_function_packet_candidate<'a>(
                 function_entity_id: function_domain.clone(),
                 packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
                 packet_version: 1,
-                extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+                extraction_version:
+                    mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                        &function_frame.language,
+                        repo_relative_path,
+                    )
+                    .to_string(),
                 step_set_version: LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION.to_string(),
                 ordered_step_ids: vec!["unavailable".to_string()],
             })
         });
+
+    let source_micro_node_extraction_versions = unique_sorted_versions(
+        function_nodes
+            .iter()
+            .map(|node| node.extraction_version.as_str()),
+    );
+    let source_micro_edge_extraction_versions = source_micro_edge_extraction_versions_for_candidate(
+        function_frame.language.as_str(),
+        repo_relative_path,
+        &source_micro_node_extraction_versions,
+        &eligible_edges,
+    );
 
     LocalMicroFlowPacketCandidate {
         packet_id,
@@ -826,25 +1156,14 @@ fn build_function_packet_candidate<'a>(
         source_role: function_frame.source_role,
         packet_status,
         proof_strength,
-        node_ref_count: function_nodes.len(),
+        node_ref_count: packet_nodes.len(),
         edge_ref_count: eligible_edges.len(),
         gap_count: packet
             .as_ref()
             .map(|packet| packet.unknown_unsupported_gaps.len())
             .unwrap_or(0),
-        source_micro_node_extraction_versions: unique_sorted_versions(
-            function_nodes
-                .iter()
-                .map(|node| node.extraction_version.as_str()),
-        ),
-        source_micro_edge_extraction_versions: unique_sorted_versions(
-            source_micro_edge_extraction_versions_for_candidate(
-                function_frame.language.as_str(),
-                &eligible_edges,
-            )
-            .iter()
-            .map(String::as_str),
-        ),
+        source_micro_node_extraction_versions,
+        source_micro_edge_extraction_versions,
         packet,
         diagnostics: candidate_diagnostics,
     }
@@ -862,6 +1181,8 @@ fn unique_sorted_versions<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<
 
 fn source_micro_edge_extraction_versions_for_candidate(
     language: &str,
+    repo_relative_path: &str,
+    source_micro_node_extraction_versions: &[String],
     eligible_edges: &[&LocalMicroFlowPersistedEdgeFact],
 ) -> Vec<String> {
     let versions = unique_sorted_versions(
@@ -873,17 +1194,41 @@ fn source_micro_edge_extraction_versions_for_candidate(
         return versions;
     }
 
-    match language.trim().to_ascii_lowercase().as_str() {
-        "typescript" => [
+    match mvp4_micro_flow_source_adapter(language, repo_relative_path) {
+        Mvp4MicroFlowSourceAdapterKind::LegacyTypeScriptV1 => unique_sorted_versions([
             MVP4_2_LOCAL_RETURNS_TO_EXTRACTION_VERSION,
             MVP4_2B_LOCAL_READS_EXTRACTION_VERSION,
             MVP4_2B_LOCAL_WRITES_EXTRACTION_VERSION,
             MVP4_2B_LOCAL_FLOWS_TO_EXTRACTION_VERSION,
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-        _ => Vec::new(),
+        ]),
+        Mvp4MicroFlowSourceAdapterKind::ParserFactsV1 => {
+            let capability_versions = unique_sorted_versions(
+                mvp4_3_local_micro_flow_packet_supported_edge_kinds_for_source(
+                    language,
+                    repo_relative_path,
+                )
+                .iter()
+                .filter_map(|kind| {
+                    mvp4_micro_edge_language_capability_for_source(
+                        language,
+                        repo_relative_path,
+                        *kind,
+                    )
+                    .extraction_version
+                }),
+            );
+            let node_evidence_matches = source_micro_node_extraction_versions.len() == 1
+                && source_micro_node_extraction_versions[0]
+                    == MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION;
+            let capability_matches = capability_versions.len() == 1
+                && capability_versions[0] == MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION;
+            if node_evidence_matches && capability_matches {
+                capability_versions
+            } else {
+                Vec::new()
+            }
+        }
+        Mvp4MicroFlowSourceAdapterKind::Inactive => Vec::new(),
     }
 }
 
@@ -928,7 +1273,11 @@ fn build_canonical_packet(
         function_entity_id: function_domain.clone(),
         packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
         packet_version: 1,
-        extraction_version: MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+        extraction_version: mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+            &function_frame.language,
+            repo_relative_path,
+        )
+        .to_string(),
         step_set_version: LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION.to_string(),
         ordered_step_ids: step_ids,
     });
@@ -975,9 +1324,9 @@ fn build_canonical_packet(
             cap_omissions,
         },
         risks_limitations: vec![
-            "candidate_only_not_persisted".to_string(),
-            "flow_proof_inactive_until_later_packet_gate".to_string(),
-            "function_local_only".to_string(),
+            "constructed_from_persisted_claimable_micro_facts".to_string(),
+            "function_local_semantic_packet".to_string(),
+            "handle_first_compact_with_lossless_audit_expansion".to_string(),
         ],
         unknown_unsupported_gaps: gaps,
         expansion_handles: vec![LocalMicroFlowExpansionHandle {
@@ -985,11 +1334,9 @@ fn build_canonical_packet(
                 "expand://local-micro-flow/{}/audit",
                 function_frame.micro_node_id
             ),
-            handle_kind: "audit_trace_placeholder".to_string(),
-            available: false,
-            proof_boundary:
-                "Prompt 5 path-construction candidate only; no agent-facing packet expansion active"
-                    .to_string(),
+            handle_kind: "dict_v1_audit_expansion".to_string(),
+            available: true,
+            proof_boundary: "audit expansion renders only the persisted micro-fact packet dictionary and does not create additional proof".to_string(),
         }],
         paths,
     };
@@ -1182,20 +1529,25 @@ fn construct_deterministic_packet_paths(
         eligible_edges,
         MicroEdgeKind::LocalReturnsTo,
     ));
+    let semantic_edges = sorted_edges(
+        eligible_edges
+            .iter()
+            .copied()
+            .filter(|edge| {
+                !matches!(
+                    edge.relation_kind,
+                    Some(
+                        MicroEdgeKind::LocalReads
+                            | MicroEdgeKind::LocalWrites
+                            | MicroEdgeKind::LocalFlowsTo
+                            | MicroEdgeKind::LocalReturnsTo
+                    )
+                )
+            })
+            .collect(),
+    );
     let mut packet_gaps = BTreeMap::<String, LocalMicroFlowGap>::new();
     let mut paths = Vec::new();
-
-    let branch_gap = (return_edges.len() > 1
-        && !has_deterministic_branch_support(function_nodes, eligible_edges))
-    .then(|| unsupported_branch_structure_gap(function_frame, &return_edges));
-    let dynamic_call_gap = function_nodes
-        .iter()
-        .any(|node| node.micro_kind == Some(MicroNodeKind::CallSite))
-        .then(|| dynamic_call_target_gap(function_frame, function_nodes));
-    let member_target_gap = function_nodes
-        .iter()
-        .any(|node| node.micro_kind == Some(MicroNodeKind::PropertyAccess))
-        .then(|| member_or_global_target_gap(function_frame, function_nodes));
 
     if return_edges.is_empty() {
         let return_path_id = None;
@@ -1209,6 +1561,13 @@ fn construct_deterministic_packet_paths(
             node_refs,
             return_path_id.as_deref(),
         );
+        push_semantic_inventory_steps(
+            &mut path_steps,
+            &mut emitted_edges,
+            &semantic_edges,
+            node_refs,
+            return_path_id.as_deref(),
+        );
         let no_return_gap = if eligible_edges.is_empty() {
             no_local_micro_flow_path_gap(function_frame)
         } else {
@@ -1216,16 +1575,12 @@ fn construct_deterministic_packet_paths(
         };
         record_gap(&mut packet_gaps, no_return_gap.clone());
         push_gap_step_for_path(&mut path_steps, &no_return_gap, return_path_id.as_deref());
-        push_optional_gap_step(
+        push_path_local_uncovered_operation_gaps(
             &mut path_steps,
             &mut packet_gaps,
-            dynamic_call_gap.as_ref(),
-            return_path_id.as_deref(),
-        );
-        push_optional_gap_step(
-            &mut path_steps,
-            &mut packet_gaps,
-            member_target_gap.as_ref(),
+            function_frame,
+            function_nodes,
+            eligible_edges,
             return_path_id.as_deref(),
         );
         push_cap_omission_steps(
@@ -1235,30 +1590,67 @@ fn construct_deterministic_packet_paths(
             cap_omissions,
             return_path_id.as_deref(),
         );
+        let branch_identity = branch_identity_from_edges(&semantic_edges, node_refs);
+        attach_path_identity(
+            &mut path_steps,
+            return_path_id.as_deref(),
+            branch_identity.as_ref(),
+        );
         paths.push(LocalMicroFlowCanonicalPath {
             path_id: format!("path:{}:no-return-anchor", function_frame.micro_node_id),
-            branch_id: None,
+            branch_id: branch_identity
+                .as_ref()
+                .map(|identity| identity.branch_id.clone()),
             return_path_id,
             steps: path_steps,
         });
     } else {
         for return_edge in &return_edges {
             let return_path_id = Some(format!("return-path:{}", return_edge.micro_edge_id));
+            let return_flow_edges =
+                flow_edges_reaching_return(return_edge, &flow_edges, &read_write_edges, node_refs);
+            let return_support_edges = support_edges_for_return(
+                return_edge,
+                &return_flow_edges,
+                &read_write_edges,
+                node_refs,
+            );
+            let return_semantic_edges = semantic_edges_for_return(
+                return_edge,
+                &return_flow_edges,
+                &return_support_edges,
+                &semantic_edges,
+                return_edges.len(),
+            );
+            let branch_identity = branch_identity_from_edges(&return_semantic_edges, node_refs);
+            let branch_gap = (return_edges.len() > 1 && branch_identity.is_none())
+                .then(|| unsupported_branch_structure_gap(function_frame, &return_edges));
             let mut path_steps = Vec::new();
             let mut emitted_edges = BTreeSet::new();
             push_flow_inventory_steps(
                 &mut path_steps,
                 &mut emitted_edges,
-                &flow_edges,
-                &read_write_edges,
+                &return_flow_edges,
+                &return_support_edges,
                 node_refs,
                 return_path_id.as_deref(),
             );
-            if flow_edges.is_empty() {
-                let gap = missing_local_flows_to_gap(function_frame, return_edge);
+            push_semantic_inventory_steps(
+                &mut path_steps,
+                &mut emitted_edges,
+                &return_semantic_edges,
+                node_refs,
+                return_path_id.as_deref(),
+            );
+            if return_flow_edges.is_empty() {
+                let gap = if flow_edges.is_empty() {
+                    missing_local_flows_to_gap(function_frame, return_edge)
+                } else {
+                    flow_not_connected_to_return_gap(function_frame, return_edge)
+                };
                 record_gap(&mut packet_gaps, gap.clone());
                 push_gap_step_for_path(&mut path_steps, &gap, return_path_id.as_deref());
-            } else if read_write_edges.is_empty() {
+            } else if return_support_edges.is_empty() {
                 let gap = missing_read_write_provenance_gap(function_frame, return_edge);
                 record_gap(&mut packet_gaps, gap.clone());
                 push_gap_step_for_path(&mut path_steps, &gap, return_path_id.as_deref());
@@ -1269,16 +1661,17 @@ fn construct_deterministic_packet_paths(
                 branch_gap.as_ref(),
                 return_path_id.as_deref(),
             );
-            push_optional_gap_step(
+            let mut participating_edges = Vec::new();
+            participating_edges.extend(return_flow_edges.iter().copied());
+            participating_edges.extend(return_support_edges.iter().copied());
+            participating_edges.extend(return_semantic_edges.iter().copied());
+            participating_edges.push(*return_edge);
+            push_path_local_uncovered_operation_gaps(
                 &mut path_steps,
                 &mut packet_gaps,
-                dynamic_call_gap.as_ref(),
-                return_path_id.as_deref(),
-            );
-            push_optional_gap_step(
-                &mut path_steps,
-                &mut packet_gaps,
-                member_target_gap.as_ref(),
+                function_frame,
+                function_nodes,
+                &participating_edges,
                 return_path_id.as_deref(),
             );
             push_edge_step_for_path(
@@ -1295,12 +1688,19 @@ fn construct_deterministic_packet_paths(
                 cap_omissions,
                 return_path_id.as_deref(),
             );
+            attach_path_identity(
+                &mut path_steps,
+                return_path_id.as_deref(),
+                branch_identity.as_ref(),
+            );
             paths.push(LocalMicroFlowCanonicalPath {
                 path_id: format!(
                     "path:{}:{}",
                     function_frame.micro_node_id, return_edge.micro_edge_id
                 ),
-                branch_id: None,
+                branch_id: branch_identity
+                    .as_ref()
+                    .map(|identity| identity.branch_id.clone()),
                 return_path_id,
                 steps: path_steps,
             });
@@ -1319,6 +1719,253 @@ fn construct_deterministic_packet_paths(
             .map(|(_, gap)| gap)
             .collect::<Vec<_>>(),
     )
+}
+
+fn edge_belongs_to_packet_function(
+    edge: &LocalMicroFlowPersistedEdgeFact,
+    nodes_by_id: &BTreeMap<&str, &LocalMicroFlowPersistedNodeFact>,
+    function_node_ids: &BTreeSet<&str>,
+    function_domain: &str,
+) -> bool {
+    if edge.relation_kind == Some(MicroEdgeKind::LocalCalls) {
+        return function_node_ids.contains(edge.source_micro_node_id.as_str())
+            && same_function_domain(edge.function_domain(), function_domain)
+            && nodes_by_id
+                .get(edge.target_micro_node_id.as_str())
+                .is_some_and(|target| target.micro_kind == Some(MicroNodeKind::FunctionFrame));
+    }
+    same_function_domain(edge.function_domain(), function_domain)
+        || function_node_ids.contains(edge.source_micro_node_id.as_str())
+        || function_node_ids.contains(edge.target_micro_node_id.as_str())
+}
+
+fn packet_nodes_for_edges<'a>(
+    function_nodes: &[&'a LocalMicroFlowPersistedNodeFact],
+    eligible_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    nodes_by_id: &BTreeMap<&'a str, &'a LocalMicroFlowPersistedNodeFact>,
+) -> Vec<&'a LocalMicroFlowPersistedNodeFact> {
+    let mut packet_nodes = function_nodes.to_vec();
+    let mut included = packet_nodes
+        .iter()
+        .map(|node| node.micro_node_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for edge in eligible_edges {
+        for endpoint_id in [
+            edge.source_micro_node_id.as_str(),
+            edge.target_micro_node_id.as_str(),
+        ] {
+            if included.insert(endpoint_id) {
+                if let Some(node) = nodes_by_id.get(endpoint_id) {
+                    packet_nodes.push(*node);
+                }
+            }
+        }
+    }
+    packet_nodes.sort_by(|left, right| {
+        node_order_key(left)
+            .cmp(&node_order_key(right))
+            .then_with(|| left.micro_node_id.cmp(&right.micro_node_id))
+    });
+    packet_nodes
+}
+
+fn node_order_key(node: &LocalMicroFlowPersistedNodeFact) -> (u32, u32, u32) {
+    node.source_span
+        .as_ref()
+        .map(|span| {
+            (
+                span.start_line,
+                span.start_column.unwrap_or(0),
+                span.end_column.unwrap_or(0),
+            )
+        })
+        .unwrap_or((u32::MAX, u32::MAX, u32::MAX))
+}
+
+fn flow_edges_reaching_return<'a>(
+    return_edge: &LocalMicroFlowPersistedEdgeFact,
+    flow_edges: &[&'a LocalMicroFlowPersistedEdgeFact],
+    read_write_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    node_refs: &BTreeMap<String, LocalMicroFlowMicroNodeRef>,
+) -> Vec<&'a LocalMicroFlowPersistedEdgeFact> {
+    let mut reachable_targets = BTreeSet::from([return_edge.source_micro_node_id.clone()]);
+    for edge in read_write_edges
+        .iter()
+        .copied()
+        .filter(|edge| edge_is_return_value_read(edge, return_edge, node_refs))
+    {
+        reachable_targets.insert(edge.target_micro_node_id.clone());
+    }
+
+    let mut selected_ids = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for edge in flow_edges {
+            if reachable_targets.contains(&edge.target_micro_node_id) {
+                changed |= selected_ids.insert(edge.micro_edge_id.clone());
+                changed |= reachable_targets.insert(edge.source_micro_node_id.clone());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    ordered_flow_chain_edges(
+        &flow_edges
+            .iter()
+            .copied()
+            .filter(|edge| selected_ids.contains(&edge.micro_edge_id))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn semantic_edges_for_return<'a>(
+    return_edge: &LocalMicroFlowPersistedEdgeFact,
+    flow_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    support_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    semantic_edges: &[&'a LocalMicroFlowPersistedEdgeFact],
+    return_count: usize,
+) -> Vec<&'a LocalMicroFlowPersistedEdgeFact> {
+    if return_count == 1 {
+        return semantic_edges.to_vec();
+    }
+
+    let mut connected_node_ids = BTreeSet::from([return_edge.source_micro_node_id.clone()]);
+    for edge in flow_edges.iter().chain(support_edges) {
+        connected_node_ids.insert(edge.source_micro_node_id.clone());
+        connected_node_ids.insert(edge.target_micro_node_id.clone());
+    }
+    let mut selected_edge_ids = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for edge in semantic_edges {
+            if connected_node_ids.contains(&edge.source_micro_node_id)
+                || connected_node_ids.contains(&edge.target_micro_node_id)
+            {
+                changed |= selected_edge_ids.insert(edge.micro_edge_id.clone());
+                changed |= connected_node_ids.insert(edge.source_micro_node_id.clone());
+                changed |= connected_node_ids.insert(edge.target_micro_node_id.clone());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    sorted_edges(
+        semantic_edges
+            .iter()
+            .copied()
+            .filter(|edge| selected_edge_ids.contains(&edge.micro_edge_id))
+            .collect(),
+    )
+}
+
+fn branch_identity_from_edges(
+    edges: &[&LocalMicroFlowPersistedEdgeFact],
+    node_refs: &BTreeMap<String, LocalMicroFlowMicroNodeRef>,
+) -> Option<LocalMicroFlowBranchIdentity> {
+    let branch_arm_ids = edges
+        .iter()
+        .filter_map(|edge| match edge.relation_kind {
+            Some(MicroEdgeKind::LocalBranchesTo) => Some(edge.target_micro_node_id.as_str()),
+            Some(MicroEdgeKind::LocalGuards) => Some(edge.source_micro_node_id.as_str()),
+            _ => None,
+        })
+        .filter(|node_id| {
+            node_refs
+                .get(*node_id)
+                .is_some_and(|node| node.micro_kind == MicroNodeKind::BranchArm.as_str())
+        })
+        .collect::<BTreeSet<_>>();
+    if branch_arm_ids.len() != 1 {
+        return None;
+    }
+    let branch_arm_id = *branch_arm_ids.iter().next()?;
+    let condition_micro_node_id = edges
+        .iter()
+        .find(|edge| {
+            edge.relation_kind == Some(MicroEdgeKind::LocalBranchesTo)
+                && edge.target_micro_node_id == branch_arm_id
+        })
+        .map(|edge| edge.source_micro_node_id.clone());
+    Some(LocalMicroFlowBranchIdentity {
+        branch_id: format!("branch-arm:{branch_arm_id}"),
+        branch_kind: "source_spanned_condition_branch_arm".to_string(),
+        branch_label: branch_arm_id.to_string(),
+        condition_micro_node_id,
+    })
+}
+
+fn attach_path_identity(
+    steps: &mut [LocalMicroFlowCanonicalStep],
+    return_path_id: Option<&str>,
+    branch_identity: Option<&LocalMicroFlowBranchIdentity>,
+) {
+    for step in steps {
+        if let Some(return_path_id) = return_path_id {
+            step.return_path_id = Some(return_path_id.to_string());
+            step.return_path_identity = Some(LocalMicroFlowReturnPathIdentity {
+                return_path_id: return_path_id.to_string(),
+                path_kind: "explicit_return_anchor".to_string(),
+            });
+            step.order_key.return_path_order = Some(return_path_id.to_string());
+        }
+        if let Some(branch_identity) = branch_identity {
+            step.branch_id = Some(branch_identity.branch_id.clone());
+            step.branch_identity = Some(branch_identity.clone());
+            step.order_key.branch_order = Some(branch_identity.branch_id.clone());
+        }
+    }
+}
+
+fn support_edges_for_return<'a>(
+    return_edge: &LocalMicroFlowPersistedEdgeFact,
+    flow_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    read_write_edges: &[&'a LocalMicroFlowPersistedEdgeFact],
+    node_refs: &BTreeMap<String, LocalMicroFlowMicroNodeRef>,
+) -> Vec<&'a LocalMicroFlowPersistedEdgeFact> {
+    sorted_edges(
+        read_write_edges
+            .iter()
+            .copied()
+            .filter(|support_edge| {
+                edge_is_return_value_read(support_edge, return_edge, node_refs)
+                    || flow_edges
+                        .iter()
+                        .any(|flow_edge| support_edge_supports_flow(support_edge, flow_edge))
+            })
+            .collect(),
+    )
+}
+
+fn edge_is_return_value_read(
+    edge: &LocalMicroFlowPersistedEdgeFact,
+    return_edge: &LocalMicroFlowPersistedEdgeFact,
+    node_refs: &BTreeMap<String, LocalMicroFlowMicroNodeRef>,
+) -> bool {
+    if edge.relation_kind != Some(MicroEdgeKind::LocalReads) {
+        return false;
+    }
+    let Some(return_site) = node_refs.get(&return_edge.source_micro_node_id) else {
+        return false;
+    };
+    let Some(value_use) = node_refs.get(&edge.source_micro_node_id) else {
+        return false;
+    };
+    value_use.micro_kind == MicroNodeKind::ValueUse.as_str()
+        && source_span_contains(&return_site.source_span, &value_use.source_span)
+}
+
+fn source_span_contains(container: &SourceSpan, child: &SourceSpan) -> bool {
+    if container.repo_relative_path != child.repo_relative_path {
+        return false;
+    }
+    let container_start = (container.start_line, container.start_column.unwrap_or(0));
+    let child_start = (child.start_line, child.start_column.unwrap_or(0));
+    let container_end = (container.end_line, container.end_column.unwrap_or(u32::MAX));
+    let child_end = (child.end_line, child.end_column.unwrap_or(u32::MAX));
+    container_start <= child_start && child_end <= container_end
 }
 
 fn relation_edges<'a>(
@@ -1456,6 +2103,18 @@ fn support_edge_supports_flow(
         || flow_endpoint_ids.contains(&support_edge.target_micro_node_id.as_str())
 }
 
+fn push_semantic_inventory_steps(
+    steps: &mut Vec<LocalMicroFlowCanonicalStep>,
+    emitted_edges: &mut BTreeSet<String>,
+    semantic_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    node_refs: &BTreeMap<String, LocalMicroFlowMicroNodeRef>,
+    return_path_id: Option<&str>,
+) {
+    for edge in semantic_edges {
+        push_edge_step_for_path(steps, emitted_edges, edge, node_refs, return_path_id);
+    }
+}
+
 fn push_edge_step_for_path(
     steps: &mut Vec<LocalMicroFlowCanonicalStep>,
     emitted_edges: &mut BTreeSet<String>,
@@ -1519,18 +2178,6 @@ fn record_gap(packet_gaps: &mut BTreeMap<String, LocalMicroFlowGap>, gap: LocalM
     packet_gaps.entry(gap.gap_id.clone()).or_insert(gap);
 }
 
-fn has_deterministic_branch_support(
-    function_nodes: &[&LocalMicroFlowPersistedNodeFact],
-    eligible_edges: &[&LocalMicroFlowPersistedEdgeFact],
-) -> bool {
-    function_nodes
-        .iter()
-        .any(|node| node.micro_kind == Some(MicroNodeKind::ConditionSite))
-        && eligible_edges
-            .iter()
-            .any(|edge| edge.relation_kind == Some(MicroEdgeKind::LocalBranchesTo))
-}
-
 fn missing_local_flows_to_gap(
     function_frame: &LocalMicroFlowPersistedNodeFact,
     return_edge: &LocalMicroFlowPersistedEdgeFact,
@@ -1544,6 +2191,23 @@ fn missing_local_flows_to_gap(
         reason: "Return anchor is present but no retained LOCAL_FLOWS_TO chain connects local bindings for this return path".to_string(),
         exactness: MicroExactness::Unknown,
         proof_status: "unknown".to_string(),
+        source_spans: gap_spans(function_frame, Some(return_edge)),
+    }
+}
+
+fn flow_not_connected_to_return_gap(
+    function_frame: &LocalMicroFlowPersistedNodeFact,
+    return_edge: &LocalMicroFlowPersistedEdgeFact,
+) -> LocalMicroFlowGap {
+    LocalMicroFlowGap {
+        gap_id: format!(
+            "gap:{}:{}:flow-not-connected-to-return",
+            function_frame.micro_node_id, return_edge.micro_edge_id
+        ),
+        gap_kind: "flow_not_connected_to_return".to_string(),
+        reason: "retained LOCAL_FLOWS_TO facts do not reverse-reach a source-spanned value read owned by this return site".to_string(),
+        exactness: MicroExactness::Unknown,
+        proof_status: "non_claimable_flow_gap".to_string(),
         source_spans: gap_spans(function_frame, Some(return_edge)),
     }
 }
@@ -1616,32 +2280,96 @@ fn unsupported_branch_structure_gap(
 
 fn dynamic_call_target_gap(
     function_frame: &LocalMicroFlowPersistedNodeFact,
-    function_nodes: &[&LocalMicroFlowPersistedNodeFact],
+    source_spans: Vec<SourceSpan>,
 ) -> LocalMicroFlowGap {
     LocalMicroFlowGap {
         gap_id: format!("gap:{}:dynamic-call-target", function_frame.micro_node_id),
         gap_kind: "dynamic_or_unresolved_call_target".to_string(),
-        reason: "CallSite nodes are present, but LOCAL_CALLS is not implemented for MVP4.3 first-slice packet paths".to_string(),
+        reason: "a path-participating CallSite has no exact LOCAL_CALLS target in the retained packet facts".to_string(),
         exactness: MicroExactness::Unknown,
         proof_status: "unsupported".to_string(),
-        source_spans: node_kind_spans(function_nodes, MicroNodeKind::CallSite)
+        source_spans: (!source_spans.is_empty())
+            .then_some(source_spans)
             .unwrap_or_else(|| gap_spans(function_frame, None)),
     }
 }
 
 fn member_or_global_target_gap(
     function_frame: &LocalMicroFlowPersistedNodeFact,
-    function_nodes: &[&LocalMicroFlowPersistedNodeFact],
+    source_spans: Vec<SourceSpan>,
 ) -> LocalMicroFlowGap {
     LocalMicroFlowGap {
         gap_id: format!("gap:{}:member-global-target", function_frame.micro_node_id),
         gap_kind: "member_or_global_target_unsupported".to_string(),
-        reason: "PropertyAccess nodes may exist, but member/global target proof is outside the current local packet relation inventory".to_string(),
+        reason: "a path-participating PropertyAccess has no exact retained relation covering that source-spanned operation".to_string(),
         exactness: MicroExactness::Unknown,
         proof_status: "unsupported".to_string(),
-        source_spans: node_kind_spans(function_nodes, MicroNodeKind::PropertyAccess)
+        source_spans: (!source_spans.is_empty())
+            .then_some(source_spans)
             .unwrap_or_else(|| gap_spans(function_frame, None)),
     }
+}
+
+fn push_path_local_uncovered_operation_gaps(
+    steps: &mut Vec<LocalMicroFlowCanonicalStep>,
+    packet_gaps: &mut BTreeMap<String, LocalMicroFlowGap>,
+    function_frame: &LocalMicroFlowPersistedNodeFact,
+    function_nodes: &[&LocalMicroFlowPersistedNodeFact],
+    path_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    return_path_id: Option<&str>,
+) {
+    let call_spans = uncovered_path_node_spans(
+        function_nodes,
+        path_edges,
+        MicroNodeKind::CallSite,
+        Some(MicroEdgeKind::LocalCalls),
+    );
+    if !call_spans.is_empty() {
+        let gap = dynamic_call_target_gap(function_frame, call_spans);
+        push_optional_gap_step(steps, packet_gaps, Some(&gap), return_path_id);
+    }
+    let property_spans = uncovered_path_node_spans(
+        function_nodes,
+        path_edges,
+        MicroNodeKind::PropertyAccess,
+        None,
+    );
+    if !property_spans.is_empty() {
+        let gap = member_or_global_target_gap(function_frame, property_spans);
+        push_optional_gap_step(steps, packet_gaps, Some(&gap), return_path_id);
+    }
+}
+
+fn uncovered_path_node_spans(
+    function_nodes: &[&LocalMicroFlowPersistedNodeFact],
+    path_edges: &[&LocalMicroFlowPersistedEdgeFact],
+    micro_kind: MicroNodeKind,
+    required_covering_relation: Option<MicroEdgeKind>,
+) -> Vec<SourceSpan> {
+    let participating_node_ids = path_edges
+        .iter()
+        .flat_map(|edge| {
+            [
+                edge.source_micro_node_id.as_str(),
+                edge.target_micro_node_id.as_str(),
+            ]
+        })
+        .collect::<BTreeSet<_>>();
+    function_nodes
+        .iter()
+        .filter(|node| node.micro_kind == Some(micro_kind))
+        .filter(|node| participating_node_ids.contains(node.micro_node_id.as_str()))
+        .filter(|node| {
+            !path_edges.iter().any(|edge| {
+                edge.exactness == MicroExactness::Exact
+                    && required_covering_relation
+                        .is_none_or(|relation| edge.relation_kind == Some(relation))
+                    && (edge.source_micro_node_id == node.micro_node_id
+                        || edge.target_micro_node_id == node.micro_node_id)
+            })
+        })
+        .filter_map(|node| node.source_span.clone())
+        .collect()
 }
 
 fn cap_omission_gap(
@@ -1671,24 +2399,22 @@ fn gap_spans(
         .collect()
 }
 
-fn node_kind_spans(
-    function_nodes: &[&LocalMicroFlowPersistedNodeFact],
-    micro_kind: MicroNodeKind,
-) -> Option<Vec<SourceSpan>> {
-    let spans = function_nodes
-        .iter()
-        .filter(|node| node.micro_kind == Some(micro_kind))
-        .filter_map(|node| node.source_span.clone())
-        .collect::<Vec<_>>();
-    (!spans.is_empty()).then_some(spans)
-}
-
 fn path_order_key(path: &LocalMicroFlowCanonicalPath) -> (u32, u32, String) {
-    let first_span = path
+    let return_span = path
         .steps
         .iter()
-        .flat_map(|step| step.source_spans.iter())
-        .next();
+        .find(|step| {
+            step.micro_edge_refs
+                .iter()
+                .any(|edge| edge.relation_kind == "LOCAL_RETURNS_TO")
+        })
+        .and_then(|step| step.source_spans.first());
+    let first_span = return_span.or_else(|| {
+        path.steps
+            .iter()
+            .flat_map(|step| step.source_spans.iter())
+            .next()
+    });
     (
         first_span.map(|span| span.start_line).unwrap_or(u32::MAX),
         first_span
@@ -1882,6 +2608,7 @@ fn classify_local_micro_flow_path_proof(
             )
         })
     });
+    let flow_connected_to_return = canonical_path_flow_connected_to_return(path);
     let input = LocalMicroFlowProofEligibilityInput {
         deterministic_proof_bearing_steps: true,
         source_spanned_proof_bearing_steps,
@@ -1899,6 +2626,7 @@ fn classify_local_micro_flow_path_proof(
         claimable_lifecycle_passport: endpoint_facts_current_and_claimable,
         dict_v1_lossless_to_audit_ordered_steps,
         no_packet_integrity_finding,
+        flow_connected_to_return,
         includes_local_flows_to: flow_step_count > 0,
         includes_required_reads_and_writes: read_step_count > 0
             && (write_step_count > 0 || flow_step_count > 0),
@@ -1933,6 +2661,78 @@ fn classify_local_micro_flow_path_proof(
         return_step_count,
         linter_mapping,
     }
+}
+
+fn canonical_path_flow_connected_to_return(path: &LocalMicroFlowCanonicalPath) -> bool {
+    let return_sites = path
+        .steps
+        .iter()
+        .filter(|step| {
+            step.micro_edge_refs
+                .iter()
+                .any(|edge| edge.relation_kind == "LOCAL_RETURNS_TO")
+        })
+        .filter_map(|step| step.micro_node_refs.first())
+        .filter(|node| node.micro_kind == MicroNodeKind::ReturnSite.as_str())
+        .collect::<Vec<_>>();
+    if return_sites.is_empty() {
+        return false;
+    }
+
+    let mut reachable_targets = return_sites
+        .iter()
+        .map(|node| node.micro_node_id.clone())
+        .collect::<BTreeSet<_>>();
+    for step in path.steps.iter().filter(|step| {
+        step.micro_edge_refs
+            .iter()
+            .any(|edge| edge.relation_kind == "LOCAL_READS")
+    }) {
+        let [value_use, binding, ..] = step.micro_node_refs.as_slice() else {
+            continue;
+        };
+        if value_use.micro_kind == MicroNodeKind::ValueUse.as_str()
+            && return_sites.iter().any(|return_site| {
+                source_span_contains(&return_site.source_span, &value_use.source_span)
+            })
+        {
+            reachable_targets.insert(binding.micro_node_id.clone());
+        }
+    }
+
+    let flow_pairs = path
+        .steps
+        .iter()
+        .filter(|step| {
+            step.micro_edge_refs
+                .iter()
+                .any(|edge| edge.relation_kind == "LOCAL_FLOWS_TO")
+        })
+        .filter_map(|step| {
+            let [source, target, ..] = step.micro_node_refs.as_slice() else {
+                return None;
+            };
+            Some((source.micro_node_id.as_str(), target.micro_node_id.as_str()))
+        })
+        .collect::<Vec<_>>();
+    if flow_pairs.is_empty() {
+        return false;
+    }
+
+    let mut connected = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for (index, (source, target)) in flow_pairs.iter().enumerate() {
+            if reachable_targets.contains(*target) {
+                changed |= connected.insert(index);
+                changed |= reachable_targets.insert((*source).to_string());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    connected.len() == flow_pairs.len()
 }
 
 fn classify_decision_state(
@@ -2155,8 +2955,11 @@ fn validate_packet_edge(
         ));
         return;
     };
-    if !mvp4_3_local_micro_flow_packet_supported_edge_kinds(edge.language.as_str())
-        .contains(&relation_kind)
+    if !mvp4_3_local_micro_flow_packet_supported_edge_kinds_for_source(
+        edge.language.as_str(),
+        &edge.file_id,
+    )
+    .contains(&relation_kind)
     {
         diagnostics.push(LocalMicroFlowPacketCandidateDiagnostic::unsupported(
             "unsupported_relation",
@@ -2165,6 +2968,7 @@ fn validate_packet_edge(
                 "relation {relation_kind} is not supported by the active MVP4.3 packet adapter"
             ),
         ));
+        return;
     }
     let Some(head) = nodes_by_id.get(edge.source_micro_node_id.as_str()).copied() else {
         diagnostics.push(LocalMicroFlowPacketCandidateDiagnostic::integrity(
@@ -2182,6 +2986,27 @@ fn validate_packet_edge(
         ));
         return;
     };
+    if !edge_endpoint_pair_matches_relation(relation_kind, head, tail) {
+        diagnostics.push(LocalMicroFlowPacketCandidateDiagnostic::integrity(
+            "edge_endpoint_pair_mismatch",
+            Some(edge.micro_edge_id.clone()),
+            format!(
+                "relation {relation_kind} does not allow directional pair {} -> {}",
+                head.raw_micro_kind, tail.raw_micro_kind
+            ),
+        ));
+    }
+    let packet_capability = mvp4_3_local_micro_flow_packet_language_capability_for_source(
+        &edge.language,
+        &edge.file_id,
+    );
+    if packet_capability.frontend != Some(edge.frontend.trim()) {
+        diagnostics.push(LocalMicroFlowPacketCandidateDiagnostic::integrity(
+            "edge_frontend_mismatch",
+            Some(edge.micro_edge_id.clone()),
+            "micro-edge frontend does not match the selected packet language capability",
+        ));
+    }
     if edge.source_span.is_none() {
         diagnostics.push(LocalMicroFlowPacketCandidateDiagnostic::integrity(
             "missing_source_span",
@@ -2196,14 +3021,11 @@ fn validate_packet_edge(
             "proof-bearing micro-edge is missing provenance",
         ));
     }
-    if !same_function_domain(head.function_domain(), function_domain)
-        || !same_function_domain(tail.function_domain(), function_domain)
-        || !same_function_domain(edge.function_domain(), function_domain)
-    {
+    if !edge_ownership_matches_relation(relation_kind, edge, head, tail, function_domain) {
         diagnostics.push(LocalMicroFlowPacketCandidateDiagnostic::integrity(
             "cross_function_edge",
             Some(edge.micro_edge_id.clone()),
-            "micro-edge crosses the packet function ownership boundary",
+            "micro-edge violates its directional function ownership policy",
         ));
     }
     let edge_file = normalize_repo_relative_path(&edge.file_id);
@@ -2247,13 +3069,20 @@ fn edge_is_eligible(
     let Some(relation_kind) = edge.relation_kind else {
         return false;
     };
-    if !mvp4_3_local_micro_flow_packet_supported_edge_kinds(edge.language.as_str())
-        .contains(&relation_kind)
+    if !mvp4_3_local_micro_flow_packet_supported_edge_kinds_for_source(
+        edge.language.as_str(),
+        &edge.file_id,
+    )
+    .contains(&relation_kind)
         || edge.source_span.is_none()
         || edge.provenance_id.is_none()
         || !edge.is_claimable()
         || !edge_exactness_matches_relation(edge)
-        || !mvp4_3_local_micro_flow_packet_source_supported(&edge.language, edge.source_role)
+        || !mvp4_3_local_micro_flow_packet_source_supported_for_source(
+            &edge.language,
+            &edge.file_id,
+            edge.source_role,
+        )
     {
         return false;
     }
@@ -2263,15 +3092,23 @@ fn edge_is_eligible(
     ) else {
         return false;
     };
+    if !edge_endpoint_pair_matches_relation(relation_kind, head, tail)
+        || mvp4_3_local_micro_flow_packet_language_capability_for_source(
+            &edge.language,
+            &edge.file_id,
+        )
+        .frontend
+            != Some(edge.frontend.trim())
+        || !edge_ownership_matches_relation(relation_kind, edge, head, tail, function_domain)
+    {
+        return false;
+    }
     head.source_span.is_some()
         && tail.source_span.is_some()
         && is_supported_packet_source(head)
         && is_supported_packet_source(tail)
         && head.is_claimable()
         && tail.is_claimable()
-        && same_function_domain(head.function_domain(), function_domain)
-        && same_function_domain(tail.function_domain(), function_domain)
-        && same_function_domain(edge.function_domain(), function_domain)
         && normalize_repo_relative_path(&edge.file_id)
             == normalize_repo_relative_path(&head.file_id)
         && normalize_repo_relative_path(&edge.file_id)
@@ -2279,28 +3116,77 @@ fn edge_is_eligible(
 }
 
 fn edge_exactness_matches_relation(edge: &LocalMicroFlowPersistedEdgeFact) -> bool {
-    match edge.relation_kind {
-        Some(MicroEdgeKind::LocalFlowsTo) => {
-            edge.exactness == MicroExactness::DerivedWithProvenance
+    let Some(relation_kind) = edge.relation_kind else {
+        return false;
+    };
+    let capability = mvp4_3_local_micro_flow_packet_language_capability_for_source(
+        &edge.language,
+        &edge.file_id,
+    );
+    if capability.exact_edge_kinds.contains(&relation_kind) {
+        edge.exactness == MicroExactness::Exact
+    } else if capability
+        .derived_with_provenance_edge_kinds
+        .contains(&relation_kind)
+    {
+        edge.exactness == MicroExactness::DerivedWithProvenance
+    } else {
+        false
+    }
+}
+
+fn edge_endpoint_pair_matches_relation(
+    relation_kind: MicroEdgeKind,
+    head: &LocalMicroFlowPersistedNodeFact,
+    tail: &LocalMicroFlowPersistedNodeFact,
+) -> bool {
+    let (Some(head_kind), Some(tail_kind)) = (head.micro_kind, tail.micro_kind) else {
+        return false;
+    };
+    mvp4_micro_edge_endpoint_pairs(relation_kind)
+        .iter()
+        .any(|pair| pair.head == head_kind && pair.tail == tail_kind)
+}
+
+fn edge_ownership_matches_relation(
+    relation_kind: MicroEdgeKind,
+    edge: &LocalMicroFlowPersistedEdgeFact,
+    head: &LocalMicroFlowPersistedNodeFact,
+    tail: &LocalMicroFlowPersistedNodeFact,
+    function_domain: &str,
+) -> bool {
+    match mvp4_micro_edge_ownership_policy(relation_kind) {
+        MicroEdgeOwnershipPolicy::SameFunction => {
+            same_function_domain(head.function_domain(), function_domain)
+                && same_function_domain(tail.function_domain(), function_domain)
+                && same_function_domain(edge.function_domain(), function_domain)
         }
-        Some(MicroEdgeKind::LocalReads)
-        | Some(MicroEdgeKind::LocalWrites)
-        | Some(MicroEdgeKind::LocalReturnsTo) => edge.exactness == MicroExactness::Exact,
-        _ => false,
+        MicroEdgeOwnershipPolicy::CallerToSameFileFunction => {
+            same_function_domain(head.function_domain(), function_domain)
+                && same_function_domain(edge.function_domain(), function_domain)
+                && tail.micro_kind == Some(MicroNodeKind::FunctionFrame)
+                && normalize_repo_relative_path(&head.file_id)
+                    == normalize_repo_relative_path(&tail.file_id)
+        }
     }
 }
 
 fn is_supported_packet_source(node: &LocalMicroFlowPersistedNodeFact) -> bool {
-    mvp4_3_local_micro_flow_packet_source_supported(&node.language, node.source_role)
+    mvp4_3_local_micro_flow_packet_source_supported_for_source(
+        &node.language,
+        &node.file_id,
+        node.source_role,
+    )
 }
 
 fn same_function_domain(value: Option<&str>, expected: &str) -> bool {
     value.is_some_and(|value| value.trim() == expected)
 }
 
-fn is_allowed_packet_node(language: &str, kind: Option<MicroNodeKind>) -> bool {
+fn is_allowed_packet_node(language: &str, source_path: &str, kind: Option<MicroNodeKind>) -> bool {
     kind.is_some_and(|kind| {
-        mvp4_3_local_micro_flow_packet_supported_node_kinds(language).contains(&kind)
+        mvp4_3_local_micro_flow_packet_supported_node_kinds_for_source(language, source_path)
+            .contains(&kind)
     })
 }
 
@@ -2378,18 +3264,21 @@ fn edge_to_canonical_step(
         derivation_kind: match relation_kind {
             MicroEdgeKind::LocalReads | MicroEdgeKind::LocalWrites => "resolver_backed_binding",
             MicroEdgeKind::LocalFlowsTo => "local_assignment_chain_derivation",
+            MicroEdgeKind::LocalCalls => "compiler_or_lsp_backed_call_target",
             MicroEdgeKind::LocalReturnsTo => "direct_ast_ownership",
-            _ => "unsupported",
+            MicroEdgeKind::LocalMutates => "local_sequence_derivation",
+            MicroEdgeKind::LocalChecks => "direct_ast_condition",
+            MicroEdgeKind::LocalSanitizes => "local_assignment_chain_derivation",
+            MicroEdgeKind::LocalGuards => "local_sequence_derivation",
+            MicroEdgeKind::LocalAsserts => "local_assignment_chain_derivation",
+            MicroEdgeKind::LocalBranchesTo => "direct_ast_branch_arm",
         }
         .to_string(),
         source_fact_ids: vec![edge.micro_edge_id.clone()],
         source_spans: vec![source_span.clone()],
         extractor_or_adapter_version: edge.extraction_version.clone(),
         exactness: edge.exactness,
-        limitations: vec![
-            "persisted_micro_edge_fact_only".to_string(),
-            "no_packet_flow_proof_in_prompt_5".to_string(),
-        ],
+        limitations: vec!["persisted_micro_edge_fact_only".to_string()],
     };
     let return_path_identity = (relation_kind == MicroEdgeKind::LocalReturnsTo).then(|| {
         LocalMicroFlowReturnPathIdentity {
@@ -2397,19 +3286,28 @@ fn edge_to_canonical_step(
             path_kind: "explicit_return_anchor".to_string(),
         }
     });
+    let branch_identity = branch_identity_for_edge(edge, node_refs);
     Some(LocalMicroFlowCanonicalStep {
         step_id: format!("step:{}:{}", relation_kind.as_str(), edge.micro_edge_id),
         step_kind: match relation_kind {
             MicroEdgeKind::LocalReads => LocalMicroFlowStepKind::Read,
             MicroEdgeKind::LocalWrites => LocalMicroFlowStepKind::Write,
             MicroEdgeKind::LocalFlowsTo => LocalMicroFlowStepKind::Assignment,
+            MicroEdgeKind::LocalCalls => LocalMicroFlowStepKind::Call,
             MicroEdgeKind::LocalReturnsTo => LocalMicroFlowStepKind::Return,
-            _ => LocalMicroFlowStepKind::UnsupportedGap,
+            MicroEdgeKind::LocalMutates => LocalMicroFlowStepKind::Mutation,
+            MicroEdgeKind::LocalChecks => LocalMicroFlowStepKind::Condition,
+            MicroEdgeKind::LocalSanitizes => LocalMicroFlowStepKind::Sanitizer,
+            MicroEdgeKind::LocalGuards => LocalMicroFlowStepKind::Guard,
+            MicroEdgeKind::LocalAsserts => LocalMicroFlowStepKind::Assertion,
+            MicroEdgeKind::LocalBranchesTo => LocalMicroFlowStepKind::Branch,
         },
         order_key: LocalMicroFlowOrderKey {
             source_order,
             structural_order: vec![edge.micro_edge_id.clone()],
-            branch_order: None,
+            branch_order: branch_identity
+                .as_ref()
+                .map(|identity| identity.branch_id.clone()),
             return_path_order: return_path_identity
                 .as_ref()
                 .map(|identity| identity.return_path_id.clone()),
@@ -2426,8 +3324,10 @@ fn edge_to_canonical_step(
         exactness: edge.exactness,
         claimability: edge.claimability.clone(),
         source_role: edge.source_role,
-        branch_id: None,
-        branch_identity: None,
+        branch_id: branch_identity
+            .as_ref()
+            .map(|identity| identity.branch_id.clone()),
+        branch_identity,
         return_path_id: return_path_identity
             .as_ref()
             .map(|identity| identity.return_path_id.clone()),
@@ -2437,8 +3337,34 @@ fn edge_to_canonical_step(
         proof_contribution: ProofLadderLevel::GraphRelationProof,
         limitations: vec![
             "function_local_only".to_string(),
-            "packet_candidate_not_persisted".to_string(),
+            "packet_step_from_persisted_micro_edge".to_string(),
         ],
+    })
+}
+
+fn branch_identity_for_edge(
+    edge: &LocalMicroFlowPersistedEdgeFact,
+    node_refs: &BTreeMap<String, LocalMicroFlowMicroNodeRef>,
+) -> Option<LocalMicroFlowBranchIdentity> {
+    let (branch_arm_id, condition_micro_node_id) = match edge.relation_kind {
+        Some(MicroEdgeKind::LocalBranchesTo) => (
+            edge.target_micro_node_id.as_str(),
+            Some(edge.source_micro_node_id.clone()),
+        ),
+        Some(MicroEdgeKind::LocalGuards) => (edge.source_micro_node_id.as_str(), None),
+        _ => return None,
+    };
+    if !node_refs
+        .get(branch_arm_id)
+        .is_some_and(|node| node.micro_kind == MicroNodeKind::BranchArm.as_str())
+    {
+        return None;
+    }
+    Some(LocalMicroFlowBranchIdentity {
+        branch_id: format!("branch-arm:{branch_arm_id}"),
+        branch_kind: "source_spanned_condition_branch_arm".to_string(),
+        branch_label: branch_arm_id.to_string(),
+        condition_micro_node_id,
     })
 }
 
@@ -2542,6 +3468,33 @@ pub struct LocalMicroFlowGenerationState {
 }
 
 impl LocalMicroFlowGenerationState {
+    pub fn for_language(language: &str) -> Self {
+        let capability = mvp4_3_local_micro_flow_packet_language_capability(language);
+        let active = capability.activation_status
+            == LocalMicroFlowPacketSupportStatus::ExactCapable
+            && capability.extraction_version.is_some();
+        Self {
+            production_packet_generation_active: active,
+            parser_emission_active: active,
+            proof_strength_active: active,
+            context_entry_command_active: active,
+        }
+    }
+
+    pub fn for_source(language: &str, source_path: &str) -> Self {
+        let capability =
+            mvp4_3_local_micro_flow_packet_language_capability_for_source(language, source_path);
+        let active = capability.activation_status
+            == LocalMicroFlowPacketSupportStatus::ExactCapable
+            && capability.extraction_version.is_some();
+        Self {
+            production_packet_generation_active: active,
+            parser_emission_active: active,
+            proof_strength_active: active,
+            context_entry_command_active: active,
+        }
+    }
+
     pub const fn inactive() -> Self {
         Self {
             production_packet_generation_active: false,
@@ -3640,7 +4593,7 @@ fn micro_edge_kind_schema_value(kind: MicroEdgeKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::LocalMicroFlowPacketStatus;
+    use crate::{LocalMicroFlowPacketStatus, MVP4_CANONICAL_LANGUAGE_FRONTENDS};
     use std::collections::BTreeSet;
 
     fn sample_span(start_column: u32, end_column: u32) -> SourceSpan {
@@ -3901,7 +4854,14 @@ mod tests {
         tail: &str,
         start: u32,
     ) -> LocalMicroFlowPersistedEdgeFact {
-        let exactness = if relation == MicroEdgeKind::LocalFlowsTo {
+        let exactness = if matches!(
+            relation,
+            MicroEdgeKind::LocalFlowsTo
+                | MicroEdgeKind::LocalMutates
+                | MicroEdgeKind::LocalSanitizes
+                | MicroEdgeKind::LocalGuards
+                | MicroEdgeKind::LocalAsserts
+        ) {
             MicroExactness::DerivedWithProvenance
         } else {
             MicroExactness::Exact
@@ -3934,7 +4894,13 @@ mod tests {
                 MicroEdgeKind::LocalWrites => "mvp4.2b-typescript-local-writes-v1",
                 MicroEdgeKind::LocalFlowsTo => "mvp4.2b-typescript-local-flows-to-v1",
                 MicroEdgeKind::LocalReturnsTo => "mvp4.2-typescript-local-returns-to-v1",
-                _ => "unsupported",
+                MicroEdgeKind::LocalCalls => "mvp4.3-typescript-local-calls-v1",
+                MicroEdgeKind::LocalMutates => "mvp4.3-typescript-local-mutates-v1",
+                MicroEdgeKind::LocalChecks => "mvp4.3-typescript-local-checks-v1",
+                MicroEdgeKind::LocalSanitizes => "mvp4.3-typescript-local-sanitizes-v1",
+                MicroEdgeKind::LocalGuards => "mvp4.3-typescript-local-guards-v1",
+                MicroEdgeKind::LocalAsserts => "mvp4.3-typescript-local-asserts-v1",
+                MicroEdgeKind::LocalBranchesTo => "mvp4.3-typescript-local-branches-to-v1",
             }
             .to_string(),
             claimability: format!("claimable_source_spanned_{}", relation.as_str()),
@@ -3943,18 +4909,20 @@ mod tests {
     }
 
     fn packet_candidate_nodes() -> Vec<LocalMicroFlowPersistedNodeFact> {
+        let mut return_site = persisted_node("return-total", MicroNodeKind::ReturnSite, None, 21);
+        return_site.source_span = Some(SourceSpan::with_columns("src/auth.ts", 3, 21, 3, 30));
         vec![
             persisted_node("fn-login", MicroNodeKind::FunctionFrame, Some("login"), 1),
             persisted_node("param-seed", MicroNodeKind::Parameter, Some("seed"), 5),
             persisted_node("assign-total", MicroNodeKind::AssignmentSite, None, 9),
-            persisted_node("use-seed", MicroNodeKind::ValueUse, Some("seed"), 13),
+            persisted_node("use-total", MicroNodeKind::ValueUse, Some("total"), 24),
             persisted_node(
                 "local-total",
                 MicroNodeKind::LocalBinding,
                 Some("total"),
                 17,
             ),
-            persisted_node("return-total", MicroNodeKind::ReturnSite, None, 21),
+            return_site,
         ]
     }
 
@@ -3964,10 +4932,10 @@ mod tests {
             packet_candidate_nodes(),
             vec![
                 persisted_edge(
-                    "read-seed",
+                    "read-total",
                     MicroEdgeKind::LocalReads,
-                    "use-seed",
-                    "param-seed",
+                    "use-total",
+                    "local-total",
                     3,
                 ),
                 persisted_edge(
@@ -3993,6 +4961,64 @@ mod tests {
                 ),
             ],
         )
+    }
+
+    fn retarget_packet_candidate_input(
+        mut input: LocalMicroFlowPersistedFactInput,
+        repo_relative_path: &str,
+    ) -> LocalMicroFlowPersistedFactInput {
+        fn retarget_span(span: &mut Option<SourceSpan>, repo_relative_path: &str) {
+            if let Some(existing) = span.take() {
+                *span = Some(SourceSpan::with_columns(
+                    repo_relative_path,
+                    existing.start_line,
+                    existing.start_column.unwrap_or(0),
+                    existing.end_line,
+                    existing.end_column.unwrap_or(0),
+                ));
+            }
+        }
+
+        input.repo_relative_path = repo_relative_path.to_string();
+        for node in &mut input.nodes {
+            node.file_id = repo_relative_path.to_string();
+            retarget_span(&mut node.source_span, repo_relative_path);
+            node.extraction_version =
+                crate::MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION.to_string();
+            node.claimability = crate::MVP4_3_PARSER_FACTS_V1_CLAIMABILITY.to_string();
+        }
+        for edge in &mut input.edges {
+            edge.file_id = repo_relative_path.to_string();
+            retarget_span(&mut edge.source_span, repo_relative_path);
+            edge.extraction_version =
+                crate::MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION.to_string();
+            edge.claimability = crate::MVP4_3_PARSER_FACTS_V1_CLAIMABILITY.to_string();
+        }
+        input
+    }
+
+    fn parser_facts_v1_no_edge_input(
+        language: &str,
+        repo_relative_path: &str,
+    ) -> LocalMicroFlowPersistedFactInput {
+        let mut nodes = packet_candidate_nodes();
+        for node in &mut nodes {
+            node.file_id = repo_relative_path.to_string();
+            if let Some(existing) = node.source_span.take() {
+                node.source_span = Some(SourceSpan::with_columns(
+                    repo_relative_path,
+                    existing.start_line,
+                    existing.start_column.unwrap_or(0),
+                    existing.end_line,
+                    existing.end_column.unwrap_or(0),
+                ));
+            }
+            node.language = language.to_string();
+            node.extraction_version =
+                MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION.to_string();
+            node.claimability = crate::MVP4_3_PARSER_FACTS_V1_CLAIMABILITY.to_string();
+        }
+        LocalMicroFlowPersistedFactInput::new(repo_relative_path, nodes, Vec::new())
     }
 
     fn complete_packet_candidate_packet() -> LocalMicroFlowCanonicalPacket {
@@ -4042,9 +5068,66 @@ mod tests {
         assert_eq!(compact["proof_strength"], "flow_proof");
         assert_eq!(
             compact["generation_state"]["proof_strength_active"],
-            serde_json::json!(false)
+            serde_json::json!(true)
         );
         assert!(compact.get("ordered_steps").is_none());
+    }
+
+    #[test]
+    fn mvp4_3_packet_builder_uses_source_aware_generic_identity_and_rejects_declarations() {
+        let generic_input =
+            retarget_packet_candidate_input(complete_packet_candidate_input(), "src/auth.mts");
+        let generic_result =
+            build_local_micro_flow_packet_candidates_from_persisted_facts(&generic_input);
+        let generic_candidate = &generic_result.candidates[0];
+        assert_eq!(
+            generic_candidate.packet_status,
+            LocalMicroFlowPacketStatus::MicroFlowFound
+        );
+        let generic_packet = generic_candidate.packet.as_ref().expect("generic packet");
+        assert_eq!(generic_packet.file.repo_relative_path, "src/auth.mts");
+        let ordered_step_ids = generic_packet
+            .paths
+            .iter()
+            .flat_map(|path| path.steps.iter().map(|step| step.step_id.clone()))
+            .collect();
+        assert_eq!(
+            generic_packet.packet_id,
+            stable_micro_packet_id(&MicroPacketIdentityInput {
+                repo_relative_path: generic_packet.file.repo_relative_path.clone(),
+                language: generic_packet.file.language.clone(),
+                function_entity_id: generic_packet.function_identity.function_id.clone(),
+                packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
+                packet_version: 1,
+                extraction_version:
+                    MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION.to_string(),
+                step_set_version: LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION.to_string(),
+                ordered_step_ids,
+            })
+        );
+        let agent_json = generic_packet
+            .to_agent_json(false)
+            .expect("generic agent packet");
+        assert_eq!(
+            agent_json["extraction_version"],
+            MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        );
+        assert_eq!(
+            agent_json["generation_state"]["production_packet_generation_active"],
+            serde_json::json!(true)
+        );
+
+        let declaration_input =
+            retarget_packet_candidate_input(complete_packet_candidate_input(), "src/auth.d.ts");
+        let declaration_result =
+            build_local_micro_flow_packet_candidates_from_persisted_facts(&declaration_input);
+        assert_eq!(declaration_result.candidates.len(), 1);
+        assert_eq!(
+            declaration_result.candidates[0].packet_status,
+            LocalMicroFlowPacketStatus::MicroFlowUnsupported
+        );
+        assert!(declaration_result.candidates[0].packet.is_none());
+        assert!(!declaration_result.flow_proof_activated());
     }
 
     #[test]
@@ -4054,7 +5137,7 @@ mod tests {
             persisted_edge(
                 "missing-endpoint",
                 MicroEdgeKind::LocalReads,
-                "use-seed",
+                "use-total",
                 "missing-local",
                 3,
             ),
@@ -4190,6 +5273,50 @@ mod tests {
     }
 
     #[test]
+    fn mvp4_3_flow_proof_rejects_unrelated_assignment_flow_before_constant_return() {
+        let mut input = complete_packet_candidate_input();
+        let value_use = input
+            .nodes
+            .iter_mut()
+            .find(|node| node.micro_node_id == "use-total")
+            .expect("value use");
+        value_use.symbol = Some("seed".to_string());
+        value_use.source_span = Some(SourceSpan::with_columns("src/auth.ts", 3, 13, 3, 17));
+        let read = input
+            .edges
+            .iter_mut()
+            .find(|edge| edge.relation_kind == Some(MicroEdgeKind::LocalReads))
+            .expect("read edge");
+        read.target_micro_node_id = "param-seed".to_string();
+
+        let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
+        let candidate = &result.candidates[0];
+        assert_eq!(
+            candidate.packet_status,
+            LocalMicroFlowPacketStatus::PartialMicroFlowFound
+        );
+        assert_eq!(
+            candidate.proof_strength,
+            ProofLadderLevel::GraphRelationProof
+        );
+        let packet = candidate.packet.as_ref().expect("partial packet");
+        assert!(packet
+            .unknown_unsupported_gaps
+            .iter()
+            .any(|gap| gap.gap_kind == "flow_not_connected_to_return"));
+        assert!(!packet.paths[0].steps.iter().any(|step| {
+            step.micro_edge_refs
+                .iter()
+                .any(|edge| edge.relation_kind == "LOCAL_FLOWS_TO")
+        }));
+        let classification = first_path_classification(packet);
+        assert!(!classification.flow_proof_eligible);
+        assert!(classification
+            .missing_requirements
+            .contains(&"flow_connected_to_return".to_string()));
+    }
+
+    #[test]
     fn mvp4_3_proof_classification_downgrades_missing_provenance_span_and_stale_facts() {
         let mut missing_provenance = complete_packet_candidate_packet();
         let flow_step = missing_provenance.paths[0]
@@ -4286,6 +5413,13 @@ mod tests {
             "call-dynamic",
             MicroNodeKind::CallSite,
             Some("lookup"),
+            25,
+        ));
+        dynamic_input.edges.push(persisted_edge(
+            "flow-call-dynamic-total",
+            MicroEdgeKind::LocalFlowsTo,
+            "call-dynamic",
+            "local-total",
             25,
         ));
         let dynamic_result =
@@ -4447,6 +5581,12 @@ mod tests {
             "local-final",
             33,
         ));
+        multi
+            .edges
+            .iter_mut()
+            .find(|edge| edge.relation_kind == Some(MicroEdgeKind::LocalReads))
+            .expect("return value read")
+            .target_micro_node_id = "local-final".to_string();
         let multi_result = build_local_micro_flow_packet_candidates_from_persisted_facts(&multi);
         let packet = multi_result.candidates[0]
             .packet
@@ -4478,6 +5618,77 @@ mod tests {
     }
 
     #[test]
+    fn mvp4_3_parser_facts_zero_edge_diagnostics_use_evidence_bound_unified_version() {
+        for (language, repo_relative_path) in [
+            ("python", "src/noop.py"),
+            ("go", "src/noop.go"),
+            ("rust", "src/noop.rs"),
+        ] {
+            let input = parser_facts_v1_no_edge_input(language, repo_relative_path);
+            let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
+            assert_eq!(result.candidates.len(), 1, "{repo_relative_path}");
+            let candidate = &result.candidates[0];
+            assert_eq!(
+                candidate.packet_status,
+                LocalMicroFlowPacketStatus::NoMicroFlowPathFound,
+                "{repo_relative_path}"
+            );
+            assert_eq!(
+                candidate.proof_strength,
+                ProofLadderLevel::Unknown,
+                "{repo_relative_path}"
+            );
+            assert!(
+                !candidate.packet_status.rows_may_be_claimable(),
+                "{repo_relative_path}"
+            );
+            assert_eq!(candidate.edge_ref_count, 0, "{repo_relative_path}");
+            assert_eq!(
+                candidate.source_micro_node_extraction_versions,
+                vec![MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION.to_string()],
+                "{repo_relative_path}"
+            );
+            assert_eq!(
+                candidate.source_micro_edge_extraction_versions,
+                vec![MVP4_3_PARSER_FACTS_V1_MICRO_FACT_EXTRACTION_VERSION.to_string()],
+                "{repo_relative_path}"
+            );
+            assert!(candidate
+                .packet
+                .as_ref()
+                .expect("zero-edge diagnostic packet")
+                .unknown_unsupported_gaps
+                .iter()
+                .any(|gap| gap.gap_kind == "no_micro_flow_path_found"));
+        }
+    }
+
+    #[test]
+    fn mvp4_3_parser_facts_zero_edge_versions_do_not_infer_from_foreign_or_mixed_nodes() {
+        let mut foreign = parser_facts_v1_no_edge_input("rust", "src/foreign.rs");
+        for node in &mut foreign.nodes {
+            node.extraction_version = "foreign-parser-facts-version".to_string();
+        }
+        let mut mixed = parser_facts_v1_no_edge_input("rust", "src/mixed.rs");
+        mixed.nodes[0].extraction_version = "foreign-parser-facts-version".to_string();
+
+        for (label, input) in [("foreign", foreign), ("mixed", mixed)] {
+            let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
+            let candidate = &result.candidates[0];
+            assert_eq!(
+                candidate.packet_status,
+                LocalMicroFlowPacketStatus::NoMicroFlowPathFound,
+                "{label}"
+            );
+            assert!(candidate.packet.is_some(), "{label}");
+            assert!(
+                candidate.source_micro_edge_extraction_versions.is_empty(),
+                "{label}: zero-edge ParserFacts versions must require exact persisted node evidence"
+            );
+        }
+    }
+
+    #[test]
     fn mvp4_3_packet_candidate_keeps_p2_sized_chain_flow_proof() {
         let mut input = complete_packet_candidate_input();
         let mut previous = "local-total".to_string();
@@ -4498,6 +5709,12 @@ mod tests {
             ));
             previous = node_id;
         }
+        input
+            .edges
+            .iter_mut()
+            .find(|edge| edge.relation_kind == Some(MicroEdgeKind::LocalReads))
+            .expect("return value read")
+            .target_micro_node_id = previous;
 
         let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
         let candidate = &result.candidates[0];
@@ -4642,6 +5859,12 @@ mod tests {
             ));
             previous = node_id;
         }
+        input
+            .edges
+            .iter_mut()
+            .find(|edge| edge.relation_kind == Some(MicroEdgeKind::LocalReads))
+            .expect("return value read")
+            .target_micro_node_id = previous;
 
         let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
         let candidate = &result.candidates[0];
@@ -4733,6 +5956,12 @@ mod tests {
             input.edges.push(edge);
             previous = node_id;
         }
+        input
+            .edges
+            .iter_mut()
+            .find(|edge| edge.relation_kind == Some(MicroEdgeKind::LocalReads))
+            .expect("return value read")
+            .target_micro_node_id = previous;
 
         let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
         let candidate = &result.candidates[0];
@@ -4771,8 +6000,32 @@ mod tests {
     }
 
     #[test]
-    fn mvp4_3_packet_adapter_registry_defaults_unsupported_and_typescript_only_active() {
+    fn mvp4_3_packet_adapter_registry_preserves_source_aware_activation_boundaries() {
+        assert_eq!(
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES.len(),
+            MVP4_CANONICAL_LANGUAGE_FRONTENDS.len()
+        );
+        for (capability, contract) in MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES
+            .iter()
+            .zip(MVP4_CANONICAL_LANGUAGE_FRONTENDS)
+        {
+            assert_eq!(capability.language, contract.language);
+            assert_eq!(capability.frontend, Some(contract.frontend));
+            assert_eq!(
+                capability.declared_static_scope,
+                contract.declared_static_scope
+            );
+            assert_eq!(
+                capability.canonical_node_kinds,
+                MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+            );
+            assert_eq!(capability.canonical_edge_kinds, MicroEdgeKind::ALL);
+        }
         let typescript = mvp4_3_local_micro_flow_packet_language_capability("typescript");
+        assert_eq!(
+            typescript,
+            mvp4_3_local_micro_flow_packet_language_capability("ts")
+        );
         assert_eq!(
             typescript.activation_status,
             LocalMicroFlowPacketSupportStatus::ExactCapable
@@ -4780,9 +6033,25 @@ mod tests {
         assert!(typescript
             .supported_edge_kinds
             .contains(&MicroEdgeKind::LocalFlowsTo));
+        assert_eq!(typescript.supported_edge_kinds, MicroEdgeKind::ALL);
+        assert!(typescript
+            .exact_edge_kinds
+            .contains(&MicroEdgeKind::LocalCalls));
+        assert!(typescript
+            .derived_with_provenance_edge_kinds
+            .contains(&MicroEdgeKind::LocalMutates));
         assert!(typescript
             .supported_node_kinds
             .contains(&MicroNodeKind::ValueUse));
+        assert_eq!(
+            typescript.supported_node_kinds,
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+        );
+        assert_eq!(typescript.adapter_id, "legacy_typescript_v1");
+        assert_eq!(
+            typescript.extraction_version,
+            Some(MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION)
+        );
         assert!(mvp4_3_local_micro_flow_packet_source_supported(
             "typescript",
             MicroSourceRole::Production
@@ -4796,31 +6065,53 @@ mod tests {
             "javascript",
             "jsx",
             "tsx",
-            "rust",
             "python",
             "go",
-            "c",
-            "cpp",
-            "c_cpp",
+            "rust",
             "java",
             "csharp",
+            "c",
+            "cpp",
             "ruby",
             "php",
         ] {
             let capability = mvp4_3_local_micro_flow_packet_language_capability(language);
             assert_eq!(
                 capability.activation_status,
-                LocalMicroFlowPacketSupportStatus::NotImplemented,
-                "{language} must default to not implemented"
+                LocalMicroFlowPacketSupportStatus::ExactCapable
             );
-            assert!(!capability.activation_status.default_exact_support());
-            assert!(capability.supported_node_kinds.is_empty());
-            assert!(capability.supported_edge_kinds.is_empty());
-            assert!(!mvp4_3_local_micro_flow_packet_source_supported(
+            assert_eq!(capability.adapter_id, "parser_facts_v1");
+            assert_eq!(
+                capability.supported_node_kinds,
+                MVP4_3_LOCAL_MICRO_FLOW_PACKET_NODE_KINDS
+            );
+            assert_eq!(capability.supported_edge_kinds, MicroEdgeKind::ALL);
+            assert_eq!(
+                capability.extraction_version,
+                Some(MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION)
+            );
+            assert!(mvp4_3_local_micro_flow_packet_source_supported(
                 language,
                 MicroSourceRole::Production
             ));
+            assert!(!mvp4_3_local_micro_flow_packet_source_supported(
+                language,
+                MicroSourceRole::Test
+            ));
         }
+
+        assert_eq!(
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_LANGUAGE_CAPABILITIES
+                .iter()
+                .filter(|capability| capability.activation_status
+                    == LocalMicroFlowPacketSupportStatus::NotImplemented)
+                .count(),
+            0
+        );
+        assert_eq!(
+            mvp4_3_local_micro_flow_packet_language_capability("c_cpp").language,
+            "unknown"
+        );
 
         let unknown = mvp4_3_local_micro_flow_packet_language_capability("haskell");
         assert_eq!(unknown.language, "unknown");
@@ -4830,12 +6121,292 @@ mod tests {
         );
         assert_eq!(
             mvp4_3_local_micro_flow_packet_active_languages(),
-            vec!["typescript"]
+            vec![
+                "javascript",
+                "jsx",
+                "typescript",
+                "tsx",
+                "python",
+                "go",
+                "rust",
+                "java",
+                "csharp",
+                "c",
+                "cpp",
+                "ruby",
+                "php",
+            ]
         );
         assert_eq!(
             mvp4_3_default_local_micro_flow_packet_query_language(),
-            Some("typescript")
+            None
         );
+        assert_eq!(exactly_one_active_packet_language(&[]), None);
+        assert_eq!(
+            exactly_one_active_packet_language(&["typescript", "python"]),
+            None
+        );
+        assert_eq!(
+            mvp4_3_local_micro_flow_packet_identity_extraction_version("ts"),
+            MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        );
+        assert_eq!(
+            mvp4_3_local_micro_flow_packet_identity_extraction_version("python"),
+            MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION
+        );
+        for (language, path, expected) in [
+            (
+                "typescript",
+                "src/auth.ts",
+                MVP4_3_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "typescript",
+                "src/auth.mts",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "typescript",
+                "src/auth.cts",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "javascript",
+                "src/auth.js",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "javascript",
+                "src/auth.mjs",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "javascript",
+                "src/auth.cjs",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "jsx",
+                "src/auth.jsx",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "tsx",
+                "src/auth.tsx",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "python",
+                "src/auth.py",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "go",
+                "src/auth.go",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "rust",
+                "src/auth.rs",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "java",
+                "src/Auth.java",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "csharp",
+                "src/Auth.cs",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "c",
+                "src/auth.c",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "c",
+                "src/auth.h",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "cpp",
+                "src/auth.cc",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "cpp",
+                "src/auth.cpp",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "cpp",
+                "src/auth.cxx",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "cpp",
+                "src/auth.hpp",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "cpp",
+                "src/auth.hh",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "cpp",
+                "src/auth.hxx",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "ruby",
+                "src/auth.rb",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "rb",
+                "src/alias.rb",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "php",
+                "src/auth.php",
+                MVP4_3_PARSER_FACTS_V1_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "cpp",
+                "src/auth.h",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "c",
+                "src/auth.hpp",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "java",
+                "src/Auth.cs",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "python",
+                "src/auth.pyi",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "typescript",
+                "src/auth.d.ts",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "ruby",
+                "bin/auth",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "php",
+                "bin/auth",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "ruby",
+                "Rakefile.rake",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "ruby",
+                "plugin.gemspec",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "ruby",
+                "config.ru",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "php",
+                "view.phtml",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "php",
+                "library.inc",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "php",
+                "legacy.php3",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "rb",
+                "src/auth.php",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "ruby",
+                "src/auth.php",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+            (
+                "php",
+                "src/auth.rb",
+                MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION,
+            ),
+        ] {
+            assert_eq!(
+                mvp4_3_local_micro_flow_packet_identity_extraction_version_for_source(
+                    language, path
+                ),
+                expected,
+                "{language}/{path}"
+            );
+            let capability =
+                mvp4_3_local_micro_flow_packet_language_capability_for_source(language, path);
+            let expected_active =
+                expected != MVP4_3_INACTIVE_LOCAL_MICRO_FLOW_PACKET_EXTRACTION_VERSION;
+            assert_eq!(
+                capability.activation_status,
+                if expected_active {
+                    LocalMicroFlowPacketSupportStatus::ExactCapable
+                } else {
+                    LocalMicroFlowPacketSupportStatus::NotImplemented
+                },
+                "{language}/{path}"
+            );
+            assert_eq!(
+                capability.extraction_version,
+                expected_active.then_some(expected),
+                "{language}/{path}"
+            );
+            assert_eq!(
+                mvp4_3_local_micro_flow_packet_source_supported_for_source(
+                    language,
+                    path,
+                    MicroSourceRole::Production,
+                ),
+                expected_active,
+                "{language}/{path}"
+            );
+            assert!(!mvp4_3_local_micro_flow_packet_source_supported_for_source(
+                language,
+                path,
+                MicroSourceRole::Test,
+            ));
+            let generation_state = LocalMicroFlowGenerationState::for_source(language, path);
+            assert_eq!(
+                generation_state.production_packet_generation_active,
+                expected_active
+            );
+            assert_eq!(generation_state.parser_emission_active, expected_active);
+            assert_eq!(generation_state.proof_strength_active, expected_active);
+            assert_eq!(
+                generation_state.context_entry_command_active,
+                expected_active
+            );
+        }
     }
 
     #[test]
@@ -4870,6 +6441,27 @@ mod tests {
             stable_micro_packet_id(&typescript_identity),
             "same function and steps under a different fixture root must not collide"
         );
+
+        let packet = complete_packet_candidate_packet();
+        let selected_version =
+            mvp4_3_local_micro_flow_packet_identity_extraction_version(&packet.file.language);
+        let rebuilt_id = stable_micro_packet_id(&MicroPacketIdentityInput {
+            repo_relative_path: packet.file.repo_relative_path.clone(),
+            language: packet.file.language.clone(),
+            function_entity_id: packet.function_identity.function_id.clone(),
+            packet_kind: MVP4_3_LOCAL_MICRO_FLOW_PACKET_KIND.to_string(),
+            packet_version: 1,
+            extraction_version: selected_version.to_string(),
+            step_set_version: LOCAL_MICRO_FLOW_DICT_V1_STEP_SET_VERSION.to_string(),
+            ordered_step_ids: packet
+                .paths
+                .iter()
+                .flat_map(|path| path.steps.iter().map(|step| step.step_id.clone()))
+                .collect(),
+        });
+        assert_eq!(packet.packet_id, rebuilt_id);
+        let agent_json = packet.to_agent_json(false).expect("agent packet");
+        assert_eq!(agent_json["extraction_version"], selected_version);
     }
 
     #[test]
@@ -4986,6 +6578,26 @@ mod tests {
             Some("send"),
             29,
         ));
+        input.edges.push(persisted_edge(
+            "flow-total-call-dynamic",
+            MicroEdgeKind::LocalFlowsTo,
+            "call-dynamic",
+            "local-total",
+            25,
+        ));
+        input.nodes.push(persisted_node(
+            "mutation-client-send",
+            MicroNodeKind::MutationSite,
+            None,
+            27,
+        ));
+        input.edges.push(persisted_edge(
+            "mutates-client-send",
+            MicroEdgeKind::LocalMutates,
+            "mutation-client-send",
+            "member-client-send",
+            29,
+        ));
 
         let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
         let packet = result.candidates[0].packet.as_ref().expect("packet");
@@ -5018,7 +6630,7 @@ mod tests {
                     "flow-seed-total",
                     MicroEdgeKind::LocalFlowsTo,
                     "param-seed",
-                    "local-total",
+                    "return-total",
                     13,
                 ),
                 persisted_edge(
@@ -5040,6 +6652,313 @@ mod tests {
             .steps
             .iter()
             .any(|step| step.step_id.contains("flow-seed-total")));
+    }
+
+    #[test]
+    fn mvp4_3_unrelated_property_inventory_does_not_poison_exact_return_path() {
+        let mut input = complete_packet_candidate_input();
+        input.nodes.push(persisted_node(
+            "member-unrelated",
+            MicroNodeKind::PropertyAccess,
+            Some("unrelated"),
+            35,
+        ));
+        input.nodes.push(persisted_node(
+            "call-unrelated",
+            MicroNodeKind::CallSite,
+            Some("unrelated"),
+            37,
+        ));
+        let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
+        let packet = result.candidates[0].packet.as_ref().expect("packet");
+        assert!(!packet
+            .unknown_unsupported_gaps
+            .iter()
+            .any(|gap| gap.gap_kind == "member_or_global_target_unsupported"));
+        assert!(!packet
+            .unknown_unsupported_gaps
+            .iter()
+            .any(|gap| gap.gap_kind == "dynamic_or_unresolved_call_target"));
+    }
+
+    #[test]
+    fn mvp4_3_packet_maps_all_relation_semantics_and_preserves_branch_identity() {
+        let mut input = complete_packet_candidate_input();
+        for (id, kind, symbol, start) in [
+            ("call-helper", MicroNodeKind::CallSite, Some("helper"), 25),
+            (
+                "fn-helper",
+                MicroNodeKind::FunctionFrame,
+                Some("helper"),
+                27,
+            ),
+            ("mutation-total", MicroNodeKind::MutationSite, None, 29),
+            (
+                "member-total",
+                MicroNodeKind::PropertyAccess,
+                Some("value"),
+                31,
+            ),
+            ("condition-total", MicroNodeKind::ConditionSite, None, 33),
+            ("branch-then", MicroNodeKind::BranchArm, Some("then"), 35),
+            (
+                "sanitizer-total",
+                MicroNodeKind::SanitizerCall,
+                Some("clean"),
+                37,
+            ),
+            ("assert-total", MicroNodeKind::TestAssertion, None, 39),
+        ] {
+            input.nodes.push(persisted_node(id, kind, symbol, start));
+        }
+        let helper = input
+            .nodes
+            .iter_mut()
+            .find(|node| node.micro_node_id == "fn-helper")
+            .expect("helper frame");
+        helper.function_entity_id = Some("function://helper".to_string());
+        helper.scope_entity_id = Some("scope://helper".to_string());
+        input.edges.extend([
+            persisted_edge(
+                "call-helper-edge",
+                MicroEdgeKind::LocalCalls,
+                "call-helper",
+                "fn-helper",
+                25,
+            ),
+            persisted_edge(
+                "mutate-total-edge",
+                MicroEdgeKind::LocalMutates,
+                "mutation-total",
+                "member-total",
+                29,
+            ),
+            persisted_edge(
+                "check-member-edge",
+                MicroEdgeKind::LocalChecks,
+                "condition-total",
+                "member-total",
+                31,
+            ),
+            persisted_edge(
+                "sanitize-total-edge",
+                MicroEdgeKind::LocalSanitizes,
+                "param-seed",
+                "local-total",
+                33,
+            ),
+            persisted_edge(
+                "flow-seed-sanitizer",
+                MicroEdgeKind::LocalFlowsTo,
+                "param-seed",
+                "sanitizer-total",
+                32,
+            ),
+            persisted_edge(
+                "flow-sanitizer-total",
+                MicroEdgeKind::LocalFlowsTo,
+                "sanitizer-total",
+                "local-total",
+                34,
+            ),
+            persisted_edge(
+                "branch-then-edge",
+                MicroEdgeKind::LocalBranchesTo,
+                "condition-total",
+                "branch-then",
+                35,
+            ),
+            persisted_edge(
+                "guard-return-edge",
+                MicroEdgeKind::LocalGuards,
+                "branch-then",
+                "return-total",
+                37,
+            ),
+            persisted_edge(
+                "assert-total-edge",
+                MicroEdgeKind::LocalAsserts,
+                "use-total",
+                "assert-total",
+                39,
+            ),
+        ]);
+
+        let result = build_local_micro_flow_packet_candidates_from_persisted_facts(&input);
+        let candidate = result
+            .candidates
+            .iter()
+            .find(|candidate| candidate.function_micro_node_id == "fn-login")
+            .expect("caller packet");
+        let packet = candidate.packet.as_ref().expect("packet");
+        let step_kinds = packet.paths[0]
+            .steps
+            .iter()
+            .map(|step| step.step_kind)
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            LocalMicroFlowStepKind::Read,
+            LocalMicroFlowStepKind::Write,
+            LocalMicroFlowStepKind::Assignment,
+            LocalMicroFlowStepKind::Call,
+            LocalMicroFlowStepKind::Return,
+            LocalMicroFlowStepKind::Mutation,
+            LocalMicroFlowStepKind::Condition,
+            LocalMicroFlowStepKind::Guard,
+            LocalMicroFlowStepKind::Sanitizer,
+            LocalMicroFlowStepKind::Assertion,
+            LocalMicroFlowStepKind::Branch,
+        ] {
+            assert!(step_kinds.contains(&expected), "missing {expected:?}");
+        }
+        assert_eq!(
+            packet.paths[0].branch_id.as_deref(),
+            Some("branch-arm:branch-then")
+        );
+        assert!(packet.paths[0].steps.iter().all(|step| {
+            step.branch_identity.as_ref().is_some_and(|identity| {
+                identity.condition_micro_node_id.as_deref() == Some("condition-total")
+            })
+        }));
+        assert!(!packet.unknown_unsupported_gaps.iter().any(|gap| {
+            matches!(
+                gap.gap_kind.as_str(),
+                "dynamic_or_unresolved_call_target"
+                    | "member_or_global_target_unsupported"
+                    | "unsupported_branch_structure"
+            )
+        }));
+        assert!(packet.paths[0].steps.iter().any(|step| {
+            step.step_kind == LocalMicroFlowStepKind::Call
+                && step
+                    .micro_node_refs
+                    .iter()
+                    .any(|node| node.micro_node_id == "fn-helper")
+        }));
+        let sanitizer_input_flow = packet.paths[0]
+            .steps
+            .iter()
+            .find(|step| {
+                step.micro_edge_refs
+                    .iter()
+                    .any(|edge| edge.micro_edge_id == "flow-seed-sanitizer")
+            })
+            .expect("input-to-sanitizer flow step");
+        let sanitizer_output_flow = packet.paths[0]
+            .steps
+            .iter()
+            .find(|step| {
+                step.micro_edge_refs
+                    .iter()
+                    .any(|edge| edge.micro_edge_id == "flow-sanitizer-total")
+            })
+            .expect("sanitizer-to-output flow step");
+        assert_eq!(
+            sanitizer_input_flow
+                .micro_node_refs
+                .iter()
+                .map(|node| node.micro_node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["param-seed", "sanitizer-total"]
+        );
+        assert_eq!(
+            sanitizer_output_flow
+                .micro_node_refs
+                .iter()
+                .map(|node| node.micro_node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sanitizer-total", "local-total"]
+        );
+        for (step, edge_id) in [
+            (sanitizer_input_flow, "flow-seed-sanitizer"),
+            (sanitizer_output_flow, "flow-sanitizer-total"),
+        ] {
+            assert_eq!(step.step_kind, LocalMicroFlowStepKind::Assignment);
+            assert_eq!(step.exactness, MicroExactness::DerivedWithProvenance);
+            assert_eq!(step.provenance.len(), 1);
+            assert_eq!(step.provenance[0].source_fact_ids, vec![edge_id]);
+            assert_eq!(
+                step.provenance[0].exactness,
+                MicroExactness::DerivedWithProvenance
+            );
+        }
+        assert_ne!(
+            sanitizer_input_flow.provenance[0].provenance_id,
+            sanitizer_output_flow.provenance[0].provenance_id
+        );
+        let sanitizer_semantic_step = packet.paths[0]
+            .steps
+            .iter()
+            .find(|step| {
+                step.micro_edge_refs
+                    .iter()
+                    .any(|edge| edge.micro_edge_id == "sanitize-total-edge")
+            })
+            .expect("sanitizer semantic edge step");
+        assert_eq!(
+            sanitizer_semantic_step
+                .micro_node_refs
+                .iter()
+                .map(|node| node.micro_node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["param-seed", "local-total"]
+        );
+        assert_eq!(
+            sanitizer_semantic_step.exactness,
+            MicroExactness::DerivedWithProvenance
+        );
+    }
+
+    #[test]
+    fn mvp4_3_packet_rejects_reversed_check_pair_and_relation_exactness_mismatch() {
+        let mut reversed = complete_packet_candidate_input();
+        reversed.nodes.push(persisted_node(
+            "condition-total",
+            MicroNodeKind::ConditionSite,
+            None,
+            25,
+        ));
+        reversed.nodes.push(persisted_node(
+            "member-total",
+            MicroNodeKind::PropertyAccess,
+            Some("value"),
+            27,
+        ));
+        reversed.edges.push(persisted_edge(
+            "check-reversed",
+            MicroEdgeKind::LocalChecks,
+            "member-total",
+            "condition-total",
+            27,
+        ));
+        let reversed_result =
+            build_local_micro_flow_packet_candidates_from_persisted_facts(&reversed);
+        assert!(reversed_result.candidates[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.diagnostic_kind == "edge_endpoint_pair_mismatch"));
+
+        let mut wrong_exactness = complete_packet_candidate_input();
+        wrong_exactness.nodes.push(persisted_node(
+            "mutation-total",
+            MicroNodeKind::MutationSite,
+            None,
+            25,
+        ));
+        wrong_exactness.edges.push(persisted_edge(
+            "mutate-wrong-exactness",
+            MicroEdgeKind::LocalMutates,
+            "mutation-total",
+            "local-total",
+            25,
+        ));
+        wrong_exactness.edges.last_mut().expect("edge").exactness = MicroExactness::Exact;
+        let wrong_result =
+            build_local_micro_flow_packet_candidates_from_persisted_facts(&wrong_exactness);
+        assert!(wrong_result.candidates[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.diagnostic_kind == "edge_exactness_mismatch"));
     }
 
     #[test]

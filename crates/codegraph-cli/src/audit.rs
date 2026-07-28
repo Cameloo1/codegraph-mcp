@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    mvp4_local_flow_packet_proof_boundary_json, mvp4_micro_edge_proof_boundary_json,
-    mvp4_micro_node_proof_boundary_json, storage_budget,
+    mvp4_local_flow_packet_language_registry_json, mvp4_local_flow_packet_proof_boundary_json,
+    mvp4_micro_edge_proof_boundary_json, mvp4_micro_node_proof_boundary_json, storage_budget,
 };
 
 const AUDIT_SCHEMA_VERSION: u32 = 1;
@@ -3699,7 +3699,7 @@ fn run_micro_nodes_command(args: &[String]) -> Result<Value, String> {
             "db_path": path_string(&options.db_path),
             "schema_version": schema_version,
             "feature_status": status,
-            "supported_language_slice": "typescript_ts_production_function_local_micro_nodes_v1",
+            "supported_language_slice": "registry_active_source_aware_function_local_micro_nodes_v1",
             "total_rows": summary.total_rows,
             "rows_by_node_kind": summary.rows_by_node_kind,
             "rows_by_language": summary.rows_by_language,
@@ -3799,7 +3799,7 @@ fn run_micro_edges_command(args: &[String]) -> Result<Value, String> {
             "full_source_body_output": false,
             "core_graph_micro_edge_availability_separate": true,
             "micro_node_availability_separate": true,
-            "local_flow_packet_availability": "not_applicable",
+            "local_flow_packet_availability": "reported_separately",
             "language_capabilities": crate::mvp4_micro_edge_language_capabilities_json(),
             "proof_boundary": mvp4_micro_edge_proof_boundary_json(),
         })
@@ -3821,7 +3821,7 @@ fn run_micro_edges_command(args: &[String]) -> Result<Value, String> {
             "full_source_body_output": false,
             "core_graph_micro_edge_availability_separate": true,
             "micro_node_availability_separate": true,
-            "local_flow_packet_availability": "not_applicable",
+            "local_flow_packet_availability": "reported_separately",
             "language_capabilities": crate::mvp4_micro_edge_language_capabilities_json(),
             "proof_boundary": mvp4_micro_edge_proof_boundary_json(),
         })
@@ -3848,8 +3848,8 @@ fn run_micro_edges_command(args: &[String]) -> Result<Value, String> {
             "db_path": path_string(&options.db_path),
             "schema_version": schema_version,
             "feature_status": status,
-            "supported_language_slice": "typescript_ts_local_returns_to_v1",
-            "supported_relation_slice": "local_returns_to",
+            "supported_language_slice": "registry_active_source_aware_local_micro_edges_v1",
+            "supported_relation_slice": "registry_active_11_relation_local_micro_edges_v1",
             "relation_kinds_active": relation_kinds_active,
             "languages_active": languages_active,
             "total_rows": summary.total_rows,
@@ -3875,7 +3875,7 @@ fn run_micro_edges_command(args: &[String]) -> Result<Value, String> {
             "full_source_body_output": summary.full_source_body_output,
             "core_graph_micro_edge_availability_separate": true,
             "micro_node_availability_separate": true,
-            "local_flow_packet_availability": "not_applicable",
+            "local_flow_packet_availability": "reported_separately",
             "language_capabilities": crate::mvp4_micro_edge_language_capabilities_json(),
             "proof_boundary": mvp4_micro_edge_proof_boundary_json(),
         })
@@ -4024,13 +4024,19 @@ fn run_local_flow_packets_command(args: &[String]) -> Result<Value, String> {
                 });
             }
         }
+        let packet_language_registry = mvp4_local_flow_packet_language_registry_json();
         json!({
             "status": status,
             "audit": "local_flow_packets",
             "db_path": path_string(&options.db_path),
             "schema_version": schema_version,
             "feature_status": status,
-            "supported_language_slice": "typescript_ts_function_local_packets_v1",
+            "supported_language_slice": crate::MVP4_3_LOCAL_FLOW_PACKET_SUPPORTED_LANGUAGE_SLICE,
+            "packet_language_registry": packet_language_registry,
+            "active_packet_languages": packet_language_registry["active_packet_languages"],
+            "active_packet_language_capabilities": packet_language_registry["active_packet_language_capabilities"],
+            "default_packet_query_language": packet_language_registry["default_packet_query_language"],
+            "typescript_packet_handles_preserved": packet_language_registry["typescript_packet_handles_preserved"],
             "total_rows": summary.total_rows,
             "rows_by_packet_kind": summary.rows_by_packet_kind,
             "rows_by_proof_status": summary.rows_by_proof_status,
